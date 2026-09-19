@@ -70,8 +70,11 @@ impl OpenAIVendor {
             return Err(ExecutorError::InvalidConfiguration);
         }
         let timeout = Duration::from_millis(config.timeout_ms);
-        let client = crate::core::config::build_bounded_http_client(timeout)
-            .map_err(|_| ExecutorError::InvalidConfiguration)?;
+        let client = crate::core::config::build_bounded_http_client_for_base_url(
+            timeout,
+            &config.base_url,
+        )
+        .map_err(|_| ExecutorError::InvalidConfiguration)?;
         Ok(Self { config, client })
     }
 }

@@ -135,7 +135,9 @@ cargo run -p gateway
 ```
 
 For a check without real credentials, use the local failure-simulation configuration in
-[README.md](../README.md#local-startup-check-no-real-llm-calls).
+[README.md](../README.md#local-startup-check-no-real-llm-calls). HTTP integration tests start an
+owned loopback OpenAI simulator and the shared production router; they do not use inherited provider
+keys. Live-provider tests are ignored and unrun unless explicitly opted in.
 
 ### `/api/v1/route` returns `401`
 

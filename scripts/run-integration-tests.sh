@@ -1,71 +1,51 @@
 #!/bin/bash
-# Integration test runner for Executor Layer
+# Opt-in runner for deferred live-provider executor tests.
 #
-# This script runs integration tests with real OpenAI API calls.
-# It requires valid API credentials to be set as environment variables.
+# Live OpenAI verification is unrun by default. Inherited OPENAI_API_KEY does
+# not activate these tests. This script requires an explicit opt-in.
 #
-# Usage:
-#   ./scripts/run-integration-tests.sh
-#
-# Environment Variables Required:
-#   OPENAI_API_KEY - Valid OpenAI API key
-#   OPENAI_BASE_URL - API endpoint (optional, defaults to https://api.openai.com/v1)
+# Usage (only when live verification is explicitly requested):
+#   OPMUX_LIVE_PROVIDER_TESTS=1 OPENAI_API_KEY=... ./scripts/run-integration-tests.sh
 
-set -e  # Exit on error
+set -euo pipefail
 
-# Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
 echo -e "${BLUE}========================================${NC}"
-echo -e "${BLUE}Executor Layer Integration Tests${NC}"
+echo -e "${BLUE}Deferred live-provider tests (opt-in)${NC}"
 echo -e "${BLUE}========================================${NC}"
 echo ""
 
-# Check if OPENAI_API_KEY is set
-if [ -z "$OPENAI_API_KEY" ]; then
-    echo -e "${RED}❌ Error: OPENAI_API_KEY is not set${NC}"
+if [ "${OPMUX_LIVE_PROVIDER_TESTS:-}" != "1" ] && [ "${OPMUX_LIVE_PROVIDER_TESTS:-}" != "true" ]; then
+    echo -e "${RED}Refusing to run live-provider tests.${NC}"
     echo ""
-    echo "Please set the OPENAI_API_KEY environment variable:"
-    echo "  export OPENAI_API_KEY=your-api-key-here"
+    echo "These tests are ignored by default and are not part of routine verification."
+    echo "Inherited OPENAI_API_KEY does not activate them."
+    echo "Set OPMUX_LIVE_PROVIDER_TESTS=1 only when live verification is explicitly requested."
     echo ""
-    echo "Optionally, set OPENAI_BASE_URL for custom endpoints:"
-    echo "  export OPENAI_BASE_URL=url"
-    echo ""
+    echo "For local simulator coverage use:"
+    echo "  cargo test -p gateway --test http_fixture_test --test openai_adapter_http_test"
     exit 1
 fi
 
-# Display configuration (mask API key for security)
-MASKED_KEY="${OPENAI_API_KEY:0:8}...${OPENAI_API_KEY: -4}"
-echo -e "${GREEN}✅ OPENAI_API_KEY is set${NC} (${MASKED_KEY})"
-
-if [ -n "$OPENAI_BASE_URL" ]; then
-    echo -e "${GREEN}✅ OPENAI_BASE_URL is set${NC} (${OPENAI_BASE_URL})"
-else
-    echo -e "${YELLOW}⚠️  OPENAI_BASE_URL not set${NC} (using default: https://api.openai.com/v1)"
-fi
-
-echo ""
-echo -e "${BLUE}Running integration tests...${NC}"
-echo ""
-
-# Run integration tests with output
-cargo test --test executor_integration_test -- --nocapture
-
-# Check exit code
-if [ $? -eq 0 ]; then
-    echo ""
-    echo -e "${GREEN}========================================${NC}"
-    echo -e "${GREEN}✅ All integration tests passed!${NC}"
-    echo -e "${GREEN}========================================${NC}"
-else
-    echo ""
-    echo -e "${RED}========================================${NC}"
-    echo -e "${RED}❌ Integration tests failed${NC}"
-    echo -e "${RED}========================================${NC}"
+if [ -z "${OPENAI_API_KEY:-}" ]; then
+    echo -e "${RED}OPENAI_API_KEY is required after opt-in.${NC}"
     exit 1
 fi
 
+echo -e "${YELLOW}WARNING: This contacts a real provider and may incur charges.${NC}"
+echo -e "${YELLOW}Live verification remains an explicit opt-in, not a CI gate.${NC}"
+echo ""
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$ROOT_DIR"
+
+cargo test -p gateway --test executor_integration_test -- --ignored --nocapture
+
+echo ""
+echo -e "${GREEN}Opt-in live-provider tests finished.${NC}"
+echo "This is not evidence used by routine CI or local simulator validation."

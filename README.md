@@ -124,20 +124,25 @@ publishes port 3000; treat it as a development setup, not a hardened production 
 
 ### Tests
 
-Run the test suite without enabling the credential-gated executor integration tests:
+Run the test suite. Routine tests isolate provider and proxy environment so inherited credentials
+cannot contact a public provider:
 
 ```bash
-env -u OPENAI_API_KEY cargo test
+env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
+  -u http_proxy -u https_proxy -u all_proxy \
+  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' cargo test
 ```
 
-- `gateway/tests/executor_integration_test.rs` skips its test bodies when `OPENAI_API_KEY` is
-  absent. When the variable is present, even if empty or a dummy value, the suite is enabled and can
-  contact the configured provider. Real calls may incur charges; skipped bodies are not evidence of
-  upstream compatibility.
-- `gateway/tests/observability_integration_test.rs` uses dummy configuration and a local unavailable
-  upstream to exercise HTTP behavior and failure scenarios. It does not depend on that skip guard.
+- HTTP fixtures in `gateway/tests/http_fixture_test.rs` and
+  `gateway/tests/openai_adapter_http_test.rs` start an owned loopback OpenAI simulator, build the
+  same production router as the binary, and exercise `/health`, generation, metrics, and the real
+  Reqwest adapter. They bind `127.0.0.1` only and abort the simulator task on drop.
+- `gateway/tests/observability_integration_test.rs` uses that shared router with dummy configuration
+  and a local unavailable upstream for HTTP failure scenarios.
 - `gateway/tests/startup_integration_test.rs` launches the binary without vendor keys to verify
   logging defaults, environment-variable precedence, and the expected startup failure.
+- `gateway/tests/executor_integration_test.rs` is **ignored live-provider verification**. It does
+  not run because a key is present. Live OpenAI checks are unrun unless you explicitly opt in.
 
 To run the same local-only binary smoke check used by the security workflow:
 
@@ -151,13 +156,15 @@ an unavailable local upstream, and cleans up its process and temporary logs. It 
 readiness failure, authentication, metrics, and correlation headers. Without a binary argument it
 uses `target/release/gateway`.
 
-To intentionally run the real-provider suite after configuring credentials:
+Live-provider tests stay ignored. Do not treat ignored or unrun live tests as provider validation.
+If live verification is explicitly requested later:
 
 ```bash
-cargo test -p gateway --test executor_integration_test -- --nocapture
+OPMUX_LIVE_PROVIDER_TESTS=1 cargo test -p gateway --test executor_integration_test -- --ignored --nocapture
 ```
 
-See the [executor integration test guide](gateway/tests/README.md) for setup details.
+See the [integration test guide](gateway/tests/README.md) for local simulator and deferred live
+setup.
 
 ### Formatting and Linting
 
@@ -173,9 +180,9 @@ small Markdown change, prefer targeting the changed files, for example
 
 [CI](.github/workflows/ci.yml) configures tests on stable, beta, and nightly Rust, formatting
 checks, strict Clippy, dependency auditing with `cargo audit`, and a release build uploaded from
-`target/release/gateway`. CI explicitly removes `OPENAI_API_KEY` for routine tests; dummy vendor
-configuration is scoped to the separate startup check. It does not currently configure a
-code-coverage job.
+`target/release/gateway`. CI removes inherited provider keys and proxy variables for routine tests;
+dummy vendor configuration is scoped to local simulators and the separate startup check. Ignored
+live-provider tests are not run. It does not currently configure a code-coverage job.
 
 ## Project Structure
 
@@ -184,7 +191,7 @@ opmux-backend/
 ├── common/             # Shared crate
 ├── gateway/            # Axum service crate
 │   ├── src/            # Startup, core, middleware, and feature modules
-│   └── tests/          # Provider integration and observability tests
+│   └── tests/          # HTTP fixtures, observability, startup, deferred live tests
 ├── docs/               # API and operations documentation
 │   └── rules/          # Engineering rules
 ├── specs/              # Requirements, designs, and implementation tasks

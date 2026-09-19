@@ -76,7 +76,8 @@ omit files they do not need, but must not merge layers into one file.
 
 ```
 gateway/src/
-├── main.rs             # Router composition, middleware order, server boot
+├── main.rs             # Process boot: load settings, construct Application, bind/serve
+├── app.rs              # Shared production router and middleware order
 ├── lib.rs              # AppState and crate exports
 ├── core/               # Shared primitives: config, error, tracing, metrics, correlation, contracts
 ├── middleware/         # HTTP middleware: auth, correlation_id
@@ -87,8 +88,9 @@ gateway/src/
     └── ingress/        # /api/v1/route orchestration; depends on executor
 ```
 
-Cross-feature dependencies are injected as `Arc<Service>` at startup in `main.rs` (for example
-`IngressService::new(executor_service)`), never constructed inside a feature.
+Cross-feature dependencies are injected as `Arc<Service>` at startup in `app.rs` (for example
+`IngressService::new(executor_service)`), never constructed inside a feature. The binary and HTTP
+tests call the same `build_production_router` graph.
 
 ## Module Development Rules
 
@@ -97,12 +99,13 @@ Cross-feature dependencies are injected as `Arc<Service>` at startup in `main.rs
 - Follow the most similar existing feature when adding a new one.
 - Configuration comes from environment variables or config files via `core/config.rs`; no hard-coded
   values.
-- Routing is centralized in `main.rs`; handlers are plain functions registered there.
+- Routing is centralized in `app.rs`; handlers are plain functions registered there. The binary
+  boots that router from `main.rs`.
 - Split files by responsibility. Do not grow a single file into a service, repository, and model
   dump.
 - Vendor clients (`executor/vendors/`) implement the `LLMVendor` trait and contain no retry logic;
   retry and fallback live in `ExecutorService`.
-- Middleware ordering in `main.rs` is behavior-critical; do not reorder without updating the comment
+- Middleware ordering in `app.rs` is behavior-critical; do not reorder without updating the comment
   that documents it.
 
 ## When to Apply the Full 3-Layer Split

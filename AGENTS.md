@@ -46,8 +46,8 @@ Read the applicable engineering rules below before acting; do not rely on summar
 
 ## Task Navigation
 
-- Startup, routes, middleware wiring: `gateway/src/main.rs`; shared `AppState`:
-  `gateway/src/lib.rs`.
+- Startup: `gateway/src/main.rs`. Shared production router: `gateway/src/app.rs`
+  (`build_production_router` / `Application`). Shared `AppState`: `gateway/src/lib.rs`.
 - Configuration: `gateway/src/core/config/` (`Settings`, catalog, limits); executor settings in
   `gateway/src/features/executor/config.rs`; metrics in `gateway/src/core/metrics.rs`.
 - HTTP middleware: `gateway/src/middleware/`; API key validation: `gateway/src/features/auth/`.
@@ -61,9 +61,11 @@ Read the applicable engineering rules below before acting; do not rely on summar
 - Health/readiness and successful-result caching: `gateway/src/features/health/`.
 - HTTP-facing features use `handler.rs`, `service.rs`, and `repository.rs`; read the nearest
   existing feature and its tests before adding a new pattern.
-- Provider tests: `gateway/tests/executor_integration_test.rs`; HTTP/observability tests:
-  `gateway/tests/observability_integration_test.rs`. See the test guidance below before running
-  them.
+- Local HTTP fixtures and simulator: `gateway/tests/support/`, `gateway/tests/http_fixture_test.rs`,
+  `gateway/tests/openai_adapter_http_test.rs`. Observability HTTP tests:
+  `gateway/tests/observability_integration_test.rs`. Deferred live-provider tests:
+  `gateway/tests/executor_integration_test.rs` (`#[ignore]`; not key-gated). See the test guidance
+  below before running them.
 - API, configuration, operations, and test guides: the documentation links in `README.md`.
 
 ## High-Risk Guardrails
@@ -93,12 +95,12 @@ passed. Choose checks for the changed surface and explain omissions:
 - **Startup/configuration changes:** check both the configuration loader and startup wiring, then
   update the affected usage instructions. Copying `.env` alone does not configure the Rust binary.
 
-`executor_integration_test.rs` checks only whether `OPENAI_API_KEY` is present. An empty or dummy
-value still enables it; real credentials can trigger billable provider calls. Do not treat inherited
-keys as permission to run live tests. For routine test runs, use `env -u OPENAI_API_KEY cargo test`
-and run live-provider tests only when explicitly requested or approved.
+`executor_integration_test.rs` is ignored live-provider verification. Inherited `OPENAI_API_KEY`
+does not activate it. Routine tests must use dummy credentials and owned loopback simulator URLs,
+and should clear provider/proxy environment (`env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY` plus proxy
+variables, `NO_PROXY='*'`). Do not run `--ignored` live tests unless explicitly requested.
 
-`observability_integration_test.rs` sets dummy credentials and a local unavailable upstream to test
-HTTP behavior and failure scenarios; it is not guarded by the executor suite's skip check. Do not
-claim that all integration tests skip without a key, or that skipped provider tests validate a live
-integration.
+`http_fixture_test.rs` and `openai_adapter_http_test.rs` exercise the shared production router and
+the real Reqwest adapter against an owned loopback simulator. `observability_integration_test.rs`
+uses that same router with dummy configuration. Ignored live tests are unrun; they are not evidence
+of upstream compatibility.

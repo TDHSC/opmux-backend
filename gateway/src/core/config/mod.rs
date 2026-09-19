@@ -21,7 +21,10 @@ mod tests;
 
 pub use catalog::{Catalog, Route, Target, TargetPricing, VendorKind};
 pub use error::{ConfigCategory, ConfigError};
-pub use http_client::{build_bounded_http_client, client_from_build_result};
+pub use http_client::{
+    build_bounded_http_client, build_bounded_http_client_for_base_url,
+    client_from_build_result,
+};
 pub use limits::{
     LimitBound, PolicyLimits, BACKOFF_CAP_MS, CIRCUIT_COOLDOWN_MS,
     CIRCUIT_FAILURE_THRESHOLD, MAX_ATTEMPT_TIMEOUT_MS, MAX_CONCURRENT_GENERATIONS,

@@ -14,7 +14,7 @@ HTTP middleware stack for correlation IDs, metrics, and authentication.
 
 ## CONVENTIONS
 
-- Middleware order is defined in `gateway/src/main.rs` and should remain stable.
+- Middleware order is defined in `gateway/src/app.rs` and should remain stable.
 - Use `axum::middleware::from_fn` wrappers for middleware functions.
 
 ## ANTI-PATTERNS

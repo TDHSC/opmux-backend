@@ -30,6 +30,14 @@ impl Drop for TempCatalog {
     }
 }
 
+#[test]
+fn for_tests_with_provider_overrides_dummy_url() {
+    let settings =
+        Settings::for_tests_with_provider("http://127.0.0.1:38081/v1", "fixture-key");
+    assert_eq!(settings.provider.base_url, "http://127.0.0.1:38081/v1");
+    assert_eq!(settings.provider.api_key.expose(), "fixture-key");
+}
+
 fn example_catalog_path() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/opmux.example.json")
 }

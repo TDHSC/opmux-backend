@@ -5,6 +5,9 @@
 
 use std::sync::Arc;
 
+// Shared production application and router composition
+pub mod app;
+
 // Core reusable primitives
 pub mod core;
 

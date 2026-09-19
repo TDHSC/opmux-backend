@@ -1,32 +1,29 @@
+mod support;
+
 use axum::{
     body::Body,
     http::{Request, StatusCode},
-    middleware,
-    routing::{get, post},
-    Router,
 };
 use gateway::{
-    core::metrics::{create_metrics, MetricsConfig},
+    app::build_production_router,
+    core::{config::Settings, metrics::MetricsConfig},
     features::{
         executor::{config::ExecutorConfig, service::ExecutorService},
         health, ingress,
     },
-    middleware::correlation_id::correlation_id_middleware,
     AppState,
 };
 use serde_json::json;
 use serial_test::serial;
 use std::sync::Arc;
+use support::isolate_provider_environment;
 use tower::ServiceExt;
 
 fn create_executor_service() -> Arc<ExecutorService> {
-    std::env::set_var("OPENAI_API_KEY", "dummy-key");
-    std::env::set_var("OPENAI_BASE_URL", "http://127.0.0.1:9/v1");
-    std::env::set_var("OPENAI_TIMEOUT_MS", "200");
-
-    let executor_config = ExecutorConfig::from_env();
+    isolate_provider_environment();
+    let settings = Settings::for_tests();
     Arc::new(
-        ExecutorService::from_config(executor_config)
+        ExecutorService::from_config(ExecutorConfig::from_settings(&settings))
             .expect("executor should initialize with dummy vendor config"),
     )
 }
@@ -34,46 +31,30 @@ fn create_executor_service() -> Arc<ExecutorService> {
 fn build_test_app(
     health_service: Arc<health::HealthService>,
     include_metrics: bool,
-) -> Router {
-    let executor_service = create_executor_service();
+) -> axum::Router {
+    isolate_provider_environment();
+    let settings = Arc::new(Settings::for_tests());
+    let executor_service = Arc::new(
+        ExecutorService::from_config(ExecutorConfig::from_settings(&settings))
+            .expect("executor should initialize with dummy vendor config"),
+    );
     let ingress_service = Arc::new(ingress::service::IngressService::new(
         executor_service.clone(),
     ));
 
     let app_state = AppState {
-        settings: Arc::new(gateway::core::config::Settings::for_tests()),
+        settings,
         ingress_service,
         executor_service,
         health_service,
     };
 
-    let protected_routes = Router::new()
-        .route("/api/v1/route", post(ingress::ingress_handler))
-        .layer(middleware::from_fn(
-            gateway::middleware::auth::auth_middleware,
-        ))
-        .with_state(app_state.clone());
-
-    let public_routes = Router::new()
-        .route("/health", get(health::health_handler))
-        .route("/ready", get(health::ready_handler))
-        .with_state(app_state);
-
-    let mut app = Router::new().merge(protected_routes).merge(public_routes);
-
-    if include_metrics {
-        let metrics_config = MetricsConfig::production();
-        if let Some((metric_layer, prometheus_handle)) = create_metrics(metrics_config) {
-            app = app
-                .route(
-                    "/metrics",
-                    get(|| async move { prometheus_handle.render() }),
-                )
-                .layer(metric_layer);
-        }
-    }
-
-    app.layer(middleware::from_fn(correlation_id_middleware))
+    let metrics = if include_metrics {
+        MetricsConfig::production()
+    } else {
+        MetricsConfig::disabled()
+    };
+    build_production_router(app_state, metrics)
 }
 
 #[tokio::test]

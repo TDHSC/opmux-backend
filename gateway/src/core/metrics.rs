@@ -60,6 +60,14 @@ impl MetricsConfig {
             endpoint_path: "/metrics".to_string(),
         }
     }
+
+    /// Metrics collection disabled. Used by HTTP fixtures that do not scrape.
+    pub fn disabled() -> Self {
+        Self {
+            enabled: false,
+            endpoint_path: "/metrics".to_string(),
+        }
+    }
 }
 
 /// Creates Prometheus metric layer and handle if metrics are enabled.
@@ -127,6 +135,14 @@ mod tests {
         let config = MetricsConfig::development();
 
         assert!(config.enabled);
+        assert_eq!(config.endpoint_path, "/metrics");
+    }
+
+    #[test]
+    fn test_metrics_config_disabled() {
+        let config = MetricsConfig::disabled();
+
+        assert!(!config.enabled);
         assert_eq!(config.endpoint_path, "/metrics");
     }
 

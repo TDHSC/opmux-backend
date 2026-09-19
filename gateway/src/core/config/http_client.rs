@@ -12,14 +12,60 @@ use super::error::ConfigError;
 pub fn build_bounded_http_client(
     timeout: Duration,
 ) -> Result<reqwest::Client, ConfigError> {
+    build_client(timeout, false)
+}
+
+/// Builds a bounded HTTP client, disabling proxies for loopback targets.
+///
+/// Inherited `HTTP_PROXY`/`HTTPS_PROXY` settings must not redirect local
+/// simulator traffic. Non-loopback URLs keep reqwest's default proxy policy.
+///
+/// # Parameters
+/// - `timeout` - Finite connect and request timeout
+/// - `base_url` - Provider base URL used to detect loopback targets
+///
+/// # Returns
+/// Configured `reqwest::Client`
+///
+/// # Errors
+/// Returns `invalid_limit` for a zero timeout and `http_client_construction`
+/// when the client cannot be built.
+pub fn build_bounded_http_client_for_base_url(
+    timeout: Duration,
+    base_url: &str,
+) -> Result<reqwest::Client, ConfigError> {
+    build_client(timeout, base_url_is_loopback(base_url))
+}
+
+fn build_client(
+    timeout: Duration,
+    disable_proxy: bool,
+) -> Result<reqwest::Client, ConfigError> {
     if timeout.is_zero() {
         return Err(ConfigError::invalid_limit("max_attempt_timeout_ms"));
     }
-    let builder = reqwest::Client::builder()
+    let mut builder = reqwest::Client::builder()
         .timeout(timeout)
         .connect_timeout(timeout)
         .tls_built_in_root_certs(true);
+    if disable_proxy {
+        builder = builder.no_proxy();
+    }
     client_from_build_result(builder.build())
+}
+
+fn base_url_is_loopback(base_url: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    match url.host_str() {
+        Some("localhost") | Some("127.0.0.1") | Some("::1") => true,
+        Some(host) => host
+            .parse::<std::net::IpAddr>()
+            .map(|ip| ip.is_loopback())
+            .unwrap_or(false),
+        None => false,
+    }
 }
 
 /// Maps a client builder result without including builder diagnostics.
@@ -76,5 +122,13 @@ mod tests {
         assert!(!production.contains("danger_accept_invalid"));
         assert!(production.contains("tls_built_in_root_certs(true)"));
         assert!(!production.contains("Client::new()"));
+        assert!(production.contains("no_proxy()"));
+    }
+
+    #[test]
+    fn loopback_base_urls_are_detected() {
+        assert!(base_url_is_loopback("http://127.0.0.1:9/v1"));
+        assert!(base_url_is_loopback("http://localhost:38081/v1"));
+        assert!(!base_url_is_loopback("https://api.openai.com/v1"));
     }
 }

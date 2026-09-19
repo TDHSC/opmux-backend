@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use super::catalog::{parse_catalog, Catalog};
 use super::env::{EnvSource, ProcessEnv};
 use super::error::{ConfigCategory, ConfigError};
-use super::http_client::build_bounded_http_client;
+use super::http_client::build_bounded_http_client_for_base_url;
 use super::limits::PolicyLimits;
 use super::process::{AuthConfig, ServerConfig};
 use super::provider::ProviderSettings;
@@ -50,6 +50,28 @@ impl Settings {
         env: &HashMap<String, String>,
     ) -> Result<Self, ConfigError> {
         Self::from_catalog_path(catalog_path.as_ref(), env)
+    }
+
+    /// Local dummy settings aimed at an explicit loopback provider.
+    ///
+    /// # Parameters
+    /// - `base_url` - Loopback OpenAI-compatible base URL
+    /// - `api_key` - Dummy provider credential
+    ///
+    /// # Returns
+    /// Test settings with the provided provider endpoint
+    pub fn for_tests_with_provider(
+        base_url: impl Into<String>,
+        api_key: impl Into<String>,
+    ) -> Self {
+        let mut settings = Self::for_tests();
+        let parsed = super::provider::validate_provider_url(&base_url.into())
+            .expect("test provider URL must be a valid http(s) URL");
+        settings.provider = super::provider::ProviderSettings {
+            api_key: super::provider::SecretString::new(api_key),
+            base_url: parsed.as_str().trim_end_matches('/').to_string(),
+        };
+        settings
     }
 
     /// Local dummy settings for tests that need `AppState` but not catalog I/O.
@@ -137,7 +159,10 @@ impl Settings {
 
     /// Constructs the bounded provider HTTP client from validated limits.
     pub fn build_provider_http_client(&self) -> Result<reqwest::Client, ConfigError> {
-        build_bounded_http_client(self.limits.max_attempt_timeout)
+        build_bounded_http_client_for_base_url(
+            self.limits.max_attempt_timeout,
+            &self.provider.base_url,
+        )
     }
 
     /// Logs a secret-free summary of validated settings.
