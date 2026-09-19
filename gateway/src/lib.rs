@@ -31,6 +31,9 @@ pub mod middleware;
 /// - Cache client (`cache_client: Arc<CacheClient>`)
 #[derive(Clone)]
 pub struct AppState {
+    /// Validated operator settings injected at startup.
+    pub settings: Arc<core::config::Settings>,
+
     /// Shared ExecutorService for LLM execution across all requests
     pub executor_service: Arc<features::executor::service::ExecutorService>,
 

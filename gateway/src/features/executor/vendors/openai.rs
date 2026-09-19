@@ -60,20 +60,19 @@ impl OpenAIVendor {
     ///
     /// # Parameters
     /// - `config` - OpenAI configuration with API key, base URL, and pricing
-    pub fn new(config: OpenAIConfig) -> Self {
+    ///
+    /// # Errors
+    /// Returns `InvalidConfiguration` when the credential is blank or the
+    /// bounded HTTP client cannot be constructed. Never falls back to an
+    /// unbounded default client.
+    pub fn new(config: OpenAIConfig) -> Result<Self, ExecutorError> {
+        if config.api_key.trim().is_empty() {
+            return Err(ExecutorError::InvalidConfiguration);
+        }
         let timeout = Duration::from_millis(config.timeout_ms);
-        let client = Client::builder()
-            .timeout(timeout)
-            .connect_timeout(timeout)
-            .build()
-            .unwrap_or_else(|error| {
-                tracing::error!(
-                    error = ?error,
-                    "Failed to build OpenAI HTTP client; falling back to defaults"
-                );
-                Client::new()
-            });
-        Self { config, client }
+        let client = crate::core::config::build_bounded_http_client(timeout)
+            .map_err(|_| ExecutorError::InvalidConfiguration)?;
+        Ok(Self { config, client })
     }
 }
 

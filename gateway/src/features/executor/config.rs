@@ -2,6 +2,9 @@
 
 use std::collections::HashMap;
 use std::env;
+use std::fmt;
+
+use crate::core::config::Settings;
 
 /// Model pricing information.
 ///
@@ -25,7 +28,7 @@ impl ModelPricing {
 }
 
 /// OpenAI vendor configuration.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct OpenAIConfig {
     /// API key for authentication
     pub api_key: String,
@@ -37,6 +40,17 @@ pub struct OpenAIConfig {
     pub supported_models: Vec<String>,
     /// Pricing information for each model
     pub pricing: HashMap<String, ModelPricing>,
+}
+
+impl fmt::Debug for OpenAIConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenAIConfig")
+            .field("api_key", &"[redacted]")
+            .field("base_url", &"[omitted]")
+            .field("timeout_ms", &self.timeout_ms)
+            .field("supported_models", &self.supported_models)
+            .finish_non_exhaustive()
+    }
 }
 
 impl OpenAIConfig {
@@ -77,6 +91,34 @@ impl OpenAIConfig {
         }
     }
 
+    /// Dummy local-only configuration for tests.
+    pub fn for_tests() -> Self {
+        let mut pricing = HashMap::new();
+        pricing.insert(
+            "example-chat-model".to_string(),
+            ModelPricing::new(0.001, 0.002),
+        );
+        pricing.insert("gpt-4".to_string(), ModelPricing::new(0.001, 0.002));
+        pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(0.001, 0.002));
+        pricing.insert(
+            "gpt-3.5-turbo".to_string(),
+            ModelPricing::new(0.0005, 0.0015),
+        );
+
+        Self {
+            api_key: "test-dummy-openai-key".to_string(),
+            base_url: "http://127.0.0.1:9/v1".to_string(),
+            timeout_ms: 200,
+            supported_models: vec![
+                "example-chat-model".to_string(),
+                "gpt-4".to_string(),
+                "gpt-4-turbo".to_string(),
+                "gpt-3.5-turbo".to_string(),
+            ],
+            pricing,
+        }
+    }
+
     /// Validates the configuration.
     pub fn validate(&self) -> Result<(), String> {
         if self.api_key.is_empty() {
@@ -90,7 +132,7 @@ impl OpenAIConfig {
 }
 
 /// Configuration for Executor Layer.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ExecutorConfig {
     /// OpenAI vendor configuration
     pub openai: Option<OpenAIConfig>,
@@ -102,7 +144,52 @@ pub struct ExecutorConfig {
     pub max_retries: u32,
 }
 
+impl fmt::Debug for ExecutorConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ExecutorConfig")
+            .field("openai", &self.openai)
+            .field(
+                "anthropic_api_key",
+                &self.anthropic_api_key.as_ref().map(|_| "[redacted]"),
+            )
+            .field("timeout_ms", &self.timeout_ms)
+            .field("max_retries", &self.max_retries)
+            .finish()
+    }
+}
+
 impl ExecutorConfig {
+    /// Builds executor configuration from validated injected settings.
+    pub fn from_settings(settings: &Settings) -> Self {
+        let mut pricing = HashMap::new();
+        let mut supported_models = Vec::new();
+        for target in settings.catalog.targets.values() {
+            if !supported_models.contains(&target.model) {
+                supported_models.push(target.model.clone());
+            }
+            pricing.insert(
+                target.model.clone(),
+                ModelPricing::new(
+                    target.pricing.input_per_million / 1000.0,
+                    target.pricing.output_per_million / 1000.0,
+                ),
+            );
+        }
+
+        Self {
+            openai: Some(OpenAIConfig {
+                api_key: settings.provider.api_key.expose().to_string(),
+                base_url: settings.provider.base_url.clone(),
+                timeout_ms: settings.limits.max_attempt_timeout_ms(),
+                supported_models,
+                pricing,
+            }),
+            anthropic_api_key: None,
+            timeout_ms: settings.limits.max_attempt_timeout_ms(),
+            max_retries: settings.limits.retries_per_target,
+        }
+    }
+
     /// Loads configuration from environment variables.
     pub fn from_env() -> Self {
         // Load OpenAI configuration if API key is set

@@ -41,6 +41,7 @@ fn build_test_app(
     ));
 
     let app_state = AppState {
+        settings: Arc::new(gateway::core::config::Settings::for_tests()),
         ingress_service,
         executor_service,
         health_service,

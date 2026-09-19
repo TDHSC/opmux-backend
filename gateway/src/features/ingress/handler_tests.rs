@@ -105,6 +105,7 @@ mod tests {
     fn build_test_app(models: Vec<&str>) -> Router {
         let executor_service = create_mock_executor_service(models);
         let app_state = AppState {
+            settings: Arc::new(crate::core::config::Settings::for_tests()),
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(
                     executor_service.clone(),

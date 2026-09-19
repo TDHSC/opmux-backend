@@ -57,6 +57,10 @@ pub enum ExecutorError {
     #[error("No LLM vendors configured")]
     NoVendorsConfigured,
 
+    /// Vendor or HTTP client configuration is invalid.
+    #[error("Invalid executor configuration")]
+    InvalidConfiguration,
+
     #[error("Circuit breaker open for vendor '{vendor}'")]
     CircuitOpen { vendor: String, retry_after_ms: u64 },
 }
@@ -118,6 +122,11 @@ impl IntoResponse for ExecutorError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "no_vendors_configured",
                 "No LLM vendors are configured".to_string(),
+            ),
+            Self::InvalidConfiguration => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid_configuration",
+                "Executor configuration is invalid".to_string(),
             ),
         };
 

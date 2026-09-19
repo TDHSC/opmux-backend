@@ -495,6 +495,7 @@ mod tests {
         let executor =
             create_mock_executor_service(true).expect("Failed to create executor");
         let app_state = AppState {
+            settings: Arc::new(crate::core::config::Settings::for_tests()),
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(executor.clone()),
             ),
@@ -560,6 +561,7 @@ mod tests {
         use std::sync::Arc;
 
         let app_state = AppState {
+            settings: Arc::new(crate::core::config::Settings::for_tests()),
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(executor.clone()),
             ),

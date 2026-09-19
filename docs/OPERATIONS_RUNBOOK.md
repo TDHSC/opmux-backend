@@ -2,7 +2,8 @@
 
 ## Startup checks
 
-1. Confirm required env vars are set (`OPENAI_API_KEY`, `SERVER_PORT`, auth settings).
+1. Confirm required env vars are set (`OPMUX_CONFIG_FILE`, `OPENAI_API_KEY`, `SERVER_PORT`, auth
+   settings). Copying `.env` is not process configuration.
 2. Start service and verify startup logs show initialized Executor/Health/Ingress services.
 3. Validate endpoints:
 

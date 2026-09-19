@@ -72,7 +72,7 @@ mod tests {
     // Helper function to create a test ExecutorRepository with OpenAI vendor
     fn create_test_repository() -> ExecutorRepository {
         let config = ExecutorConfig {
-            openai: Some(OpenAIConfig::from_env()),
+            openai: Some(OpenAIConfig::for_tests()),
             anthropic_api_key: None,
             max_retries: 3,
             timeout_ms: 30000,
@@ -97,7 +97,7 @@ mod tests {
     #[test]
     fn test_from_config_success() {
         let config = ExecutorConfig {
-            openai: Some(OpenAIConfig::from_env()),
+            openai: Some(OpenAIConfig::for_tests()),
             anthropic_api_key: None,
             max_retries: 3,
             timeout_ms: 30000,

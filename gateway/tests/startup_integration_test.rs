@@ -1,14 +1,26 @@
 //! Checks logging configuration through the actual binary, without provider credentials.
 
+use std::path::PathBuf;
 use std::process::{Command, Output};
 
 type EnvSettings<'a> = &'a [(&'a str, &'a str)];
+
+fn example_catalog_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/opmux.example.json")
+}
 
 fn run_without_vendors(settings: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_gateway"));
     for name in [
         "OPENAI_API_KEY",
         "ANTHROPIC_API_KEY",
+        "OPENAI_BASE_URL",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
         "RUST_LOG",
         "LOG_LEVEL",
         "LOG_FORMAT",
@@ -22,6 +34,7 @@ fn run_without_vendors(settings: &[(&str, &str)]) -> Output {
         .env("SERVER_HOST", "127.0.0.1")
         .env("SERVER_PORT", "0")
         .env("METRICS_ENABLED", "false")
+        .env("OPMUX_CONFIG_FILE", example_catalog_path())
         .envs(settings.iter().copied())
         .output()
         .expect("gateway should launch")
@@ -73,9 +86,10 @@ fn test_startup_logging_configuration() {
         let output = run_without_vendors(settings);
         assert_eq!(output.status.code(), Some(1), "settings: {settings:?}");
         let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(stdout.contains("No LLM vendors configured"));
-        assert!(stdout.contains(&format!("Log level: {level}")));
-        assert!(stdout.contains(&format!("JSON format: {json}")));
+        assert!(
+            stdout.contains("missing_credential"),
+            "settings: {settings:?}"
+        );
 
         if *json {
             let records: Vec<serde_json::Value> = stdout
@@ -108,7 +122,7 @@ fn test_startup_respects_log_level_and_rust_log_precedence() {
         let output = run_without_vendors(&settings);
         assert_eq!(output.status.code(), Some(1));
         let stdout = String::from_utf8(output.stdout).unwrap();
-        assert!(stdout.contains("No LLM vendors configured"));
+        assert!(stdout.contains("missing_credential"));
         assert!(!stdout.contains("Starting gateway"));
         for line in stdout.lines() {
             let record: serde_json::Value = serde_json::from_str(line).unwrap();

@@ -6,7 +6,7 @@ use axum::{
 };
 use gateway::{
     core::{
-        config::get_config,
+        config::Settings,
         metrics::{create_metrics, MetricsConfig},
         tracing::{init_tracing, TracingConfig},
     },
@@ -25,8 +25,15 @@ async fn main() {
     init_tracing(TracingConfig::from_env());
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting gateway");
 
-    // Initialize configuration (logs all settings including warnings)
-    let config = get_config();
+    let settings = match Settings::load() {
+        Ok(settings) => settings,
+        Err(error) => {
+            tracing::error!(category = error.category(), "{error}");
+            std::process::exit(1);
+        }
+    };
+    settings.log_safe_summary();
+    let settings = Arc::new(settings);
 
     // Initialize Prometheus metrics
     tracing::info!("Initializing Prometheus metrics...");
@@ -44,7 +51,7 @@ async fn main() {
 
     // Initialize ExecutorService for LLM execution
     tracing::info!("Initializing ExecutorService...");
-    let executor_config = ExecutorConfig::from_env();
+    let executor_config = ExecutorConfig::from_settings(&settings);
     let executor_service = match ExecutorService::from_config(executor_config.clone()) {
         Ok(service) => Arc::new(service),
         Err(e) => {
@@ -70,6 +77,7 @@ async fn main() {
 
     // Create application state with all shared services
     let app_state = AppState {
+        settings: settings.clone(),
         executor_service,
         ingress_service,
         health_service,
@@ -114,40 +122,40 @@ async fn main() {
     ));
 
     // Start the server
-    let listener = tokio::net::TcpListener::bind(config.server.bind_address)
+    let listener = tokio::net::TcpListener::bind(settings.server.bind_address)
         .await
         .unwrap();
 
     tracing::info!(
         "🚀 Gateway server running on http://{}",
-        config.server.bind_address
+        settings.server.bind_address
     );
     tracing::info!("");
     tracing::info!("📍 Available endpoints:");
     tracing::info!(
         "   - Health check: http://{}/health",
-        config.server.bind_address
+        settings.server.bind_address
     );
     tracing::info!(
         "   - Readiness check: http://{}/ready",
-        config.server.bind_address
+        settings.server.bind_address
     );
     tracing::info!(
         "   - Ingress API: http://{}/api/v1/route (protected)",
-        config.server.bind_address
+        settings.server.bind_address
     );
 
     if metrics_config.enabled {
         tracing::info!(
             "   - Metrics: http://{}{}",
-            config.server.bind_address,
+            settings.server.bind_address,
             metrics_config.endpoint_path
         );
     }
 
     tracing::info!("");
 
-    if config.auth.development_mode {
+    if settings.auth.development_mode {
         tracing::info!("🚨 Development mode: Authentication is BYPASSED");
         tracing::info!("🚨 No API key required for testing");
     } else {

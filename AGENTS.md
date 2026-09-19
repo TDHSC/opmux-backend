@@ -48,7 +48,7 @@ Read the applicable engineering rules below before acting; do not rely on summar
 
 - Startup, routes, middleware wiring: `gateway/src/main.rs`; shared `AppState`:
   `gateway/src/lib.rs`.
-- Configuration: `gateway/src/core/config.rs` (`Config`); executor settings in
+- Configuration: `gateway/src/core/config/` (`Settings`, catalog, limits); executor settings in
   `gateway/src/features/executor/config.rs`; metrics in `gateway/src/core/metrics.rs`.
 - HTTP middleware: `gateway/src/middleware/`; API key validation: `gateway/src/features/auth/`.
 - Request orchestration: `gateway/src/features/ingress/service.rs` (`IngressService`), with context

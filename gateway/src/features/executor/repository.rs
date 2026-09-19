@@ -36,7 +36,7 @@ impl ExecutorRepository {
 
         // Initialize OpenAI vendor if configured
         if let Some(openai_config) = &config.openai {
-            let vendor = OpenAIVendor::new(openai_config.clone());
+            let vendor = OpenAIVendor::new(openai_config.clone())?;
             vendors.insert("openai".to_string(), Arc::new(vendor));
             tracing::info!("Initialized OpenAI vendor");
         }

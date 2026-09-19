@@ -34,12 +34,17 @@ npm ci
 
 ### Local Startup Check (No Real LLM Calls)
 
-The gateway requires a configured vendor at startup; without one it exits with
-`NoVendorsConfigured`. Use a dummy key and an intentionally unavailable local upstream to check
+The gateway requires `OPMUX_CONFIG_FILE` (non-secret JSON catalog) and `OPENAI_API_KEY`. Invalid
+catalogs, blank credentials, out-of-range limits, or HTTP client construction failures exit before
+the process binds. Copying `.env` is not process configuration; export variables or load them with
+your local tooling.
+
+Use a dummy key, the example catalog, and an intentionally unavailable local upstream to check
 startup and failure handling:
 
 ```bash
 SERVER_HOST=127.0.0.1 SERVER_PORT=3000 \
+OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 AUTH_DEVELOPMENT_MODE=false METRICS_ENABLED=true METRICS_PATH=/metrics \
 OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:9/v1 OPENAI_TIMEOUT_MS=200 \
 cargo run -p gateway
@@ -63,6 +68,7 @@ Replace the placeholder with a valid provider key in your local environment:
 
 ```bash
 SERVER_HOST=127.0.0.1 SERVER_PORT=3000 AUTH_DEVELOPMENT_MODE=false \
+OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 OPENAI_API_KEY='<your-provider-key>' OPENAI_BASE_URL=https://api.openai.com/v1 \
 cargo run -p gateway
 ```
@@ -71,6 +77,17 @@ cargo run -p gateway
 endpoint. Keep real keys out of version control. The provider key is separate from the gateway's
 `X-API-Key` request header; see the [API reference](docs/API_REFERENCE.md) for request examples.
 Authentication remains mock-backed even when using a real upstream.
+
+The example catalog at [config/opmux.example.json](config/opmux.example.json) defines a default
+route, targets, illustrative per-million prices, and a flat fallback list. Those model names and
+prices are samples for configuration tests, not current provider billing or availability. See
+[configuration troubleshooting](docs/CONFIGURATION_TROUBLESHOOTING.md) for the canonical schema,
+documented defaults, and numeric bounds.
+
+Omitted optional limits default to a 30-second protected-request deadline, 10-second attempt
+maximum, one retry per target, three total provider attempts, at most two fallback targets, and a
+2-second backoff cap. Those values are validated and injected at startup. Request-deadline,
+fallback, circuit, concurrency, and raw-size enforcement are later features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the
@@ -88,9 +105,9 @@ docker compose up --build
 ```
 
 The gateway is available at `http://127.0.0.1:3000`. Without overrides,
-[docker-compose.yml](docker-compose.yml) uses a dummy key and `http://host.docker.internal:9/v1` as
-the upstream. Expect readiness failure unless that endpoint actually serves a compatible API;
-starting a container is not proof of LLM availability.
+[docker-compose.yml](docker-compose.yml) mounts the example catalog, uses a dummy key, and uses
+`http://host.docker.internal:9/v1` as the upstream. Expect readiness failure unless that endpoint
+actually serves a compatible API; starting a container is not proof of LLM availability.
 
 For real upstream access, set **both** values so the Compose dummy URL is not retained:
 

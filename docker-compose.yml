@@ -13,5 +13,8 @@ services:
       LOG_VERBOSE_DEBUG: ${LOG_VERBOSE_DEBUG:-false}
       METRICS_ENABLED: "true"
       METRICS_PATH: /metrics
+      OPMUX_CONFIG_FILE: /app/config/opmux.example.json
       OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
       OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:9/v1}
+    volumes:
+      - ./config/opmux.example.json:/app/config/opmux.example.json:ro

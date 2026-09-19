@@ -1,26 +1,15 @@
-//! Centralized Configuration Management
-//!
-//! Provides unified configuration loading from environment variables for all
-//! gateway components. Follows the principle of explicit configuration with
-//! sensible defaults.
-//!
-//! # Usage
-//!
-//! ```rust
-//! use gateway::core::config::get_config;
-//!
-//! let config = get_config();
-//! let addr = config.server.bind_address;
-//! let dev_mode = config.auth.development_mode;
-//! ```
+//! Process-environment settings retained for compatible startup.
 
 use std::env;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
-use super::tracing::{LogFormat, TracingConfig};
+use super::env::EnvSource;
+use super::error::ConfigError;
+use super::limits::{check_bound, parse_u64, SHUTDOWN_TIMEOUT_SECS};
+use crate::core::tracing::{LogFormat, TracingConfig};
 
-/// Global application configuration
+/// Global application configuration loaded from process environment.
 #[derive(Debug, Clone, Default)]
 pub struct Config {
     /// Server configuration
@@ -162,11 +151,9 @@ impl Config {
 
     /// Validate configuration and log startup information
     pub fn validate(&self) {
-        // Log server config
         tracing::info!("Server will bind to: {}", self.server.bind_address);
         tracing::info!("Shutdown timeout: {}s", self.server.shutdown_timeout_secs);
 
-        // Log auth config with security warnings
         if self.auth.development_mode {
             tracing::warn!("🚨 AUTH_DEVELOPMENT_MODE is ENABLED");
             tracing::warn!("🚨 Authentication is BYPASSED for development");
@@ -176,11 +163,9 @@ impl Config {
             tracing::info!("✅ Authentication is ENABLED (production mode)");
         }
 
-        // Log logging config
         tracing::info!("Log level: {}", self.logging.level);
         tracing::info!("JSON format: {}", self.logging.json_format);
 
-        // Log service URLs
         tracing::info!("Router service: {}", self.services.router_url);
         tracing::info!("Memory service: {}", self.services.memory_url);
         tracing::info!("Rewrite service: {}", self.services.rewrite_url);
@@ -210,6 +195,36 @@ impl ServerConfig {
             shutdown_timeout_secs,
         }
     }
+
+    pub(crate) fn try_from_source<E: EnvSource>(env: &E) -> Result<Self, ConfigError> {
+        let host = env
+            .get("SERVER_HOST")
+            .unwrap_or_else(|| "0.0.0.0".to_string());
+        if host.trim().is_empty() {
+            return Err(ConfigError::invalid_bind_address());
+        }
+        let port_raw = env.get("SERVER_PORT").unwrap_or_else(|| "3000".to_string());
+        let port = parse_u64("SERVER_PORT", &port_raw)?;
+        if port > u64::from(u16::MAX) {
+            return Err(ConfigError::invalid_bind_address());
+        }
+        let bind_address = format!("{host}:{port}")
+            .parse()
+            .map_err(|_| ConfigError::invalid_bind_address())?;
+
+        let shutdown_timeout_secs = match env.get("SERVER_SHUTDOWN_TIMEOUT") {
+            Some(raw) => {
+                let value = parse_u64("SERVER_SHUTDOWN_TIMEOUT", &raw)?;
+                check_bound(SHUTDOWN_TIMEOUT_SECS, value)?
+            }
+            None => SHUTDOWN_TIMEOUT_SECS.default,
+        };
+
+        Ok(Self {
+            bind_address,
+            shutdown_timeout_secs,
+        })
+    }
 }
 
 impl AuthConfig {
@@ -225,6 +240,29 @@ impl AuthConfig {
         let slow_operation_threshold_ms = env::var("AUTH_SLOW_THRESHOLD_MS")
             .unwrap_or_else(|_| "10".to_string())
             .parse::<u64>()
+            .unwrap_or(10);
+
+        Self {
+            development_mode,
+            dev_client_id,
+            slow_operation_threshold_ms,
+        }
+    }
+
+    pub(crate) fn from_source<E: EnvSource>(env: &E) -> Self {
+        let development_mode = env
+            .get("AUTH_DEVELOPMENT_MODE")
+            .unwrap_or_else(|| "false".to_string())
+            .parse::<bool>()
+            .unwrap_or(false);
+
+        let dev_client_id = env
+            .get("AUTH_DEV_CLIENT_ID")
+            .unwrap_or_else(|| "dev-client-123".to_string());
+
+        let slow_operation_threshold_ms = env
+            .get("AUTH_SLOW_THRESHOLD_MS")
+            .and_then(|value| value.parse().ok())
             .unwrap_or(10);
 
         Self {
