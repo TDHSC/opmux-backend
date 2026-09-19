@@ -1,4 +1,4 @@
-# Rust Documentation Guide
+# Rust Documentation Rules
 
 ## Core Principles
 
@@ -18,15 +18,14 @@
 //!
 //! # Architecture
 //!
-//! - **Layer 1** - Purpose and responsibility
-//! - **Layer 2** - Purpose and responsibility
-//! - **Layer 3** - Purpose and responsibility
+//! - **Handler** - Purpose and responsibility
+//! - **Service** - Purpose and responsibility
+//! - **Repository** - Purpose and responsibility
 //!
 //! # Usage
 //!
 //! ```bash
-//! # Simple usage example
-//! curl -X POST http://localhost:3000/endpoint
+//! curl -X POST http://localhost:3000/api/v1/route
 //! ```
 
 /// Brief description of submodule purpose.
@@ -54,7 +53,6 @@ pub struct ServiceName {
 /// # Flow (for complex functions)
 /// 1. Step one description
 /// 2. Step two description
-/// 3. Step three description
 ///
 /// # Parameters
 /// - `param1` - Purpose and what it represents
@@ -81,26 +79,15 @@ pub enum FeatureError {
     #[error("Error message")]
     ErrorVariant,
 }
-
-impl IntoResponse for FeatureError {
-    /// Converts errors into HTTP JSON responses with appropriate status codes.
-    fn into_response(self) -> Response {
 ```
 
-## Documentation Sections
+## Sections
 
-### Required Sections
+Required: brief description; `# Parameters` for functions with inputs; `# Returns` for functions
+with outputs.
 
-- **Brief description** - One line explaining purpose
-- **Parameters** - For functions with inputs
-- **Returns** - For functions with outputs
-
-### Optional Sections (use when helpful)
-
-- **Flow** - For complex multi-step processes
-- **Errors** - For functions that can fail
-- **Examples** - For complex usage patterns
-- **Future** - For planned enhancements
+Optional (use when helpful): `# Flow` for multi-step processes, `# Errors`, `# Examples`,
+`# Future`.
 
 ## Writing Style
 
@@ -115,29 +102,29 @@ impl IntoResponse for FeatureError {
 
 ### Don't ❌
 
-- Use unnecessary words ("This function", "This method")
-- Repeat information from function signature
+- Use filler ("This function", "This method")
+- Repeat information from the function signature
 - Write long paragraphs
 - Include implementation details
 - Use technical jargon without explanation
 
-## Examples
+## Example
 
-### Good Documentation ✅
+### Good ✅
 
 ```rust
-/// Processes AI routing request through the complete AI pipeline.
+/// Processes an AI routing request through the complete pipeline.
 ///
 /// # Flow
-/// 1. Retrieves conversation context from Memory Service
-/// 2. Processes prompt (applies rewrite if requested)
-/// 3. Routes to AI services via Router Service
-/// 4. Updates conversation context with new exchange
+/// 1. Retrieves conversation context
+/// 2. Optimizes the prompt (applies rewrite if requested)
+/// 3. Executes the LLM call via `ExecutorService`
+/// 4. Updates conversation context with the new exchange
 ///
 /// # Parameters
 /// - `request` - AI routing request with prompt and metadata
 /// - `user_id` - User identifier for context management
-/// - `request_context` - Request context with correlation IDs for gRPC calls
+/// - `request_context` - Correlation IDs for downstream calls
 ///
 /// # Returns
 /// Complete AI response with metadata (cost, model, processing time)
@@ -149,7 +136,7 @@ pub async fn process_request(
 ) -> Result<IngressResponse, IngressError>
 ```
 
-### Poor Documentation ❌
+### Poor ❌
 
 ```rust
 /// This function processes a request
@@ -157,12 +144,7 @@ pub async fn process_request(
 /// This method takes an IngressRequest and a String representing the user ID,
 /// then it goes through several steps to process the request by calling various
 /// services and then returns an IngressResponse or an error if something goes wrong
-pub async fn process_request(
-    &self,
-    request: IngressRequest,
-    user_id: String,
-    request_context: &RequestContext,
-) -> Result<IngressResponse, IngressError>
+pub async fn process_request(/* ... */)
 ```
 
 ## Quick Checklist
@@ -173,6 +155,5 @@ pub async fn process_request(
 - [ ] Complex logic broken into numbered steps
 - [ ] Business context included
 - [ ] HTTP status codes noted for errors
-- [ ] Future plans mentioned if relevant
 - [ ] No unnecessary verbosity
 - [ ] Consistent with existing documentation
