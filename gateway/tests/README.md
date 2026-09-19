@@ -1,6 +1,7 @@
 # Integration Tests
 
-This directory contains integration tests for the Gateway service that make real API calls to external services.
+This directory contains integration tests for the Gateway service that make real API calls to
+external services.
 
 ## Additional Task 13 Artifacts
 
@@ -13,7 +14,8 @@ This directory contains integration tests for the Gateway service that make real
 
 ### Overview
 
-The `executor_integration_test.rs` file contains integration tests for the Executor Layer that make real API calls to OpenAI (or OpenAI-compatible endpoints).
+The `executor_integration_test.rs` file contains integration tests for the Executor Layer that make
+real API calls to OpenAI (or OpenAI-compatible endpoints).
 
 ### Test Coverage
 
@@ -108,12 +110,12 @@ test result: ok. 6 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out
 
 #### Environment Variables
 
-| Variable            | Required | Default                          | Description                      |
-| ------------------- | -------- | -------------------------------- | -------------------------------- |
-| `OPENAI_API_KEY`    | Yes      | -                                | OpenAI API key or compatible key |
-| `OPENAI_BASE_URL`   | No       | `https://api.openai.com/v1`      | API endpoint URL                 |
-| `OPENAI_TIMEOUT_MS` | No       | `30000`                          | Request timeout in milliseconds  |
-| `EXECUTOR_MAX_RETRIES` | No    | `3`                              | Maximum retry attempts           |
+| Variable               | Required | Default                     | Description                      |
+| ---------------------- | -------- | --------------------------- | -------------------------------- |
+| `OPENAI_API_KEY`       | Yes      | -                           | OpenAI API key or compatible key |
+| `OPENAI_BASE_URL`      | No       | `https://api.openai.com/v1` | API endpoint URL                 |
+| `OPENAI_TIMEOUT_MS`    | No       | `30000`                     | Request timeout in milliseconds  |
+| `EXECUTOR_MAX_RETRIES` | No       | `3`                         | Maximum retry attempts           |
 
 #### Supported Base URLs
 
@@ -160,7 +162,8 @@ Each test run makes approximately 6 API calls with the following characteristics
 ❌ API call failed: NetworkError("Connection failed")
 ```
 
-**Solution**: 
+**Solution**:
+
 1. Check your internet connection
 2. Verify the `OPENAI_BASE_URL` is correct
 3. Check if the API endpoint is accessible
@@ -171,7 +174,8 @@ Each test run makes approximately 6 API calls with the following characteristics
 ❌ API call failed: UnsupportedModel("openai", "gpt-5")
 ```
 
-**Solution**: The model is not in the supported models list. Check `gateway/src/features/executor/config.rs` for supported models.
+**Solution**: The model is not in the supported models list. Check
+`gateway/src/features/executor/config.rs` for supported models.
 
 ### Adding New Tests
 

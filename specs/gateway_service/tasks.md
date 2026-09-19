@@ -13,7 +13,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 1: Minimal Working Gateway
 
 - [x] 1. Minimal Project Setup
-
   - Create basic Cargo.toml with essential dependencies only
   - Create src/main.rs with minimal "Hello World" server
   - Create src/lib.rs with basic module structure
@@ -21,7 +20,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - _Requirement: Foundation for all other requirements_
 
 - [x] 2. Basic Health Check Endpoint (First Working Feature)
-
   - Implement simple /health endpoint that returns 200 OK
   - Create minimal Axum server setup in main.rs
   - Add basic error handling as needed for this endpoint
@@ -38,7 +36,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 2: Authentication Integration
 
 - [x] 4. Unified Authentication for Ingress Endpoint (Phase 1: API Key Focus)
-
   - ✅ Implemented unified authentication middleware (Axum middleware)
   - ✅ Added API Key authentication via X-API-Key for B2B clients
   - ✅ Created client context extraction from API key validation
@@ -58,7 +55,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 2.5: Authentication System Expansion (Future)
 
 - [ ] 5.1 JWT Authentication for Dashboard (Deferred until pre-launch)
-
   - Extend unified middleware to support JWT validation
   - Implement Supabase public key fetching and caching
   - Add dashboard user context extraction from JWT claims
@@ -75,7 +71,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 2.7: gRPC Contract Design and Simplification
 
 - [x] 5.5 Design and Simplify gRPC Contracts
-
   - ✅ Designed complete gRPC contract for all microservices (RouterService, MemoryService,
     RewriteService, ValidationService)
   - ✅ Simplified RouterService contract for MVP (removed 7 unnecessary fields)
@@ -92,7 +87,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 3: Service Integration
 
 - [ ] 6. Memory Service Integration (Deferred until post-MVP)
-
   - Add gRPC client for Memory Service to ingress flow
   - Implement context retrieval before processing requests
   - Add service configuration and connection management
@@ -100,7 +94,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - _Requirement: Requirement 2 - Microservice Coordination_
 
 - [x] 7. Router Service Integration (Repository Layer - Mock Implementation)
-
   - ✅ Aligned repository structures with simplified gRPC contract
   - ✅ Added RoutePlan, RouterServiceResponse, LLMExecutionResult structures
   - ✅ Implemented optimize_route() method (mock - returns routing strategy)
@@ -113,7 +106,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - _Status: Mock implementation complete, ready for gRPC client integration_
 
 - [ ] 8. Rewrite Service Integration (Deferred to Future)
-
   - ✅ Added TODO comments and placeholder for future integration
   - ✅ Documented integration point in service layer (Step 2.5)
   - ✅ Added commented rewrite_request() method signature in repository
@@ -126,7 +118,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 3.5: Executor Layer Implementation
 
 - [x] 8.5 Executor Layer Foundation (Configuration System)
-
   - ✅ Created executor module structure (config, error, models, service, vendors)
   - ✅ Implemented ModelPricing and OpenAIConfig for vendor configuration
   - ✅ Added environment variable support (OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_TIMEOUT_MS)
@@ -143,7 +134,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - _Status: Configuration system complete, vendor implementation ready for testing_
 
 - [x] 8.6 Executor Layer Service Integration
-
   - Implement ExecutorService orchestration layer with retry and fallback logic
   - _Requirement: Requirement 2 - Microservice Coordination (Executor Layer)_
   - _Status: ✅ Completed - All 10 subtasks finished_
@@ -151,9 +141,7 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - _Integration Tests: 6 tests passing with real OpenAI API_
 
   **Subtasks:**
-
   - [x] 8.6.1 Modify ExecutorService Core Structure
-
     - **Modify** existing struct (not rewrite): Add `vendors` and `config` fields
     - Replace `new()` with `from_config()` method for auto-initialization
     - Add `vendor_count()` helper method
@@ -162,7 +150,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commit 7f5205d)_
 
   - [x] 8.6.2 Implement Parameter Extraction
-
     - Create `extract_params()` method
     - Extract messages (required field)
     - Extract optional parameters (temperature, max_tokens, top_p, stream)
@@ -170,14 +157,12 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commit 74afb3c) - 6 unit tests added_
 
   - [x] 8.6.3 Implement Vendor Selection
-
     - Create `get_vendor()` method
     - Lookup vendor by vendor_id
     - Return appropriate error if vendor not found
     - _Status: ✅ Completed (commit 263c334) - 4 unit tests added_
 
   - [x] 8.6.4 Implement Retry Logic
-
     - Create `execute_with_retry()` method
     - Implement exponential backoff (1s, 2s, 4s, 8s, ...)
     - Create `is_retryable_error()` helper
@@ -186,7 +171,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commit 2b9e71d) - 8 unit tests added_
 
   - [x] 8.6.5 Implement Fallback Execution
-
     - Create `execute_fallbacks()` method
     - Sequential fallback execution
     - Each fallback gets full retry logic
@@ -195,7 +179,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commit 7c7d4b9) - 1 async unit test added_
 
   - [x] 8.6.6 Implement Main Execute Method
-
     - Create `execute()` method
     - Extract parameters once
     - Try primary plan with retry
@@ -204,7 +187,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commit c3e7646) - Integration complete_
 
   - [x] 8.6.7 Integrate with IngressRepository
-
     - Update IngressError to wrap ExecutorError (use `#[from]` attribute)
     - Update IngressRepository to accept ExecutorService dependency
     - Replace mock `execute_llm_call()` with real ExecutorService call
@@ -213,7 +195,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed - Integration complete_
 
   - [x] 8.6.8 Initialize in main.rs
-
     - Load ExecutorConfig from environment
     - Create ExecutorService instance
     - Pass ExecutorService to IngressRepository via AppState
@@ -224,7 +205,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Status: ✅ Completed (commits 1ba5aa6, ee3b022, 8910ebd)_
 
   - [x] 8.6.9 Add Unit Tests
-
     - Test vendor selection logic (4 tests in repository_tests.rs)
     - Test parameter extraction (3 tests in service_tests.rs)
     - Test error classification (8 tests: 4 retryable + 4 non-retryable)
@@ -244,7 +224,6 @@ Based on the complete system design (requirements.md + design.md), this implemen
     - _Test Results: 6 passed, estimated cost < $0.001 per run_
 
 - [ ] 8.7 Additional Vendor Support (Future)
-
   - Implement AnthropicVendor (Claude models)
   - Implement CohereVendor (Command models)
   - Add vendor-specific error handling
@@ -262,22 +241,22 @@ Based on the complete system design (requirements.md + design.md), this implemen
 ## Iteration 4: Production Readiness
 
 - [x] 10. Enhanced Observability
-
   - Add structured logging with correlation IDs to existing endpoints
   - Implement Prometheus metrics collection
   - Add distributed tracing for service calls
   - Enhance health check with dependency status
   - _Requirement: Requirement 5 - Monitoring and Observability_
+
 - _Status: ✅ Completed_
 
 - [x] 11. Error Handling and Resilience
-
   - Implement circuit breaker patterns for service calls
   - Add comprehensive error handling and recovery
   - Implement graceful degradation strategies
   - Add proper error logging and monitoring
   - _Requirement: Requirement 6 - Error Handling and Recovery_
-  - _Status: ✅ Completed (circuit breaker + graceful fallback/degradation + structured error telemetry/monitoring)_
+  - _Status: ✅ Completed (circuit breaker + graceful fallback/degradation + structured error
+    telemetry/monitoring)_
 
 - [x] 12. Performance Optimization
   - Add connection pooling for gRPC clients
@@ -285,18 +264,19 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - Optimize request processing pipeline
   - Add performance monitoring and alerting
   - _Requirement: Requirement 7 - Performance and Scalability_
-  - _Status: ✅ Completed (ingress context cache with TTL/eviction/invalidation, env-tunable slow-request threshold, and pipeline verification)_
+  - _Status: ✅ Completed (ingress context cache with TTL/eviction/invalidation, env-tunable
+    slow-request threshold, and pipeline verification)_
 
 ## Iteration 5: Testing and Documentation
 
 - [x] 13. Testing Suite
-
   - Add unit tests for implemented functionality
   - Create integration tests for end-to-end flows
   - Add performance and load testing
   - Implement mocking for external services
   - _Requirement: All requirements validation_
-  - _Status: ✅ Completed (unit/integration coverage extended, resilience E2E flow test added, load-test script+guide added, external-service mocking retained in feature test suites)_
+  - _Status: ✅ Completed (unit/integration coverage extended, resilience E2E flow test added,
+    load-test script+guide added, external-service mocking retained in feature test suites)_
 
 - [x] 14. Documentation and Deployment
   - Create API documentation for implemented endpoints
@@ -304,7 +284,8 @@ Based on the complete system design (requirements.md + design.md), this implemen
   - Create operational runbooks and monitoring guides
   - Document configuration and troubleshooting
   - _Requirement: All requirements documentation_
-  - _Status: ✅ Completed (API reference, Docker artifacts, operations runbook, monitoring/config troubleshooting docs added)_
+  - _Status: ✅ Completed (API reference, Docker artifacts, operations runbook, monitoring/config
+    troubleshooting docs added)_
 
 ## Incremental Development Principles
 

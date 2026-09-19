@@ -60,17 +60,13 @@ should provide sufficient "context" and "observability" information beyond compl
   calls fail? What data do I need for performance monitoring?
 
 - **Applied to Opmux**:
-
   - **Troubleshooting**: "How do I correlate Gateway logs with RouterService logs?"
-
     - → Need to return a `trace_id` in the response.
 
   - **Handling failures**: "The call failed, should I retry?"
-
     - → Need to include a `retryable` boolean in error information.
 
   - **Performance monitoring**: "How long did this call take?"
-
     - → Need to return `duration_ms` in the response.
 
   - **Unified standards**: "Does every service return this information? Is the format the same?"
@@ -89,7 +85,6 @@ evolution.
   What's the worst thing that could happen requiring large-scale refactoring?
 
 - **Applied to Opmux**:
-
   - **Your worst fear**: "The PM says: 'We're launching user history!' This means RouterService
     needs context now. Then you discover you must modify all service .proto files, create a v2
     version, and spend months migrating all callers from v1 to v2."

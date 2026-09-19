@@ -8,6 +8,7 @@ use gateway::{
     core::{
         config::get_config,
         metrics::{create_metrics, MetricsConfig},
+        tracing::{init_tracing, TracingConfig},
     },
     features::{
         executor::config::ExecutorConfig, executor::service::ExecutorService, health,
@@ -21,7 +22,8 @@ use std::sync::Arc;
 #[tokio::main]
 async fn main() {
     // Initialize tracing for structured logging
-    tracing_subscriber::fmt::init();
+    init_tracing(TracingConfig::from_env());
+    tracing::info!(version = env!("CARGO_PKG_VERSION"), "Starting gateway");
 
     // Initialize configuration (logs all settings including warnings)
     let config = get_config();
@@ -86,17 +88,8 @@ async fn main() {
         .route("/ready", get(health::ready_handler))
         .with_state(app_state.clone());
 
-    // Combine routes and apply middleware stack
-    // Middleware is applied in reverse order (bottom to top):
-    // 1. Correlation ID (first) - generates request_id
-    // 2. Metrics (second) - records HTTP metrics
-    // 3. Auth (third, only for protected routes) - validates authentication
-    let mut app = Router::new()
-        .merge(protected_routes)
-        .merge(public_routes)
-        .layer(middleware::from_fn(
-            correlation_id::correlation_id_middleware,
-        ));
+    // Register all routes before applying the outer correlation ID layer.
+    let mut app = Router::new().merge(protected_routes).merge(public_routes);
 
     // Add metrics layer if enabled
     if let Some((metric_layer, prometheus_handle)) = metrics_setup {
@@ -112,6 +105,14 @@ async fn main() {
             .layer(metric_layer);
     }
 
+    // Middleware runs from the last layer added to the first:
+    // 1. Correlation ID - generates request_id for every route, including metrics
+    // 2. Metrics (when enabled) - records HTTP metrics, including auth failures
+    // 3. Auth (protected routes only) - validates authentication
+    let app = app.layer(middleware::from_fn(
+        correlation_id::correlation_id_middleware,
+    ));
+
     // Start the server
     let listener = tokio::net::TcpListener::bind(config.server.bind_address)
         .await
@@ -125,6 +126,10 @@ async fn main() {
     tracing::info!("📍 Available endpoints:");
     tracing::info!(
         "   - Health check: http://{}/health",
+        config.server.bind_address
+    );
+    tracing::info!(
+        "   - Readiness check: http://{}/ready",
         config.server.bind_address
     );
     tracing::info!(
@@ -146,9 +151,7 @@ async fn main() {
         tracing::info!("🚨 Development mode: Authentication is BYPASSED");
         tracing::info!("🚨 No API key required for testing");
     } else {
-        tracing::info!(
-            "🔒 Authentication required: X-API-Key header with value 'test-api-key-123'"
-        );
+        tracing::info!("🔒 Authentication required: X-API-Key header");
     }
 
     axum::serve(listener, app).await.unwrap();

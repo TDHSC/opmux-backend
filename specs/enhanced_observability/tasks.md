@@ -2,7 +2,8 @@
 
 ## Overview
 
-This implementation plan follows the **business-logic-first development principles** for adding enhanced observability features to the Gateway Service.
+This implementation plan follows the **business-logic-first development principles** for adding
+enhanced observability features to the Gateway Service.
 
 **Related Requirement**: Requirement 5 - Monitoring and Observability
 
@@ -95,13 +96,15 @@ This implementation plan follows the **business-logic-first development principl
 
 **Objective**: Instrument all feature layers with tracing spans
 
-**Implementation Note**: Uses **Hybrid Approach** - Explicit RequestContext parameter passing for business logic (gRPC calls) + Automatic tracing span inheritance for logging.
+**Implementation Note**: Uses **Hybrid Approach** - Explicit RequestContext parameter passing for
+business logic (gRPC calls) + Automatic tracing span inheritance for logging.
 
 **Subtasks**:
 
 - [x] 10.3.1 Add Tracing to Ingress Handler (Root Span) ✅
   - Add `#[tracing::instrument]` to `ingress_handler` function
-  - Include `request_id`, `client_correlation_id`, `user_id`, `endpoint`, `prompt_length` in span fields (ROOT SPAN ONLY)
+  - Include `request_id`, `client_correlation_id`, `user_id`, `endpoint`, `prompt_length` in span
+    fields (ROOT SPAN ONLY)
   - Skip sensitive fields (request body)
   - Add info logs for request start and completion
   - **Important**: This is the ONLY place to add request_id to span fields
@@ -155,6 +158,7 @@ This implementation plan follows the **business-logic-first development principl
 **Objective**: Add Prometheus metrics collection using axum-prometheus
 
 **Implementation Notes**:
+
 - Integrated Prometheus metrics using `axum-prometheus` crate
 - Middleware order: Correlation ID → Metrics → Auth
 - Metrics endpoint: `/metrics` (configurable via `METRICS_PATH`)
@@ -196,20 +200,24 @@ This implementation plan follows the **business-logic-first development principl
   - _Requirement: Requirement 5 - Monitoring and Observability_
 
 **Metrics Collected**:
+
 - `gateway_http_requests_total{method, status, endpoint}` - Total HTTP requests (counter)
 - `gateway_http_requests_pending{method, endpoint}` - In-flight requests (gauge)
 - `gateway_http_requests_duration_seconds{method, status, endpoint}` - Request duration (histogram)
 
 **Additional Improvements**:
+
 - Enhanced startup logs with emoji indicators (🚀, 📍, 🚨, 🔒)
 - Formatted endpoint list for better readability
 - Added metrics endpoint to startup log output
 
 ### Task 10.5: Enhance Health Check Endpoints ✅ COMPLETED
 
-**Objective**: Enhance `/health` endpoint and create new `/ready` endpoint with real vendor health checks
+**Objective**: Enhance `/health` endpoint and create new `/ready` endpoint with real vendor health
+checks
 
 **Implementation Notes**:
+
 - Implemented **Plan B: Real Health Checks** - actual vendor connectivity verification
 - Added `LLMVendor::health_check()` trait method for vendor health verification
 - Implemented OpenAI vendor health check (calls GET /models endpoint)
@@ -468,7 +476,7 @@ HEALTH_CHECK_CACHE_TTL_SECS=5
 ## Task Dependencies
 
 ```
-10.1 (Dependencies & Core) 
+10.1 (Dependencies & Core)
   ↓
 10.2 (Correlation Middleware) ──┐
   ↓                              │
@@ -522,9 +530,11 @@ HEALTH_CHECK_CACHE_TTL_SECS=5
   - `./scripts/check-security.sh`
 - Manual E2E smoke test completed with live server run:
   - `/health` returned `200 OK`
-  - `/ready` returned `503 Service Unavailable` with unhealthy dependency details under dummy vendor credentials
+  - `/ready` returned `503 Service Unavailable` with unhealthy dependency details under dummy vendor
+    credentials
   - `/metrics` returned Prometheus metrics payload
-- `/api/v1/route` returned `500 Internal Server Error` with `execution_failed` under dummy upstream config and preserved `X-Correlation-ID`
+- `/api/v1/route` returned `500 Internal Server Error` with `execution_failed` under dummy upstream
+  config and preserved `X-Correlation-ID`
 - Task status reconciled:
   - Gateway Task 10 marked complete in `specs/gateway_service/tasks.md`
 - Documentation and integration artifacts for 10.8/10.9 are implemented in this milestone
@@ -532,22 +542,26 @@ HEALTH_CHECK_CACHE_TTL_SECS=5
 ## Incremental Development Approach
 
 ### Iteration 1: Core Infrastructure (Day 1)
+
 - Complete Task 10.1 (Dependencies & Core)
 - Complete Task 10.2 (Correlation Middleware)
 - Verify correlation IDs work end-to-end
 
 ### Iteration 2: Tracing & Metrics (Day 2)
+
 - Complete Task 10.3 (Tracing Spans)
 - Complete Task 10.4 (Prometheus Metrics)
 - Verify logs and metrics are collected
 
 ### Iteration 3: Health Checks & Integration (Day 3)
+
 - Complete Task 10.5 (Health Checks)
 - Complete Task 10.6 (Main Integration)
 - Complete Task 10.7 (Configuration)
 - Complete Task 10.8 (Integration Tests)
 
 ### Iteration 4: Documentation & Verification (Day 3)
+
 - Complete Task 10.9 (Documentation)
 - Complete Task 10.10 (Verification)
 - Final testing and cleanup

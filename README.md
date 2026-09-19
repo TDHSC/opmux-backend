@@ -77,6 +77,10 @@ Copying [.env.example](.env.example) to `.env` alone will not configure `cargo r
 needed variables or explicitly load them with your local tooling. The template includes
 planned-service settings, so its presence is not evidence that those integrations are implemented.
 
+Logging defaults to JSON at `info` level. Set `LOG_FORMAT=pretty` for readable local logs and
+`RUST_LOG=gateway=debug` for more detail. `RUST_LOG` overrides legacy `LOG_LEVEL`; `LOG_FORMAT`
+overrides legacy `LOG_JSON`. Set `LOG_VERBOSE_DEBUG=true` to include line numbers and thread IDs.
+
 ### Docker Compose
 
 ```bash
@@ -115,6 +119,20 @@ env -u OPENAI_API_KEY cargo test
   upstream compatibility.
 - `gateway/tests/observability_integration_test.rs` uses dummy configuration and a local unavailable
   upstream to exercise HTTP behavior and failure scenarios. It does not depend on that skip guard.
+- `gateway/tests/startup_integration_test.rs` launches the binary without vendor keys to verify
+  logging defaults, environment-variable precedence, and the expected startup failure.
+
+To run the same local-only binary smoke check used by the security workflow:
+
+```bash
+cargo build -p gateway
+bash scripts/check-startup.sh "$PWD/target/debug/gateway"
+```
+
+The check binds to `127.0.0.1:3000` (override with `STARTUP_CHECK_PORT`), uses dummy credentials and
+an unavailable local upstream, and cleans up its process and temporary logs. It checks liveness,
+readiness failure, authentication, metrics, and correlation headers. Without a binary argument it
+uses `target/release/gateway`.
 
 To intentionally run the real-provider suite after configuring credentials:
 
@@ -137,8 +155,10 @@ small Markdown change, prefer targeting the changed files, for example
 `npx prettier --write README.md AGENTS.md`.
 
 [CI](.github/workflows/ci.yml) configures tests on stable, beta, and nightly Rust, formatting
-checks, strict Clippy, dependency auditing with `cargo audit`, and a release build. It does not
-currently configure a code-coverage job.
+checks, strict Clippy, dependency auditing with `cargo audit`, and a release build uploaded from
+`target/release/gateway`. CI explicitly removes `OPENAI_API_KEY` for routine tests; dummy vendor
+configuration is scoped to the separate startup check. It does not currently configure a
+code-coverage job.
 
 ## Project Structure
 

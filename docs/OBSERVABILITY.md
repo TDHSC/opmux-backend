@@ -1,6 +1,7 @@
 # Observability Guide
 
-This service provides correlation IDs, structured logs, health/readiness checks, and Prometheus metrics.
+This service provides correlation IDs, structured logs, health/readiness checks, and Prometheus
+metrics.
 
 ## Correlation IDs
 
@@ -10,9 +11,13 @@ This service provides correlation IDs, structured logs, health/readiness checks,
 
 ## Logging
 
-- Configure level with `LOG_LEVEL`.
-- Enable structured JSON with `LOG_JSON=true`.
-- `RUST_LOG` can be used to tune module-level filters.
+- `RUST_LOG` controls filtering, including module-level filters (default `info`).
+- `LOG_FORMAT=json` enables structured JSON (the default); use `pretty` for local readability.
+- `LOG_VERBOSE_DEBUG=true` adds source line numbers and thread IDs.
+- Legacy `LOG_LEVEL` and `LOG_JSON` remain fallbacks. `RUST_LOG` takes precedence over `LOG_LEVEL`;
+  `LOG_FORMAT` takes precedence over `LOG_JSON`. With only `LOG_JSON` set, `true` selects JSON and
+  `false` selects pretty output.
+- The startup configuration summary reports the effective logging settings.
 
 ## Endpoints
 

@@ -8,8 +8,9 @@ services:
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 3000
-      LOG_LEVEL: info
-      LOG_JSON: "false"
+      RUST_LOG: ${RUST_LOG:-info}
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      LOG_VERBOSE_DEBUG: ${LOG_VERBOSE_DEBUG:-false}
       METRICS_ENABLED: "true"
       METRICS_PATH: /metrics
       OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}

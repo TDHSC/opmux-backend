@@ -58,10 +58,7 @@ fn build_test_app(
         .route("/ready", get(health::ready_handler))
         .with_state(app_state);
 
-    let mut app = Router::new()
-        .merge(protected_routes)
-        .merge(public_routes)
-        .layer(middleware::from_fn(correlation_id_middleware));
+    let mut app = Router::new().merge(protected_routes).merge(public_routes);
 
     if include_metrics {
         let metrics_config = MetricsConfig::production();
@@ -75,7 +72,7 @@ fn build_test_app(
         }
     }
 
-    app
+    app.layer(middleware::from_fn(correlation_id_middleware))
 }
 
 #[tokio::test]
@@ -112,16 +109,39 @@ async fn test_metrics_endpoint_accessibility() {
 
     let metrics_request = Request::builder()
         .uri("/metrics")
+        .header("X-Correlation-ID", "metrics-corr-123")
         .body(Body::empty())
         .unwrap();
-    let response = app.oneshot(metrics_request).await.unwrap();
+    let response = app.clone().oneshot(metrics_request).await.unwrap();
 
     assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().contains_key("X-Request-ID"));
+    assert_eq!(
+        response.headers().get("X-Correlation-ID").unwrap(),
+        "metrics-corr-123"
+    );
     let body = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
     assert!(body_str.contains("gateway_http_requests_total"));
+    // Reuse the app because the metrics recorder can only be initialized once.
+    let request = Request::builder()
+        .method("POST")
+        .uri("/api/v1/route")
+        .header("X-Correlation-ID", "auth-corr-123")
+        .header("Content-Type", "application/json")
+        .body(Body::from(r#"{"prompt":"hello","metadata":{}}"#))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    assert!(response.headers().contains_key("X-Request-ID"));
+    assert_eq!(
+        response.headers().get("X-Correlation-ID").unwrap(),
+        "auth-corr-123"
+    );
 }
 
 #[tokio::test]

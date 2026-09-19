@@ -2,7 +2,9 @@
 
 ## Overview
 
-This design document describes the implementation of enhanced observability features for the Gateway Service, including structured logging with correlation IDs, Prometheus metrics collection, and enhanced health check endpoints.
+This design document describes the implementation of enhanced observability features for the Gateway
+Service, including structured logging with correlation IDs, Prometheus metrics collection, and
+enhanced health check endpoints.
 
 **Related Requirement**: Requirement 5 - Monitoring and Observability
 
@@ -10,7 +12,8 @@ This design document describes the implementation of enhanced observability feat
 
 ## Architecture Overview
 
-Enhanced observability is implemented as a **cross-cutting concern** using the middleware pattern, following the 3-layer architecture principles while providing observability across all layers.
+Enhanced observability is implemented as a **cross-cutting concern** using the middleware pattern,
+following the 3-layer architecture principles while providing observability across all layers.
 
 ```mermaid
 graph TB
@@ -19,17 +22,17 @@ graph TB
     Metrics --> Tracing[Tracing Middleware]
     Tracing --> Auth[Auth Middleware]
     Auth --> Handler[Feature Handlers]
-    
+
     Handler --> Service[Service Layer]
     Service --> Repository[Repository Layer]
-    
+
     Repository --> Spans[Tracing Spans]
     Service --> Spans
     Handler --> Spans
-    
+
     Spans --> Logs[Structured Logs]
     Metrics --> Prometheus[Prometheus /metrics]
-    
+
     subgraph "Observability Stack"
         CorrID
         Metrics
@@ -38,7 +41,7 @@ graph TB
         Logs
         Prometheus
     end
-    
+
     subgraph "Business Logic"
         Handler
         Service
@@ -50,13 +53,13 @@ graph TB
 
 ### Core Dependencies
 
-| Component | Library | Version | Purpose |
-|-----------|---------|---------|---------|
-| Structured Logging | `tracing` | 0.1 | ✅ Already included |
-| Log Formatting | `tracing-subscriber` | 0.1 | ✅ Already included |
-| HTTP Tracing | `tower-http` | 0.5 | 🆕 Request tracing middleware |
-| Correlation ID | `uuid` | 1.0 | 🆕 Request ID generation |
-| Metrics | `axum-prometheus` | 0.7 | 🆕 Prometheus metrics collection |
+| Component          | Library              | Version | Purpose                          |
+| ------------------ | -------------------- | ------- | -------------------------------- |
+| Structured Logging | `tracing`            | 0.1     | ✅ Already included              |
+| Log Formatting     | `tracing-subscriber` | 0.1     | ✅ Already included              |
+| HTTP Tracing       | `tower-http`         | 0.5     | 🆕 Request tracing middleware    |
+| Correlation ID     | `uuid`               | 1.0     | 🆕 Request ID generation         |
+| Metrics            | `axum-prometheus`    | 0.7     | 🆕 Prometheus metrics collection |
 
 ### Why These Libraries?
 
@@ -92,9 +95,11 @@ gateway/src/
 
 #### Dual-ID System
 
-**Core Principle**: System always generates its own Request ID, while preserving client-provided Correlation ID for cross-system tracing.
+**Core Principle**: System always generates its own Request ID, while preserving client-provided
+Correlation ID for cross-system tracing.
 
-**Error Handling Strategy**: Middleware is fail-safe and never blocks requests due to correlation ID issues.
+**Error Handling Strategy**: Middleware is fail-safe and never blocks requests due to correlation ID
+issues.
 
 ```rust
 /// Request context with dual correlation IDs
@@ -102,10 +107,10 @@ gateway/src/
 pub struct RequestContext {
     /// System-generated unique request ID (always present)
     pub request_id: String,
-    
+
     /// Optional client-provided correlation ID for cross-system tracing
     pub client_correlation_id: Option<String>,
-    
+
     /// Timestamp when request was received
     pub timestamp: DateTime<Utc>,
 }
@@ -114,18 +119,20 @@ pub struct RequestContext {
 #### HTTP Header Strategy
 
 **Request Headers** (from client):
+
 - `X-Correlation-ID` (optional) - Client's correlation ID for cross-system tracing
 
 **Response Headers** (to client):
+
 - `X-Request-ID` (always) - System-generated unique request ID
 - `X-Correlation-ID` (if provided) - Echo back client's correlation ID
 
 #### Behavior Matrix
 
-| Client Provides | System Behavior | Response Headers |
-|----------------|-----------------|------------------|
+| Client Provides                       | System Behavior                               | Response Headers                                             |
+| ------------------------------------- | --------------------------------------------- | ------------------------------------------------------------ |
 | ✅ `X-Correlation-ID: client-abc-123` | Generate new Request ID<br>Preserve client ID | `X-Request-ID: <uuid>`<br>`X-Correlation-ID: client-abc-123` |
-| ❌ No header | Generate new Request ID<br>No client ID | `X-Request-ID: <uuid>` |
+| ❌ No header                          | Generate new Request ID<br>No client ID       | `X-Request-ID: <uuid>`                                       |
 
 #### Middleware Error Handling
 
@@ -189,6 +196,7 @@ pub async fn correlation_id_middleware(
 ```
 
 **Error Handling Guarantees**:
+
 - ✅ UUID generation failure → Timestamp fallback
 - ✅ Invalid header encoding → Ignore client ID, use system ID only
 - ✅ Malicious long IDs → Reject and log warning
@@ -198,6 +206,7 @@ pub async fn correlation_id_middleware(
 #### Log Format
 
 **With client correlation ID**:
+
 ```json
 {
   "timestamp": "2024-01-15T10:30:00Z",
@@ -212,6 +221,7 @@ pub async fn correlation_id_middleware(
 ```
 
 **Without client correlation ID**:
+
 ```json
 {
   "timestamp": "2024-01-15T10:30:00Z",
@@ -228,10 +238,13 @@ pub async fn correlation_id_middleware(
 
 #### Accessing RequestContext in Business Logic
 
-**Strategy**: **Hybrid Approach** - Explicit parameter passing for business logic + Automatic tracing span inheritance for logging.
+**Strategy**: **Hybrid Approach** - Explicit parameter passing for business logic + Automatic
+tracing span inheritance for logging.
 
 **Rationale**:
-- ✅ **Explicit Passing**: Required for gRPC RequestMeta construction (request_id, client_id, traceparent, deadline_ms)
+
+- ✅ **Explicit Passing**: Required for gRPC RequestMeta construction (request_id, client_id,
+  traceparent, deadline_ms)
 - ✅ **Span Inheritance**: Automatic propagation for logging and observability
 - ✅ **Type Safety**: Compile-time guarantees for required parameters
 - ✅ **Clear Dependencies**: Explicit function signatures show what each layer needs
@@ -324,11 +337,11 @@ impl IngressRepository {
 
 **Key Principles**:
 
-| Layer | RequestContext Usage | Tracing Span Fields | Rationale |
-|-------|---------------------|---------------------|-----------|
-| **Handler** (Root Span) | ✅ Extract from Extension<br>✅ Add to span fields<br>✅ Pass to Service | `request_id`, `client_correlation_id`, `user_id`, `endpoint` | Root span sets context for all children |
-| **Service** (Child Span) | ✅ Receive as parameter<br>❌ DO NOT add to span fields<br>✅ Pass to Repository | `user_id`, `prompt_length`<br>❌ NO request_id (inherited) | Explicit parameter for business logic<br>Span inheritance for logging |
-| **Repository** (Child Span) | ✅ Receive as parameter<br>❌ DO NOT add to span fields<br>✅ Use for gRPC RequestMeta | `vendor_id`, `model_id`<br>❌ NO request_id (inherited) | Use for gRPC metadata construction<br>Span inheritance for logging |
+| Layer                       | RequestContext Usage                                                                   | Tracing Span Fields                                          | Rationale                                                             |
+| --------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------------------ | --------------------------------------------------------------------- |
+| **Handler** (Root Span)     | ✅ Extract from Extension<br>✅ Add to span fields<br>✅ Pass to Service               | `request_id`, `client_correlation_id`, `user_id`, `endpoint` | Root span sets context for all children                               |
+| **Service** (Child Span)    | ✅ Receive as parameter<br>❌ DO NOT add to span fields<br>✅ Pass to Repository       | `user_id`, `prompt_length`<br>❌ NO request_id (inherited)   | Explicit parameter for business logic<br>Span inheritance for logging |
+| **Repository** (Child Span) | ✅ Receive as parameter<br>❌ DO NOT add to span fields<br>✅ Use for gRPC RequestMeta | `vendor_id`, `model_id`<br>❌ NO request_id (inherited)      | Use for gRPC metadata construction<br>Span inheritance for logging    |
 
 **Why This Design?**
 
@@ -403,6 +416,7 @@ pub async fn process_request(
 **Log Output Comparison**:
 
 **✅ Correct (No Duplication)**:
+
 ```json
 {
   "timestamp": "2024-01-15T10:30:00Z",
@@ -415,20 +429,22 @@ pub async fn process_request(
 ```
 
 **❌ Incorrect (With Duplication)**:
+
 ```json
 {
   "timestamp": "2024-01-15T10:30:00Z",
   "level": "INFO",
   "request_id": "550e8400-e29b-41d4-a716-446655440000",
-  "request_id": "550e8400-e29b-41d4-a716-446655440000",  // ❌ Duplicate!
+  "request_id": "550e8400-e29b-41d4-a716-446655440000", // ❌ Duplicate!
   "client_correlation_id": "client-abc-123",
-  "client_correlation_id": "client-abc-123",  // ❌ Duplicate!
+  "client_correlation_id": "client-abc-123", // ❌ Duplicate!
   "span": "ingress_handler",
   "message": "Processing request"
 }
 ```
 
 **Recommendation**:
+
 - Use **Approach A** (automatic) for most logging
   - Add `request_id` to `#[tracing::instrument]` fields **only in Handler layer**
   - Child spans automatically inherit from parent
@@ -452,7 +468,8 @@ Request Span (request_id, client_correlation_id, endpoint, method)
 
 #### Span Instrumentation Pattern
 
-**Rule**: Add `request_id` and `client_correlation_id` **only in the Handler layer (root span)**. All child spans automatically inherit these fields.
+**Rule**: Add `request_id` and `client_correlation_id` **only in the Handler layer (root span)**.
+All child spans automatically inherit these fields.
 
 ```rust
 // Handler Layer - ROOT SPAN (add request_id here)
@@ -535,6 +552,7 @@ Root Span: ingress_handler
 ```
 
 **Key Principles**:
+
 1. ✅ **Root span only**: Add `request_id` and `client_correlation_id` in Handler layer
 2. ✅ **Automatic inheritance**: All child spans inherit from parent
 3. ❌ **No duplication**: Never add `request_id` in Service or Repository layers
@@ -639,6 +657,7 @@ pub fn init_tracing() -> Result<(), Box<dyn std::error::Error>> {
 ```
 
 **Performance Considerations**:
+
 - `with_line_number` and `with_thread_ids` add ~10-20% overhead in production
 - These are disabled by default, enabled only with `LOG_VERBOSE_DEBUG=true`
 - Production should use `LOG_FORMAT=json` and `LOG_VERBOSE_DEBUG=false`
@@ -648,11 +667,13 @@ pub fn init_tracing() -> Result<(), Box<dyn std::error::Error>> {
 #### Automatic HTTP Metrics (via axum-prometheus)
 
 **Metrics automatically collected**:
+
 - `http_requests_total` - Total HTTP requests (counter)
 - `http_requests_duration_seconds` - Request duration histogram
 - `http_requests_pending` - In-flight requests (gauge)
 
 **Labels**:
+
 - `method` - HTTP method (GET, POST, etc.)
 - `endpoint` - Request path
 - `status` - HTTP status code
@@ -668,7 +689,7 @@ pub struct CustomMetrics {
     pub llm_requests_total: IntCounter,
     pub llm_tokens_total: IntCounter,
     pub llm_cost_total: Histogram,
-    
+
     // Executor metrics
     pub executor_retries_total: IntCounter,
     pub executor_fallbacks_total: IntCounter,
@@ -695,6 +716,7 @@ impl CustomMetrics {
 **Purpose**: Check if the application is alive and running
 
 **Response**:
+
 ```json
 {
   "status": "healthy",
@@ -705,6 +727,7 @@ impl CustomMetrics {
 ```
 
 **HTTP Status**:
+
 - `200 OK` - Always (unless server is completely down)
 
 #### `/ready` Endpoint (Readiness Probe)
@@ -714,16 +737,20 @@ impl CustomMetrics {
 **Design Decision**: Hybrid approach with configurable health check mode
 
 **Rationale**:
-- ✅ **Production Readiness**: "Ready" should mean "able to handle requests", not just "configured correctly"
+
+- ✅ **Production Readiness**: "Ready" should mean "able to handle requests", not just "configured
+  correctly"
 - ✅ **Kubernetes Best Practice**: Readiness probe should check actual dependencies
 - ✅ **Fast Failure**: If OpenAI is down, Kubernetes should stop routing traffic
-- ✅ **Flexibility**: Development can use config-only check (fast), production uses connectivity check
+- ✅ **Flexibility**: Development can use config-only check (fast), production uses connectivity
+  check
 
 **Phase 1: Hybrid Approach** (Configurable via Environment Variable)
 
 **Response Format**:
 
 **Mode: `config` (Configuration Check)**:
+
 ```json
 {
   "status": "ready",
@@ -740,6 +767,7 @@ impl CustomMetrics {
 ```
 
 **Mode: `connectivity` (Connectivity Check - Healthy)**:
+
 ```json
 {
   "status": "ready",
@@ -757,6 +785,7 @@ impl CustomMetrics {
 ```
 
 **Mode: `connectivity` (Connectivity Check - Unhealthy)**:
+
 ```json
 {
   "status": "not_ready",
@@ -1054,12 +1083,12 @@ impl OpenAIVendor {
 
 **Configuration Comparison**:
 
-| Environment | `HEALTH_CHECK_MODE` | Check Type | Latency | API Call Frequency | Use Case |
-|-------------|---------------------|------------|---------|-------------------|----------|
-| **Development** | `config` | Configuration only | < 1ms | None | Fast iteration, no external deps |
-| **Production** | `connectivity` | Actual API calls | ~50-100ms | Every 30s (cached) | True readiness check |
-| **Testing** | `config` | Configuration only | < 1ms | None | Fast test execution |
-| **Staging** | `connectivity` | Actual API calls | ~50-100ms | Every 30s (cached) | Production-like testing |
+| Environment     | `HEALTH_CHECK_MODE` | Check Type         | Latency   | API Call Frequency | Use Case                         |
+| --------------- | ------------------- | ------------------ | --------- | ------------------ | -------------------------------- |
+| **Development** | `config`            | Configuration only | < 1ms     | None               | Fast iteration, no external deps |
+| **Production**  | `connectivity`      | Actual API calls   | ~50-100ms | Every 30s (cached) | True readiness check             |
+| **Testing**     | `config`            | Configuration only | < 1ms     | None               | Fast test execution              |
+| **Staging**     | `connectivity`      | Actual API calls   | ~50-100ms | Every 30s (cached) | Production-like testing          |
 
 **Cache Effectiveness**:
 
@@ -1086,60 +1115,61 @@ spec:
   template:
     spec:
       containers:
-      - name: gateway
-        image: gateway:latest
-        env:
-          # Production: Use connectivity check
-          - name: HEALTH_CHECK_MODE
-            value: "connectivity"
-          - name: HEALTH_CHECK_CACHE_TTL
-            value: "30"
-          - name: HEALTH_CHECK_TIMEOUT
-            value: "2"
+        - name: gateway
+          image: gateway:latest
+          env:
+            # Production: Use connectivity check
+            - name: HEALTH_CHECK_MODE
+              value: 'connectivity'
+            - name: HEALTH_CHECK_CACHE_TTL
+              value: '30'
+            - name: HEALTH_CHECK_TIMEOUT
+              value: '2'
 
-        # Liveness probe - check if app is alive
-        livenessProbe:
-          httpGet:
-            path: /health
-            port: 3000
-          initialDelaySeconds: 10
-          periodSeconds: 30
-          timeoutSeconds: 5
-          failureThreshold: 3
+          # Liveness probe - check if app is alive
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 10
+            periodSeconds: 30
+            timeoutSeconds: 5
+            failureThreshold: 3
 
-        # Readiness probe - check if app can serve traffic
-        readinessProbe:
-          httpGet:
-            path: /ready
-            port: 3000
-          initialDelaySeconds: 5
-          periodSeconds: 10        # Check every 10 seconds
-          timeoutSeconds: 3        # 3 second timeout
-          successThreshold: 1      # 1 success = ready
-          failureThreshold: 3      # 3 failures = not ready
+          # Readiness probe - check if app can serve traffic
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10 # Check every 10 seconds
+            timeoutSeconds: 3 # 3 second timeout
+            successThreshold: 1 # 1 success = ready
+            failureThreshold: 3 # 3 failures = not ready
 ```
 
 **Behavior in Production**:
 
-| Scenario | Health Check Result | Kubernetes Action | User Impact |
-|----------|-------------------|-------------------|-------------|
-| **All vendors healthy** | `200 OK` | Route traffic normally | ✅ Requests succeed |
-| **OpenAI API down** | `503 Service Unavailable` | Stop routing to this Pod | ✅ Traffic goes to healthy Pods |
-| **Network timeout** | `503 Service Unavailable` | Stop routing to this Pod | ✅ Fast failure, no user impact |
-| **Config error (no vendors)** | `503 Service Unavailable` | Stop routing to this Pod | ✅ Prevents misconfigured Pods |
+| Scenario                      | Health Check Result       | Kubernetes Action        | User Impact                     |
+| ----------------------------- | ------------------------- | ------------------------ | ------------------------------- |
+| **All vendors healthy**       | `200 OK`                  | Route traffic normally   | ✅ Requests succeed             |
+| **OpenAI API down**           | `503 Service Unavailable` | Stop routing to this Pod | ✅ Traffic goes to healthy Pods |
+| **Network timeout**           | `503 Service Unavailable` | Stop routing to this Pod | ✅ Fast failure, no user impact |
+| **Config error (no vendors)** | `503 Service Unavailable` | Stop routing to this Pod | ✅ Prevents misconfigured Pods  |
 
 **HTTP Status Codes**:
+
 - `200 OK` - All dependencies healthy (ready to serve traffic)
 - `503 Service Unavailable` - One or more dependencies unhealthy (not ready)
 
 **Phase 2 Enhancements** (Future):
 
-| Dependency | Phase 1 | Phase 2 | Check Method |
-|-----------|---------|---------|--------------|
+| Dependency         | Phase 1         | Phase 2         | Check Method                       |
+| ------------------ | --------------- | --------------- | ---------------------------------- |
 | **Executor Layer** | ✅ Connectivity | ✅ Connectivity | Lightweight API call (GET /models) |
-| **Router Service** | ❌ | ✅ | gRPC health check |
-| **Memory Service** | ❌ | ✅ | gRPC health check |
-| **Database** | ❌ | ⏸️ | Connection pool status |
+| **Router Service** | ❌              | ✅              | gRPC health check                  |
+| **Memory Service** | ❌              | ✅              | gRPC health check                  |
+| **Database**       | ❌              | ⏸️              | Connection pool status             |
 
 ## Implementation Flow
 
@@ -1305,17 +1335,17 @@ HEALTH_CHECK_TIMEOUT=2
 
 ### Performance Impact
 
-| Configuration | Production | Development | Performance Impact |
-|--------------|-----------|-------------|-------------------|
-| `RUST_LOG=info` | ✅ | ❌ | Baseline |
-| `RUST_LOG=debug` | ❌ | ✅ | ~5-10% overhead |
-| `RUST_LOG=trace` | ❌ | ✅ | ~10-20% overhead |
-| `LOG_FORMAT=json` | ✅ | ❌ | ~2-5% overhead |
-| `LOG_FORMAT=pretty` | ❌ | ✅ | ~5-10% overhead |
-| `LOG_VERBOSE_DEBUG=false` | ✅ | ❌ | Baseline |
-| `LOG_VERBOSE_DEBUG=true` | ❌ | ✅ | ~10-20% overhead |
-| `HEALTH_CHECK_MODE=config` | ❌ | ✅ | < 1ms per check |
-| `HEALTH_CHECK_MODE=connectivity` | ✅ | ❌ | ~50-100ms per check (cached) |
+| Configuration                    | Production | Development | Performance Impact           |
+| -------------------------------- | ---------- | ----------- | ---------------------------- |
+| `RUST_LOG=info`                  | ✅         | ❌          | Baseline                     |
+| `RUST_LOG=debug`                 | ❌         | ✅          | ~5-10% overhead              |
+| `RUST_LOG=trace`                 | ❌         | ✅          | ~10-20% overhead             |
+| `LOG_FORMAT=json`                | ✅         | ❌          | ~2-5% overhead               |
+| `LOG_FORMAT=pretty`              | ❌         | ✅          | ~5-10% overhead              |
+| `LOG_VERBOSE_DEBUG=false`        | ✅         | ❌          | Baseline                     |
+| `LOG_VERBOSE_DEBUG=true`         | ❌         | ✅          | ~10-20% overhead             |
+| `HEALTH_CHECK_MODE=config`       | ❌         | ✅          | < 1ms per check              |
+| `HEALTH_CHECK_MODE=connectivity` | ✅         | ❌          | ~50-100ms per check (cached) |
 
 ## Testing Strategy
 
@@ -1400,4 +1430,3 @@ curl http://localhost:3000/ready
 - ✅ Logs should not contain sensitive data (API keys, passwords)
 - ✅ Correlation IDs are validated and sanitized
 - ✅ Health check endpoints do not expose sensitive configuration
-

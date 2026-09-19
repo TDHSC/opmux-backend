@@ -43,10 +43,12 @@ impl LogFormat {
 ///
 /// - `RUST_LOG`: Log level filter (default: "info")
 ///   - Examples: "info", "debug", "trace", "gateway=debug"
+///   - Falls back to `LOG_LEVEL` when unset
 ///
 /// - `LOG_FORMAT`: Output format (default: "json")
 ///   - "json": JSON format for production
 ///   - "pretty": Pretty format for development
+///   - Falls back to `LOG_JSON` when unset (`true` for JSON, `false` for pretty)
 ///
 /// - `LOG_VERBOSE_DEBUG`: Enable expensive logging options (default: "false")
 ///   - "true" or "1": Enable line numbers, thread IDs
@@ -82,18 +84,23 @@ impl TracingConfig {
     /// Creates TracingConfig from environment variables.
     ///
     /// # Environment Variables
-    /// - `RUST_LOG`: Log level (default: "info")
-    /// - `LOG_FORMAT`: "json" or "pretty" (default: "json")
+    /// - `RUST_LOG`: Log level, falling back to `LOG_LEVEL` (default: "info")
+    /// - `LOG_FORMAT`: "json" or "pretty", falling back to `LOG_JSON` (default: "json")
     /// - `LOG_VERBOSE_DEBUG`: "true" or "false" (default: "false")
     ///
     /// # Returns
     /// TracingConfig with settings from environment
     pub fn from_env() -> Self {
-        let env_filter = std::env::var("RUST_LOG").unwrap_or_else(|_| "info".to_string());
+        let env_filter = std::env::var("RUST_LOG")
+            .or_else(|_| std::env::var("LOG_LEVEL"))
+            .unwrap_or_else(|_| "info".to_string());
 
         let format = std::env::var("LOG_FORMAT")
             .map(|v| LogFormat::from_env(&v))
-            .unwrap_or(LogFormat::Json);
+            .unwrap_or_else(|_| match std::env::var("LOG_JSON").as_deref() {
+                Ok("true") | Err(_) => LogFormat::Json,
+                Ok(_) => LogFormat::Pretty,
+            });
 
         let verbose_debug = std::env::var("LOG_VERBOSE_DEBUG")
             .map(|v| v == "true" || v == "1")

@@ -140,12 +140,10 @@ gateway/
 ### Request Processing Flow
 
 1. **HTTP Request Reception**
-
    - Client sends POST to `/api/v1/route`
    - Axum router receives and routes to ingress handler
 
 2. **Unified Authentication Middleware**
-
    - Detect authentication method (X-API-Key, Authorization header, etc.)
    - Route to appropriate validator (API Key, JWT, or Service token)
    - For API Key (Phase 1): Validate against database/cache, extract client context
@@ -154,20 +152,17 @@ gateway/
    - Inject appropriate auth context into request
 
 3. **Authorization Check**
-
    - Verify client/user has required permissions based on context type
    - Check rate limiting and quotas (future implementation)
    - Log access attempt with client/user identification
 
 4. **Request Processing**
-
    - Parse request payload (prompt + metadata)
    - Normalize prompt into messages array for executor payload
    - Determine service routing based on rewrite flag
    - Create correlation ID for tracing
 
 5. **Service Coordination**
-
    - Retrieve context data from Memory Service first
    - If rewrite=true: Rewrite Service → Router Service (with context)
    - If rewrite=false: Direct to Router Service (with context)
@@ -176,7 +171,6 @@ gateway/
    - Implement circuit breaker and retry logic
 
 6. **Response Aggregation**
-
    - Collect responses from all services
    - Merge into unified response format
    - Add metadata (processing time, cost savings, etc.)
@@ -190,13 +184,11 @@ gateway/
 ### Error Handling Flow
 
 1. **Service Failures**
-
    - Implement circuit breaker pattern
    - Exponential backoff with jitter
    - Graceful degradation strategies
 
 2. **Authentication Failures**
-
    - Return 401 with clear error messages
    - Log security events
    - Rate limit failed attempts

@@ -18,6 +18,8 @@ use std::env;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
+use super::tracing::{LogFormat, TracingConfig};
+
 /// Global application configuration
 #[derive(Debug, Clone, Default)]
 pub struct Config {
@@ -129,7 +131,7 @@ impl Default for LoggingConfig {
     fn default() -> Self {
         Self {
             level: "info".to_string(),
-            json_format: false,
+            json_format: true,
         }
     }
 }
@@ -235,14 +237,12 @@ impl AuthConfig {
 
 impl LoggingConfig {
     fn from_env() -> Self {
-        let level = env::var("LOG_LEVEL").unwrap_or_else(|_| "info".to_string());
+        let tracing = TracingConfig::from_env();
 
-        let json_format = env::var("LOG_JSON")
-            .unwrap_or_else(|_| "false".to_string())
-            .parse::<bool>()
-            .unwrap_or(false);
-
-        Self { level, json_format }
+        Self {
+            level: tracing.env_filter,
+            json_format: tracing.format == LogFormat::Json,
+        }
     }
 }
 
@@ -304,7 +304,7 @@ mod tests {
         assert_eq!(config.server.bind_address.to_string(), "0.0.0.0:3000");
         assert!(!config.auth.development_mode);
         assert_eq!(config.logging.level, "info");
-        assert!(!config.logging.json_format);
+        assert!(config.logging.json_format);
     }
 
     #[test]
@@ -326,7 +326,7 @@ mod tests {
     fn test_logging_config_defaults() {
         let config = LoggingConfig::default();
         assert_eq!(config.level, "info");
-        assert!(!config.json_format);
+        assert!(config.json_format);
     }
 
     #[test]

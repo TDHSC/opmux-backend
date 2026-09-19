@@ -21,6 +21,9 @@ Executor:
 
 Observability/performance:
 
+- `RUST_LOG` (default `info`; overrides legacy `LOG_LEVEL`)
+- `LOG_FORMAT` (`json` by default, or `pretty`; overrides legacy `LOG_JSON`)
+- `LOG_VERBOSE_DEBUG` (default `false`; adds line numbers and thread IDs)
 - `METRICS_ENABLED` (default `true`)
 - `METRICS_PATH` (default `/metrics`)
 - `HEALTH_CHECK_TIMEOUT` (default `2`)
@@ -31,7 +34,8 @@ Observability/performance:
 
 ### Startup fails with vendor config error
 
-Cause: missing/invalid `OPENAI_API_KEY` or invalid endpoint.
+Cause: no vendor is configured, usually because `OPENAI_API_KEY` is absent. Startup does not
+validate upstream credentials or connectivity; `/ready` checks those after the process starts.
 
 Action:
 
@@ -40,6 +44,10 @@ export OPENAI_API_KEY=your-key
 export OPENAI_BASE_URL=https://api.openai.com/v1
 cargo run -p gateway
 ```
+
+For a check without real credentials, use the local failure-simulation configuration in
+[README.md](../README.md#local-startup-check-no-real-llm-calls). The binary does not automatically
+load `.env`.
 
 ### `/api/v1/route` returns `401`
 

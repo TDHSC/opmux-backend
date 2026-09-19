@@ -1,14 +1,18 @@
 # Tracing and Correlation ID Implementation Plan
 
-> **⚠️ DEPRECATED**: This document has been superseded by the comprehensive Enhanced Observability specification.
+> **⚠️ DEPRECATED**: This document has been superseded by the comprehensive Enhanced Observability
+> specification.
 >
 > **Please refer to**: `specs/enhanced_observability/` for the current implementation.
 >
 > **Key differences from this plan**:
+>
 > - Uses **Dual-ID System**: System-generated `request_id` + optional client `client_correlation_id`
-> - Implements **Hybrid Approach**: Explicit RequestContext parameter passing for business logic (gRPC) + Automatic tracing span inheritance for logging
+> - Implements **Hybrid Approach**: Explicit RequestContext parameter passing for business logic
+>   (gRPC) + Automatic tracing span inheritance for logging
 > - Includes **Fail-Safe Middleware**: Middleware never blocks requests, uses fallback strategies
-> - Follows **Root Span Only Rule**: Add correlation IDs only in Handler layer (root span), child spans inherit automatically
+> - Follows **Root Span Only Rule**: Add correlation IDs only in Handler layer (root span), child
+>   spans inherit automatically
 > - Comprehensive **Prometheus Metrics** and **Enhanced Health Checks**
 >
 > **This document is kept for historical reference only.**
