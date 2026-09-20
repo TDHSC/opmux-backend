@@ -106,6 +106,7 @@ mod tests {
                     .first()
                     .map(|message| message.content.clone())
                     .unwrap_or_default(),
+                role: "assistant".to_string(),
                 model_used: model.to_string(),
                 prompt_tokens: 1,
                 completion_tokens: 1,
@@ -127,8 +128,8 @@ mod tests {
             _prompt_tokens: i64,
             _completion_tokens: i64,
             _model: &str,
-        ) -> f64 {
-            0.0
+        ) -> Result<f64, ExecutorError> {
+            Ok(0.0)
         }
 
         async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {

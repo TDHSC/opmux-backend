@@ -61,6 +61,14 @@ pub enum ExecutorError {
     #[error("Invalid executor configuration")]
     InvalidConfiguration,
 
+    /// Configured pricing is missing for the selected target.
+    #[error("Missing pricing for the selected target")]
+    MissingPricing,
+
+    /// Provider success payload cannot be used as a valid result.
+    #[error("Invalid upstream result")]
+    InvalidUpstreamResult,
+
     #[error("Circuit breaker open for vendor '{vendor}'")]
     CircuitOpen { vendor: String, retry_after_ms: u64 },
 }
@@ -127,6 +135,16 @@ impl IntoResponse for ExecutorError {
                 StatusCode::INTERNAL_SERVER_ERROR,
                 "invalid_configuration",
                 "Executor configuration is invalid".to_string(),
+            ),
+            Self::MissingPricing => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "missing_pricing",
+                "Configured pricing is missing for the selected target".to_string(),
+            ),
+            Self::InvalidUpstreamResult => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "invalid_upstream_result",
+                "Upstream result could not be used".to_string(),
             ),
         };
 

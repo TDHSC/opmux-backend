@@ -16,7 +16,12 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   `max_output_tokens` for `max_tokens`). Unknown controls, `stream`, and `rewrite` return `400`.
   Prompt bounds use the original untrimmed character and UTF-8 byte lengths. Management credentials
   receive `403` and do not generate. Metadata stays opaque and is not forwarded, logged, or
-  persisted.
+  persisted. Successful responses preserve provider `content`, `role`, and `finish_reason`.
+  `model_used` is the provider-reported model, which may differ from the selected target alias.
+  `cost` is a USD estimate for that successful response from the selected target's configured
+  per-million prices (illustrative `1.0`/`2.0` with 120/30 tokens is `0.00018`), rounded to 8
+  decimal places. Missing prices fail rather than becoming zero. The estimate is not current
+  provider billing and does not total retries or abandoned work.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
@@ -34,10 +39,11 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
-operator-configured routes only; there is no Memory/Router service and no conversation history.
-Faithful OpenAI result mapping and eligible fallback policy are later work. Planned
-Rewrite/Validation microservices and additional vendors should not be treated as implemented
-capabilities. Explicit `stream`/`rewrite` requests are rejected.
+operator-configured routes only; there is no Memory/Router service and no conversation history. The
+OpenAI adapter speaks Chat Completions against the configured base URL; live-provider verification
+remains deferred. Eligible fallback policy, standardized error envelopes, and upstream body-size
+bounds are later work. Planned Rewrite/Validation microservices and additional vendors should not be
+treated as implemented capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 ## Getting Started
 
@@ -109,8 +115,9 @@ operator-provisioned credentials, not the former public mock keys.
 The example catalog at [config/opmux.example.json](config/opmux.example.json) defines a default
 route, a named `fast` route, targets, illustrative per-million prices, and a flat fallback list.
 Those model names and prices are samples for configuration tests, not current provider billing or
-availability. See [configuration troubleshooting](docs/CONFIGURATION_TROUBLESHOOTING.md) for the
-canonical schema, documented defaults, and numeric bounds.
+availability. Successful-response cost uses those configured target prices and provider usage; it is
+not a retry-total bill. See [configuration troubleshooting](docs/CONFIGURATION_TROUBLESHOOTING.md)
+for the canonical schema, documented defaults, and numeric bounds.
 
 Omitted optional limits default to a 30-second protected-request deadline, 10-second attempt
 maximum, one retry per target, three total provider attempts, at most two fallback targets, and a

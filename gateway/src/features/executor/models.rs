@@ -17,13 +17,15 @@ pub struct ExecutionRequest {
 pub struct ExecutionResult {
     /// Generated AI response content
     pub content: String,
-    /// Actual model used for generation
+    /// Provider-reported message role
+    pub role: String,
+    /// Provider-reported model identifier, which may differ from the requested alias
     pub model_used: String,
     /// Number of tokens in the prompt
     pub prompt_tokens: i64,
     /// Number of tokens in the completion
     pub completion_tokens: i64,
-    /// Total cost in USD
+    /// Estimated successful-response cost in USD from configured target prices
     pub total_cost: f64,
     /// Reason for completion ("stop", "length", "content_filter", etc.)
     pub finish_reason: String,

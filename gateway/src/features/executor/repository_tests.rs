@@ -38,6 +38,7 @@ mod tests {
         ) -> Result<ExecutionResult, ExecutorError> {
             Ok(ExecutionResult {
                 content: format!("Mock response from {} using {}", self.vendor_id, model),
+                role: "assistant".to_string(),
                 model_used: model.to_string(),
                 prompt_tokens: 10,
                 completion_tokens: 20,
@@ -59,8 +60,8 @@ mod tests {
             _prompt_tokens: i64,
             _completion_tokens: i64,
             _model: &str,
-        ) -> f64 {
-            0.001
+        ) -> Result<f64, ExecutorError> {
+            Ok(0.001)
         }
 
         async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {

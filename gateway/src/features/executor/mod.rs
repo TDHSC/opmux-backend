@@ -21,6 +21,7 @@
 pub mod config;
 pub mod error;
 pub mod models;
+pub mod pricing;
 pub mod repository;
 pub mod service;
 pub mod vendors;

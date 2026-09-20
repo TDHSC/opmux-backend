@@ -1,11 +1,14 @@
-//! OpenAI vendor implementation.
+//! OpenAI Chat Completions adapter.
 //!
-//! Integrates with OpenAI Chat Completions API for LLM execution.
+//! Sends one `POST {base_url}/chat/completions` request per call. `model_used`
+//! is the provider-reported model. Cost uses the selected target's configured
+//! prices, not a hardcoded model-price table.
 
 use crate::features::executor::{
     config::OpenAIConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult, Message},
+    pricing::estimate_successful_response_cost,
     vendors::traits::LLMVendor,
 };
 use async_trait::async_trait;
@@ -29,8 +32,8 @@ struct ChatCompletionRequest {
 /// OpenAI Chat Completions API response.
 #[derive(Debug, Deserialize)]
 struct ChatCompletionResponse {
-    #[allow(dead_code)]
-    id: String,
+    /// Provider-reported model. May differ from the requested alias.
+    model: String,
     choices: Vec<Choice>,
     usage: Usage,
 }
@@ -95,17 +98,12 @@ impl LLMVendor for OpenAIVendor {
         prompt_tokens: i64,
         completion_tokens: i64,
         model: &str,
-    ) -> f64 {
-        // Business logic: calculate cost based on pricing configuration
-        if let Some(pricing) = self.config.pricing.get(model) {
-            (prompt_tokens as f64 * pricing.prompt_price_per_1k
-                + completion_tokens as f64 * pricing.completion_price_per_1k)
-                / 1000.0
-        } else {
-            // Fallback to 0.0 if pricing not found
-            tracing::warn!("No pricing found for model: {}", model);
-            0.0
-        }
+    ) -> Result<f64, ExecutorError> {
+        estimate_successful_response_cost(
+            prompt_tokens,
+            completion_tokens,
+            self.config.pricing.get(model),
+        )
     }
 
     async fn execute(
@@ -183,17 +181,20 @@ impl LLMVendor for OpenAIVendor {
         })?;
 
         let content = choice.message.content.clone();
+        let role = choice.message.role.clone();
         let finish_reason = choice.finish_reason.clone();
+        let model_used = api_response.model;
 
         let total_cost = self.calculate_cost(
             api_response.usage.prompt_tokens,
             api_response.usage.completion_tokens,
             model,
-        );
+        )?;
 
         Ok(ExecutionResult {
             content,
-            model_used: model.to_string(),
+            role,
+            model_used,
             prompt_tokens: api_response.usage.prompt_tokens,
             completion_tokens: api_response.usage.completion_tokens,
             total_cost,

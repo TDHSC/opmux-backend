@@ -44,6 +44,7 @@ mod tests {
         ) -> Result<ExecutionResult, ExecutorError> {
             Ok(ExecutionResult {
                 content: "Mock ingress response".to_string(),
+                role: "assistant".to_string(),
                 model_used: model.to_string(),
                 prompt_tokens: 15,
                 completion_tokens: 25,
@@ -65,8 +66,8 @@ mod tests {
             _prompt_tokens: i64,
             _completion_tokens: i64,
             _model: &str,
-        ) -> f64 {
-            0.001
+        ) -> Result<f64, ExecutorError> {
+            Ok(0.001)
         }
 
         async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {
@@ -124,6 +125,8 @@ mod tests {
         assert_eq!(result.response.finish_reason, Some("stop".to_string()));
         assert_eq!(result.model_used, "example-chat-model");
         assert_eq!(result.cost, 0.001);
+        assert_eq!(result.usage.prompt_tokens, 15);
+        assert_eq!(result.usage.completion_tokens, 25);
         assert!(result.processing_time_ms < 5_000);
     }
 

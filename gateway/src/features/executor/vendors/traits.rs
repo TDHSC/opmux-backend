@@ -31,21 +31,27 @@ pub trait LLMVendor: Send + Sync {
     /// Checks if the vendor supports the given model.
     fn supports_model(&self, model: &str) -> bool;
 
-    /// Calculates cost based on token usage.
+    /// Estimates successful-response cost from configured target prices.
+    ///
+    /// Look up prices by the selected target model that was requested, not by
+    /// the provider-reported model string.
     ///
     /// # Parameters
     /// - `prompt_tokens` - Number of tokens in the prompt
     /// - `completion_tokens` - Number of tokens in the completion
-    /// - `model` - Model identifier
+    /// - `model` - Selected target model identifier
     ///
     /// # Returns
-    /// Total cost in USD
+    /// Nonnegative USD estimate for the successful response
+    ///
+    /// # Errors
+    /// Returns an error when configured prices are missing rather than zero.
     fn calculate_cost(
         &self,
         prompt_tokens: i64,
         completion_tokens: i64,
         model: &str,
-    ) -> f64;
+    ) -> Result<f64, ExecutorError>;
 
     /// Performs a health check to verify vendor connectivity and credentials.
     ///

@@ -1,0 +1,235 @@
+//! OpenAI Chat Completions wire protocol and successful-result mapping.
+//!
+//! Exercises the shared production router and real Reqwest adapter against an
+//! owned loopback simulator. Evidence omits credentials, prompts, metadata,
+//! and raw provider bodies.
+
+mod support;
+
+use axum::{
+    body::Body,
+    http::{Request, StatusCode},
+};
+use gateway::{
+    app::Application,
+    core::{config::Settings, metrics::MetricsConfig},
+    features::auth::AuthService,
+};
+use serial_test::serial;
+use std::sync::Arc;
+use support::{
+    auth_service_from_pool, cleanup_clients, isolate_provider_environment,
+    provision_inference_key, test_pool, CapturedRequest, OpenAiSimulator,
+    ScriptedResponse, SIMULATED_CONTENT,
+};
+use tower::ServiceExt;
+
+const DEFAULT_MODEL: &str = "example-chat-model";
+const FAST_MODEL: &str = "example-chat-model-mini";
+const REPORTED_SNAPSHOT_MODEL: &str = "reported-snapshot-model";
+const WIRE_PROMPT: &str = "openai-results-wire-prompt";
+const ILLUSTRATIVE_PROMPT_TOKENS: i64 = 120;
+const ILLUSTRATIVE_COMPLETION_TOKENS: i64 = 30;
+const ILLUSTRATIVE_PRIMARY_COST: f64 = 0.00018;
+const ILLUSTRATIVE_SECONDARY_COST: f64 = 0.000045;
+
+async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
+    let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .expect("response body");
+    serde_json::from_slice(&bytes).expect("json body")
+}
+
+fn generation_body(capture: &CapturedRequest) -> &serde_json::Value {
+    capture
+        .body
+        .as_ref()
+        .expect("generation capture must include JSON")
+}
+
+fn results_router(
+    simulator: &OpenAiSimulator,
+    auth_service: Arc<AuthService>,
+) -> axum::Router {
+    let settings =
+        Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
+    Application::from_settings(Arc::new(settings), auth_service)
+        .expect("application should build from openai-results fixture settings")
+        .into_router(MetricsConfig::disabled())
+}
+
+async fn post_route(
+    app: axum::Router,
+    credential: &str,
+    body: serde_json::Value,
+) -> axum::http::Response<Body> {
+    app.oneshot(
+        Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .header("x-api-key", credential)
+            .body(Body::from(body.to_string()))
+            .unwrap(),
+    )
+    .await
+    .unwrap()
+}
+
+fn enqueue_reported(simulator: &OpenAiSimulator, finish_reason: &str) {
+    simulator.enqueue_chat(ScriptedResponse::chat_reported(
+        REPORTED_SNAPSHOT_MODEL,
+        ILLUSTRATIVE_PROMPT_TOKENS,
+        ILLUSTRATIVE_COMPLETION_TOKENS,
+        finish_reason,
+    ));
+}
+
+fn assert_cost_eq(actual: f64, expected: f64) {
+    assert!(
+        (actual - expected).abs() < 1e-12,
+        "cost {actual} differed from expected {expected}"
+    );
+    assert!(actual >= 0.0, "estimated cost must be nonnegative");
+}
+
+#[tokio::test]
+#[serial]
+async fn production_router_posts_documented_chat_completions_protocol() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    enqueue_reported(&simulator, "stop");
+    let app = results_router(&simulator, auth_service_from_pool(pool.clone()));
+
+    let response = post_route(
+        app,
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {},
+            "parameters": {
+                "temperature": 0.2,
+                "top_p": 0.9,
+                "max_tokens": 32
+            }
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(body["response"]["role"], "assistant");
+    assert_eq!(body["response"]["finish_reason"], "stop");
+    assert_eq!(body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_ne!(body["model_used"], DEFAULT_MODEL);
+    assert_cost_eq(
+        body["cost"].as_f64().expect("cost number"),
+        ILLUSTRATIVE_PRIMARY_COST,
+    );
+    let processing_time_ms = body["processing_time_ms"]
+        .as_u64()
+        .expect("processing_time_ms");
+    assert!(processing_time_ms < 30_000);
+    assert_eq!(body["usage"]["prompt_tokens"], ILLUSTRATIVE_PROMPT_TOKENS);
+    assert_eq!(
+        body["usage"]["completion_tokens"],
+        ILLUSTRATIVE_COMPLETION_TOKENS
+    );
+
+    assert_eq!(simulator.generation_count(), 1);
+    assert_eq!(simulator.models_probe_count(), 0);
+    let capture = simulator
+        .captured()
+        .into_iter()
+        .find(|capture| capture.is_generation())
+        .expect("chat completion capture");
+    assert_eq!(capture.method, "POST");
+    assert_eq!(capture.path, "/v1/chat/completions");
+    assert!(capture.authorization_matches_fixture);
+    assert_eq!(capture.content_type.as_deref(), Some("application/json"));
+    let wire = generation_body(&capture);
+    assert_eq!(wire["model"], DEFAULT_MODEL);
+    assert_eq!(wire["messages"][0]["role"], "user");
+    assert_eq!(wire["messages"][0]["content"], WIRE_PROMPT);
+    assert_eq!(wire["temperature"], 0.2);
+    assert_eq!(wire["top_p"], 0.9);
+    assert_eq!(wire["max_tokens"], 32);
+    assert!(wire.get("stream").is_none());
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn named_targets_use_own_prices_when_provider_reports_the_same_model() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    enqueue_reported(&simulator, "length");
+    enqueue_reported(&simulator, "length");
+    let app = results_router(&simulator, auth_service_from_pool(pool.clone()));
+
+    let default_response = post_route(
+        app.clone(),
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {}
+        }),
+    )
+    .await;
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_body = body_json(default_response).await;
+    assert_eq!(default_body["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(default_body["response"]["role"], "assistant");
+    assert_eq!(default_body["response"]["finish_reason"], "length");
+    assert_eq!(default_body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_cost_eq(
+        default_body["cost"].as_f64().expect("default cost"),
+        ILLUSTRATIVE_PRIMARY_COST,
+    );
+    assert_eq!(
+        default_body["usage"]["prompt_tokens"],
+        ILLUSTRATIVE_PROMPT_TOKENS
+    );
+    assert_eq!(
+        default_body["usage"]["completion_tokens"],
+        ILLUSTRATIVE_COMPLETION_TOKENS
+    );
+
+    let named_response = post_route(
+        app,
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {},
+            "route": "fast"
+        }),
+    )
+    .await;
+    assert_eq!(named_response.status(), StatusCode::OK);
+    let named_body = body_json(named_response).await;
+    assert_eq!(named_body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_ne!(named_body["model_used"], FAST_MODEL);
+    assert_cost_eq(
+        named_body["cost"].as_f64().expect("named cost"),
+        ILLUSTRATIVE_SECONDARY_COST,
+    );
+    assert_ne!(
+        named_body["cost"].as_f64().expect("named cost"),
+        default_body["cost"].as_f64().expect("default cost")
+    );
+
+    let captures: Vec<_> = simulator
+        .captured()
+        .into_iter()
+        .filter(|capture| capture.is_generation())
+        .collect();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(generation_body(&captures[0])["model"], DEFAULT_MODEL);
+    assert_eq!(generation_body(&captures[1])["model"], FAST_MODEL);
+    assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}

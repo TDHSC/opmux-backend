@@ -65,6 +65,10 @@ pub enum ScriptedResponse {
         prompt_tokens: i64,
         /// Completion token count.
         completion_tokens: i64,
+        /// Provider finish reason.
+        finish_reason: String,
+        /// Provider message role.
+        role: String,
     },
     /// JSON HTTP response with an explicit status.
     Json {
@@ -89,11 +93,39 @@ pub enum ScriptedResponse {
 impl ScriptedResponse {
     /// Default deterministic chat success.
     pub fn chat_ok() -> Self {
+        Self::chat_ok_with(None, 10, 5)
+    }
+
+    /// Chat success with an explicit reported model and usage.
+    pub fn chat_ok_with(
+        model: Option<&str>,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+    ) -> Self {
         Self::ChatSuccess {
             content: SIMULATED_CONTENT.to_string(),
-            model: None,
-            prompt_tokens: 10,
-            completion_tokens: 5,
+            model: model.map(ToOwned::to_owned),
+            prompt_tokens,
+            completion_tokens,
+            finish_reason: "stop".to_string(),
+            role: "assistant".to_string(),
+        }
+    }
+
+    /// Chat success that can differ from the requested model and default finish reason.
+    pub fn chat_reported(
+        model: impl Into<String>,
+        prompt_tokens: i64,
+        completion_tokens: i64,
+        finish_reason: impl Into<String>,
+    ) -> Self {
+        Self::ChatSuccess {
+            content: SIMULATED_CONTENT.to_string(),
+            model: Some(model.into()),
+            prompt_tokens,
+            completion_tokens,
+            finish_reason: finish_reason.into(),
+            role: "assistant".to_string(),
         }
     }
 
@@ -285,6 +317,8 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
             model,
             prompt_tokens,
             completion_tokens,
+            finish_reason,
+            role,
         } => {
             let model = model
                 .or_else(|| request_model.map(ToOwned::to_owned))
@@ -296,8 +330,8 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
                 "model": model,
                 "choices": [{
                     "index": 0,
-                    "message": {"role": "assistant", "content": content},
-                    "finish_reason": "stop"
+                    "message": {"role": role, "content": content},
+                    "finish_reason": finish_reason
                 }],
                 "usage": {
                     "prompt_tokens": prompt_tokens,

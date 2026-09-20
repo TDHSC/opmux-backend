@@ -247,6 +247,48 @@ below.
   - `parameters` types/ranges and the selected primary token cap are checked before upstream access
   - Invalid JSON that cannot be decoded and semantic/typed field violations both return `400`.
 
+Successful generation uses the real OpenAI Chat Completions adapter:
+`POST {OPENAI_BASE_URL}/chat/completions` with `Authorization: Bearer`,
+`Content-Type: application/json`, the selected target model, the original user prompt, and accepted
+typed options. Streaming is not enabled.
+
+Response `200 OK`:
+
+```json
+{
+  "response": {
+    "content": "hello from the model",
+    "role": "assistant",
+    "finish_reason": "stop"
+  },
+  "model_used": "reported-snapshot-model",
+  "cost": 0.00018,
+  "processing_time_ms": 12,
+  "usage": {
+    "prompt_tokens": 120,
+    "completion_tokens": 30
+  }
+}
+```
+
+- `response.content`, `response.role`, and `response.finish_reason` are copied from the provider
+  message.
+- `model_used` is the provider-reported model. It may differ from the selected catalog target alias
+  that was sent as the request `model`.
+- `usage` matches the validated provider prompt and completion token counts.
+- `cost` is a USD estimate for this successful response only, from the **selected target's**
+  configured `input_per_million` and `output_per_million` prices:
+
+  `cost = round((prompt_tokens * input_per_million + completion_tokens * output_per_million) / 1_000_000, 8)`
+
+  Illustrative catalog prices of `1.0` and `2.0` per million tokens with 120 prompt and 30
+  completion tokens yield `0.00018`. A different named target uses its own configured prices even
+  when the provider reports the same model string. Missing prices fail the request; they do not
+  become `0`. Example catalog prices are samples, not current provider billing. `cost` is not a bill
+  and does not total retries or abandoned work.
+
+- `processing_time_ms` is a nonnegative elapsed-time measurement for the request.
+
 - Response codes:
   - `200 OK` success
   - `400 Bad Request` invalid JSON, unknown/unsupported control, or out-of-range parameter

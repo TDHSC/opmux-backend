@@ -6,23 +6,24 @@ use std::fmt;
 
 use crate::core::config::Settings;
 
-/// Model pricing information.
+/// Model pricing information for a selected target.
 ///
-/// Stores the cost per 1000 tokens for prompt and completion.
+/// Values are USD per million tokens. Catalog example prices are illustrative
+/// samples, not current provider billing facts.
 #[derive(Debug, Clone)]
 pub struct ModelPricing {
-    /// Price per 1000 prompt tokens in USD
-    pub prompt_price_per_1k: f64,
-    /// Price per 1000 completion tokens in USD
-    pub completion_price_per_1k: f64,
+    /// Prompt / input price per million tokens in USD
+    pub input_per_million: f64,
+    /// Completion / output price per million tokens in USD
+    pub output_per_million: f64,
 }
 
 impl ModelPricing {
-    /// Creates a new model pricing configuration.
-    pub fn new(prompt_price_per_1k: f64, completion_price_per_1k: f64) -> Self {
+    /// Creates target pricing in USD per million tokens.
+    pub fn new(input_per_million: f64, output_per_million: f64) -> Self {
         Self {
-            prompt_price_per_1k,
-            completion_price_per_1k,
+            input_per_million,
+            output_per_million,
         }
     }
 }
@@ -69,14 +70,12 @@ impl OpenAIConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(30000);
 
-        // Default pricing (as of 2024, subject to change)
+        // Sample prices only. Production uses catalog target prices via
+        // `from_settings`; these are not current provider billing facts.
         let mut pricing = HashMap::new();
-        pricing.insert("gpt-4".to_string(), ModelPricing::new(0.03, 0.06));
-        pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(0.01, 0.03));
-        pricing.insert(
-            "gpt-3.5-turbo".to_string(),
-            ModelPricing::new(0.0005, 0.0015),
-        );
+        pricing.insert("gpt-4".to_string(), ModelPricing::new(1.0, 2.0));
+        pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(1.0, 2.0));
+        pricing.insert("gpt-3.5-turbo".to_string(), ModelPricing::new(1.0, 2.0));
 
         Self {
             api_key,
@@ -96,14 +95,15 @@ impl OpenAIConfig {
         let mut pricing = HashMap::new();
         pricing.insert(
             "example-chat-model".to_string(),
-            ModelPricing::new(0.001, 0.002),
+            ModelPricing::new(1.0, 2.0),
         );
-        pricing.insert("gpt-4".to_string(), ModelPricing::new(0.001, 0.002));
-        pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(0.001, 0.002));
         pricing.insert(
-            "gpt-3.5-turbo".to_string(),
-            ModelPricing::new(0.0005, 0.0015),
+            "example-chat-model-mini".to_string(),
+            ModelPricing::new(0.25, 0.5),
         );
+        pricing.insert("gpt-4".to_string(), ModelPricing::new(1.0, 2.0));
+        pricing.insert("gpt-4-turbo".to_string(), ModelPricing::new(1.0, 2.0));
+        pricing.insert("gpt-3.5-turbo".to_string(), ModelPricing::new(1.0, 2.0));
 
         Self {
             api_key: "test-dummy-openai-key".to_string(),
@@ -111,6 +111,7 @@ impl OpenAIConfig {
             timeout_ms: 200,
             supported_models: vec![
                 "example-chat-model".to_string(),
+                "example-chat-model-mini".to_string(),
                 "gpt-4".to_string(),
                 "gpt-4-turbo".to_string(),
                 "gpt-3.5-turbo".to_string(),
@@ -170,8 +171,8 @@ impl ExecutorConfig {
             pricing.insert(
                 target.model.clone(),
                 ModelPricing::new(
-                    target.pricing.input_per_million / 1000.0,
-                    target.pricing.output_per_million / 1000.0,
+                    target.pricing.input_per_million,
+                    target.pricing.output_per_million,
                 ),
             );
         }
@@ -281,5 +282,18 @@ mod tests {
         assert!(!openai.supported_models.contains(&"gpt-4".to_string()));
         assert_eq!(openai.base_url, "http://127.0.0.1:9/v1");
         assert_eq!(openai.api_key, "test-dummy-openai-key");
+        let primary = openai
+            .pricing
+            .get("example-chat-model")
+            .expect("primary model prices");
+        assert_eq!(primary.input_per_million, 1.0);
+        assert_eq!(primary.output_per_million, 2.0);
+        let secondary = openai
+            .pricing
+            .get("example-chat-model-mini")
+            .expect("secondary model prices");
+        assert_eq!(secondary.input_per_million, 0.25);
+        assert_eq!(secondary.output_per_million, 0.5);
+        assert!(!openai.pricing.contains_key("gpt-4"));
     }
 }

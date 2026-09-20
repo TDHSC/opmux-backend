@@ -53,17 +53,31 @@ pub struct AIResponse {
     pub finish_reason: Option<String>,
 }
 
+/// Validated prompt and completion usage from the successful provider response.
+#[derive(Serialize)]
+pub struct TokenUsage {
+    /// Prompt / input token count reported by the provider.
+    pub prompt_tokens: i64,
+    /// Completion / output token count reported by the provider.
+    pub completion_tokens: i64,
+}
+
 /// Complete ingress response with AI content and metadata.
 #[derive(Serialize)]
 pub struct IngressResponse {
     /// AI assistant response.
     pub response: AIResponse,
-    /// AI model used for generation.
+    /// Provider-reported model. This may differ from the selected target alias.
     pub model_used: String,
-    /// Request cost in USD.
+    /// Estimated USD cost of the successful response from configured target prices.
+    ///
+    /// This is not current provider billing and does not total retries or
+    /// abandoned work.
     pub cost: f64,
     /// Total processing time in milliseconds.
     pub processing_time_ms: u64,
+    /// Validated usage copied from the successful provider response.
+    pub usage: TokenUsage,
 }
 
 /// Service for stateless ingress routing and execution.
@@ -194,15 +208,24 @@ impl IngressService {
             "Request processing completed"
         );
 
+        let role = if llm_result.role.trim().is_empty() {
+            AI_RESPONSE_ROLE.to_string()
+        } else {
+            llm_result.role
+        };
         Ok(IngressResponse {
             response: AIResponse {
                 content: llm_result.content,
-                role: AI_RESPONSE_ROLE.to_string(),
+                role,
                 finish_reason: Some(llm_result.finish_reason),
             },
             model_used: llm_result.model_used,
             cost: llm_result.total_cost,
             processing_time_ms,
+            usage: TokenUsage {
+                prompt_tokens: llm_result.prompt_tokens,
+                completion_tokens: llm_result.completion_tokens,
+            },
         })
     }
 }
