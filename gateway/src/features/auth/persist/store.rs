@@ -114,10 +114,12 @@ pub trait AuthStore: Send + Sync {
         revoked_at: DateTime<Utc>,
     ) -> Result<RevokeOutcome, AuthStoreError>;
 
-    /// Checks schema and SELECT access required for authentication.
+    /// Checks schema, selected-column, locking, and last_used_at UPDATE access.
     ///
     /// This is not a socket ping or an unrelated `SELECT 1`. It must fail
     /// when `opmux_private.api_keys` is missing or the connected role cannot
-    /// read it. The probe does not authenticate a credential.
+    /// read selected key columns, lock rows, or update `last_used_at`.
+    /// The probe does not authenticate a credential, persist writes, or
+    /// fire UPDATE triggers.
     async fn probe_authentication_access(&self) -> Result<(), AuthStoreError>;
 }

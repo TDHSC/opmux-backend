@@ -57,7 +57,7 @@ pub struct ReadinessResponse {
 /// and cannot override `default_route` when no configured target is usable.
 #[derive(Serialize, Deserialize, Clone)]
 pub struct ReadinessDependencies {
-    /// Authentication schema and SELECT access.
+    /// Authentication schema, selected-column, locking, and last_used_at UPDATE access.
     pub database: DependencyStatus,
     /// Provider `/models` reachability and credentials.
     pub upstream: DependencyStatus,
@@ -152,9 +152,10 @@ impl HealthConfig {
 
 /// Service for health check business logic and orchestration.
 ///
-/// Liveness is shallow. Readiness requires authentication-database access,
-/// upstream `/models` reachability, and at least one usable default-route
-/// target. Successful probes may be cached for the configured TTL; failures
+/// Liveness is shallow. Readiness requires authentication-database schema,
+/// selected-column, locking, and last_used_at UPDATE access, upstream
+/// `/models` reachability, and at least one usable default-route target.
+/// Successful probes may be cached for the configured TTL; failures
 /// are never cached. Draining override is added in a later lifecycle
 /// milestone.
 pub struct HealthService {
@@ -162,7 +163,7 @@ pub struct HealthService {
     repository: HealthRepository,
     /// Executor used for `/models` probes and default-route circuit inspection.
     executor_service: Option<Arc<ExecutorService>>,
-    /// Authenticator used to probe schema/access for key lookup.
+    /// Authenticator used to probe schema and authentication privileges.
     auth_service: Option<Arc<AuthService>>,
     /// Catalog used to identify default-route targets.
     settings: Option<Arc<Settings>>,

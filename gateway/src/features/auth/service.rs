@@ -212,14 +212,15 @@ impl AuthService {
         }
     }
 
-    /// Probes schema and SELECT access required to authenticate keys.
+    /// Probes schema, selected-column, locking, and last_used_at UPDATE access.
     ///
     /// Readiness uses this instead of a socket check or unrelated `SELECT 1`.
-    /// It does not authenticate a credential or remember a successful key.
+    /// It does not authenticate a credential, remember a successful key,
+    /// persist writes, or fire UPDATE triggers.
     ///
     /// # Errors
-    /// Returns `StoreUnavailable` when the authentication schema is missing
-    /// or the connected role cannot read `opmux_private.api_keys`.
+    /// Returns a store error when the authentication schema is missing
+    /// or the connected role lacks privileges authentication needs.
     pub async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
         self.store.probe_authentication_access().await
     }

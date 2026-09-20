@@ -68,10 +68,11 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, process liveness on `/health`,
   dependency readiness on `/ready`, and a configurable metrics endpoint (`/metrics` by default).
-  `/ready` requires authentication-database schema/access, upstream `/models` reachability, and at
-  least one usable default-route target. `/models` is not a generation call and cannot override
-  circuit-open default-route targets. Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS`
-  (default 5 seconds); failures are never cached.
+  `/ready` requires authentication-database schema, selected-column, locking, and `last_used_at`
+  UPDATE access, upstream `/models` reachability, and at least one usable default-route target.
+  `/models` is not a generation call and cannot override circuit-open default-route targets.
+  Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds); failures are never
+  cached.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
@@ -302,8 +303,9 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_P
   Reqwest adapter. They bind `127.0.0.1` only and abort the simulator task on drop.
 - `gateway/tests/health_readiness_test.rs` exercises `/health` vs `/ready` against real Supabase and
   the owned simulator, including independent database and `/models` outages, success-only caching,
-  revoked-key persistence after recovery, and default-route circuit override of cached upstream
-  health.
+  revoked-key persistence after recovery, default-route circuit override of cached upstream health,
+  and SELECT-only/wrong-column UPDATE runtime roles staying unready until `last_used_at` UPDATE is
+  granted.
 - `gateway/tests/observability_integration_test.rs` uses that shared router with dummy configuration
   and a local unavailable upstream for HTTP failure scenarios.
 - `gateway/tests/startup_integration_test.rs` launches the binary without vendor keys to verify

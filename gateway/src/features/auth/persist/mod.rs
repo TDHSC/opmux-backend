@@ -60,8 +60,17 @@ mod tests {
             source.contains("WHERE id = $1 AND client_id = $2 AND revoked_at IS NULL")
         );
         assert!(
-            source.contains("SELECT 1 FROM opmux_private.api_keys LIMIT 0"),
-            "readiness must probe authentication table access, not an unrelated SELECT"
+            source.contains(
+                "SELECT {KEY_COLUMNS} FROM opmux_private.api_keys LIMIT 0 FOR UPDATE"
+            ),
+            "readiness must probe selected key columns and locking, not an unrelated SELECT"
+        );
+        assert!(
+            source.contains("has_column_privilege(")
+                && source.contains("'opmux_private.api_keys'")
+                && source.contains("'last_used_at'")
+                && source.contains("'UPDATE'"),
+            "readiness must check effective last_used_at UPDATE privilege"
         );
     }
 }

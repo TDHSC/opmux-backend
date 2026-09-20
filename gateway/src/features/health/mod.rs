@@ -26,8 +26,9 @@
 //!
 //! Currently supports:
 //! - Process liveness on `/health`
-//! - Authentication-database schema/access, upstream `/models` reachability,
-//!   and usable default-route targets on `/ready`
+//! - Authentication-database schema, selected-column, locking, and
+//!   last_used_at UPDATE access, upstream `/models` reachability, and usable
+//!   default-route targets on `/ready`
 //!
 //! # Error Handling
 //!

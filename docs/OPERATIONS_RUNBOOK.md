@@ -127,7 +127,8 @@ curl -i http://127.0.0.1:3000/metrics
 - Inspect `dependencies.database`, `dependencies.upstream`, and `dependencies.default_route`.
   Messages are sanitized (`Authentication database unavailable`, `Upstream provider unreachable`,
   `No usable default-route target`) and omit SQL, URLs, and secrets.
-- Database readiness requires `opmux_private.api_keys` schema/SELECT access, not a socket ping.
+- Database readiness requires `opmux_private.api_keys` schema, selected-column, locking, and
+  `last_used_at` UPDATE access, not a socket ping or a write/trigger probe.
 - Upstream readiness is `GET /models` reachability and credentials. It is not a generation call and
   does not prove a configured model can generate.
 - Successful probes may stay cached for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures

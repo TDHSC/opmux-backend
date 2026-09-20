@@ -20,12 +20,13 @@ live process can return `200` while `/ready` is `503`.
 
 ## GET /ready
 
-Readiness endpoint. Returns `200` only when the authentication database schema/access, upstream
-`/models` reachability, and at least one usable default-route target are healthy. `/models` is a
-reachability and credential probe; it does not call generation and does not prove that a configured
-model can generate. Cached `/models` success cannot override a default route whose eligible targets
-are all circuit-open. Successful database and upstream probes may be cached for
-`HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures are never cached, so a restored
+Readiness endpoint. Returns `200` only when the authentication database schema, selected-column,
+locking, and `last_used_at` UPDATE access, upstream `/models` reachability, and at least one usable
+default-route target are healthy. The database probe does not persist writes or fire UPDATE
+triggers. `/models` is a reachability and credential probe; it does not call generation and does not
+prove that a configured model can generate. Cached `/models` success cannot override a default route
+whose eligible targets are all circuit-open. Successful database and upstream probes may be cached
+for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures are never cached, so a restored
 dependency is rechecked on the next probe. Draining override is not part of this endpoint yet.
 
 - Auth: none

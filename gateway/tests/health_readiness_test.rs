@@ -529,3 +529,189 @@ async fn production_application_wires_auth_into_readiness() {
     assert_eq!(ready_body["dependencies"]["database"]["status"], "healthy");
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
+
+fn isolated_probe_role_name() -> String {
+    let mut name = String::from("opmux_p_");
+    for byte in Uuid::new_v4().as_bytes() {
+        name.push(char::from(b'a' + (byte >> 4)));
+        name.push(char::from(b'a' + (byte & 0x0f)));
+    }
+    name
+}
+
+fn assert_trusted_sql_ident(value: &str) {
+    assert!(
+        !value.is_empty() && value.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_'),
+        "SQL identifier must be lowercase letters and underscore"
+    );
+}
+
+async fn create_select_only_role(admin: &sqlx::PgPool, role: &str) {
+    assert_trusted_sql_ident(role);
+    sqlx::query(&format!("CREATE ROLE {role} NOLOGIN"))
+        .execute(admin)
+        .await
+        .expect("create isolated NOLOGIN role");
+    sqlx::query(&format!(
+        "GRANT {role} TO CURRENT_USER WITH INHERIT FALSE, SET TRUE"
+    ))
+    .execute(admin)
+    .await
+    .expect("grant SET ROLE for isolated role");
+    sqlx::query(&format!("GRANT USAGE ON SCHEMA opmux_private TO {role}"))
+        .execute(admin)
+        .await
+        .expect("grant schema usage");
+    sqlx::query(&format!(
+        "GRANT SELECT ON TABLE opmux_private.api_keys TO {role}"
+    ))
+    .execute(admin)
+    .await
+    .expect("grant table select");
+}
+
+async fn grant_column_update(admin: &sqlx::PgPool, role: &str, column: &str) {
+    assert_trusted_sql_ident(role);
+    assert_trusted_sql_ident(column);
+    sqlx::query(&format!(
+        "GRANT UPDATE ({column}) ON TABLE opmux_private.api_keys TO {role}"
+    ))
+    .execute(admin)
+    .await
+    .expect("grant column update");
+}
+
+async fn drop_isolated_role(admin: &sqlx::PgPool, role: &str) {
+    assert_trusted_sql_ident(role);
+    let _ = sqlx::query(&format!(
+        "REVOKE ALL ON TABLE opmux_private.api_keys FROM {role}"
+    ))
+    .execute(admin)
+    .await;
+    let _ = sqlx::query(&format!("REVOKE USAGE ON SCHEMA opmux_private FROM {role}"))
+        .execute(admin)
+        .await;
+    let _ = sqlx::query(&format!("REVOKE {role} FROM CURRENT_USER"))
+        .execute(admin)
+        .await;
+    sqlx::query(&format!("DROP ROLE IF EXISTS {role}"))
+        .execute(admin)
+        .await
+        .expect("drop owned isolated role");
+}
+
+async fn table_privilege(admin: &sqlx::PgPool, role: &str, privilege: &str) -> bool {
+    sqlx::query_scalar("SELECT has_table_privilege($1, $2, $3)")
+        .bind(role)
+        .bind("opmux_private.api_keys")
+        .bind(privilege)
+        .fetch_one(admin)
+        .await
+        .expect("runtime grant inquiry")
+}
+
+async fn key_last_used_at(
+    admin: &sqlx::PgPool,
+    key_id: Uuid,
+) -> Option<chrono::DateTime<Utc>> {
+    sqlx::query_scalar("SELECT last_used_at FROM opmux_private.api_keys WHERE id = $1")
+        .bind(key_id)
+        .fetch_one(admin)
+        .await
+        .expect("last_used_at")
+}
+
+async fn assert_unready_database(app: axum::Router) {
+    let (health_status, _) = get_path(app.clone(), "/health").await;
+    assert_eq!(health_status, StatusCode::OK);
+    let (ready_status, ready_body) = get_path(app, "/ready").await;
+    assert_eq!(ready_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(ready_body["status"], "not_ready");
+    assert_eq!(
+        ready_body["dependencies"]["database"]["status"],
+        "unhealthy"
+    );
+    assert_eq!(
+        ready_body["dependencies"]["database"]["error"],
+        "Authentication database unavailable"
+    );
+    assert_safe_ready_body(&ready_body);
+}
+
+#[tokio::test]
+#[serial]
+async fn select_only_runtime_role_is_unready_until_last_used_update() {
+    isolate_provider_environment();
+    let _env = HealthEnv::apply("0", "2");
+    let admin = test_pool().await;
+    let issued = provision_inference_key(&admin).await;
+    let role = isolated_probe_role_name();
+    create_select_only_role(&admin, &role).await;
+    let runtime_pool = DatabasePoolConfig::new(required_database_url())
+        .expect("owned url")
+        .with_max_connections(2)
+        .expect("pool size")
+        .with_acquire_timeout(Duration::from_secs(10))
+        .expect("acquire timeout")
+        .connect_with_role(&role)
+        .await
+        .expect("dedicated isolated-role pool");
+
+    let selected: Option<Uuid> =
+        sqlx::query_scalar("SELECT id FROM opmux_private.api_keys WHERE id = $1")
+            .bind(issued.key_id)
+            .fetch_optional(&runtime_pool)
+            .await
+            .expect("SELECT must succeed for the isolated role");
+    assert_eq!(selected, Some(issued.key_id));
+    let last_used_before = key_last_used_at(&admin, issued.key_id).await;
+
+    let simulator = OpenAiSimulator::start().await;
+    let app = production_router_with_auth(
+        &simulator,
+        Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+            runtime_pool.clone(),
+        )))),
+        MetricsConfig::disabled(),
+    );
+
+    assert_unready_database(app.clone()).await;
+    let (auth_status, auth_body) =
+        post_route(app.clone(), &issued.credential, route_body()).await;
+    assert_eq!(auth_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_eq!(auth_body["error"]["code"], "AUTH_DEPENDENCY_UNAVAILABLE");
+    assert_eq!(simulator.generation_count(), 0);
+    assert_eq!(
+        key_last_used_at(&admin, issued.key_id).await,
+        last_used_before
+    );
+
+    grant_column_update(&admin, &role, "name").await;
+    assert_unready_database(app.clone()).await;
+    assert_eq!(simulator.generation_count(), 0);
+    assert_eq!(
+        key_last_used_at(&admin, issued.key_id).await,
+        last_used_before
+    );
+
+    grant_column_update(&admin, &role, "last_used_at").await;
+    let (ready_status, ready_body) = get_path(app.clone(), "/ready").await;
+    assert_eq!(ready_status, StatusCode::OK);
+    assert_eq!(ready_body["status"], "ready");
+    assert_eq!(ready_body["dependencies"]["database"]["status"], "healthy");
+    let (health_status, _) = get_path(app, "/health").await;
+    assert_eq!(health_status, StatusCode::OK);
+    assert_eq!(simulator.generation_count(), 0);
+    assert_eq!(
+        key_last_used_at(&admin, issued.key_id).await,
+        last_used_before
+    );
+
+    assert!(table_privilege(&admin, "opmux_runtime", "SELECT").await);
+    assert!(table_privilege(&admin, "opmux_runtime", "UPDATE").await);
+
+    runtime_pool.close().await;
+    tokio::task::yield_now().await;
+    drop_isolated_role(&admin, &role).await;
+    cleanup_clients(&admin, &[issued.client_id]).await;
+}

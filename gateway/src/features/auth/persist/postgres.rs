@@ -199,11 +199,10 @@ impl AuthStore for PostgresAuthStore {
     }
 
     async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
-        sqlx::query("SELECT 1 FROM opmux_private.api_keys LIMIT 0")
-            .execute(&self.pool)
-            .await
-            .map_err(AuthStoreError::from_sqlx)?;
-        Ok(())
+        let mut checkout = checkout(&self.pool).await?;
+        let result = probe_authentication_access_on(checkout.conn()).await;
+        checkout.release();
+        result
     }
 }
 
@@ -251,6 +250,29 @@ impl Drop for Checkout {
 async fn checkout(pool: &PgPool) -> Result<Checkout, AuthStoreError> {
     let conn = pool.acquire().await.map_err(AuthStoreError::from_sqlx)?;
     Ok(Checkout::new(conn))
+}
+
+async fn probe_authentication_access_on(
+    conn: &mut PoolConnection<Postgres>,
+) -> Result<(), AuthStoreError> {
+    sqlx::query(&format!(
+        "SELECT {KEY_COLUMNS} FROM opmux_private.api_keys LIMIT 0 FOR UPDATE"
+    ))
+    .execute(&mut **conn)
+    .await
+    .map_err(AuthStoreError::from_sqlx)?;
+    let can_update_last_used: bool = sqlx::query_scalar(
+        "SELECT has_column_privilege(\
+         current_user, 'opmux_private.api_keys', 'last_used_at', 'UPDATE')",
+    )
+    .fetch_one(&mut **conn)
+    .await
+    .map_err(AuthStoreError::from_sqlx)?;
+    if can_update_last_used {
+        Ok(())
+    } else {
+        Err(AuthStoreError::PermissionDenied)
+    }
 }
 
 async fn authenticate_digest_on(
