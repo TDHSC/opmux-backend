@@ -388,6 +388,12 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_P
 - `gateway/tests/process_lifecycle_test.rs` launches owned gateway subprocesses for occupied-port
   bind failure, SIGTERM/SIGINT draining, grace-bounded cancellation, and same-port restart against
   the owned simulator and local Supabase.
+- `gateway/tests/release_acceptance_test.rs` is the bounded milestone-15 CLI/API lifecycle
+  acceptance flow: actual `opmux-admin` tenant provisioning, HTTP key issuance/rotation/revocation,
+  default and named simulated-provider generation, tenant isolation with zero upstream calls on
+  denials, gateway restart with retained database state, one fallback recovery, and one database
+  outage recovery. It uses isolated fixture tenants and does not add production test-control routes.
+  OpenAI results are **SIMULATED ONLY**.
 - `gateway/tests/executor_integration_test.rs` is **ignored live-provider verification**. It does
   not run because a key is present. Live OpenAI checks are unrun unless you explicitly opt in.
 
