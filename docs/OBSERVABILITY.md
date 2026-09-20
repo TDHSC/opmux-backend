@@ -5,9 +5,13 @@ metrics.
 
 ## Correlation IDs
 
-- Incoming `X-Correlation-ID` is validated and echoed back when present.
-- Service always generates `X-Request-ID`.
-- Correlation context is injected by middleware and available to handlers/services.
+- Incoming `X-Correlation-ID` is validated and echoed back when present. Empty, overlong (>256
+  bytes), and non-UTF-8 values are dropped rather than reflected.
+- Service always generates `X-Request-ID`. Protected error bodies copy that value to
+  `error.request_id`.
+- Correlation middleware opens a root `http_request` span **before authentication**. Early auth,
+  input, overload, and later execution failures inherit `request_id` and a validated client
+  correlation ID. A request without `X-Correlation-ID` still receives `X-Request-ID`.
 
 ## Logging
 
@@ -18,6 +22,12 @@ metrics.
   `LOG_FORMAT` takes precedence over `LOG_JSON`. With only `LOG_JSON` set, `true` selects JSON and
   `false` selects pretty output.
 - The startup configuration summary reports the effective logging settings.
+- Request-scoped logs omit credentials, digests, prompts, metadata, connection strings,
+  authorization values, raw SQL, provider bodies, and credential-bearing URLs. Public error traces
+  keep `request_id` and a stable `error.code`. Terminal failures are logged once at the HTTP
+  envelope; authentication records `auth_duration_ms` and then ends before downstream work.
+- Authentication duration includes header validation, database lookup, and last-used update. A slow
+  upstream response increases execution time, not authentication time.
 
 ## Endpoints
 

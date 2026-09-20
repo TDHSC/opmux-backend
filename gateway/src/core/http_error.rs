@@ -171,6 +171,14 @@ pub fn current_request_id() -> String {
         .unwrap_or_default()
 }
 
+/// Returns the validated client correlation ID for the current request.
+pub fn current_client_correlation_id() -> Option<String> {
+    CURRENT_REQUEST_CONTEXT
+        .try_with(|ctx| ctx.client_correlation_id.clone())
+        .ok()
+        .flatten()
+}
+
 /// Serializes the canonical protected-API error envelope.
 ///
 /// Logs once at this HTTP boundary. Client errors are debug; server errors
@@ -204,11 +212,13 @@ pub fn error_response(
 }
 
 fn log_boundary(status: StatusCode, code: ErrorCode, request_id: &str) {
+    let client_correlation_id = current_client_correlation_id();
     if status.is_server_error() {
         tracing::error!(
             error_code = code.as_str(),
             status = status.as_u16(),
             request_id = request_id,
+            client_correlation_id = client_correlation_id.as_deref(),
             "request failed"
         );
     } else {
@@ -216,6 +226,7 @@ fn log_boundary(status: StatusCode, code: ErrorCode, request_id: &str) {
             error_code = code.as_str(),
             status = status.as_u16(),
             request_id = request_id,
+            client_correlation_id = client_correlation_id.as_deref(),
             "request rejected"
         );
     }

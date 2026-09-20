@@ -93,11 +93,13 @@ impl Application {
 /// Builds the production route and middleware graph.
 ///
 /// Middleware runs from the last layer added to the first:
-/// 1. Correlation ID - generates request_id for every route, including metrics
+/// 1. Correlation ID - root `http_request` span and request_id for every
+///    route, including metrics, before authentication
 /// 2. Metrics (when enabled) - records HTTP metrics, including auth failures
 /// 3. Deadline (protected routes only) - one monotonic budget covering auth,
 ///    body extraction, and execution. Health and metrics stay outside it.
-/// 4. Auth (protected routes only) - validates authentication
+/// 4. Auth (protected routes only) - validates authentication; duration ends
+///    before downstream handler work
 /// 5. Raw-body limit (protected routes only) - configured `max_request_body_bytes`
 ///    for JSON extraction. Health, readiness, and metrics stay outside it.
 ///

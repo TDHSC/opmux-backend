@@ -9,76 +9,82 @@ use axum::{
     middleware::Next,
     response::Response,
 };
+use std::time::Instant;
 
 /// Authentication middleware function.
 ///
-/// This is a CHILD SPAN. It automatically inherits `request_id` and
-/// `client_correlation_id` from the correlation_id_middleware (root span).
+/// This is a child of the root `http_request` span. Authentication timing
+/// covers header validation, digest lookup, and last-used update, then ends
+/// before downstream inference or management handling.
 ///
 /// Validates a single `X-API-Key` header through [`crate::features::auth::AuthService`]
 /// and injects [`AuthContext`]. Legacy development bypass settings are ignored.
-#[tracing::instrument(
-    level = "debug",
-    skip(state, request, next),
-    fields(auth_method = "api_key")
-)]
 pub async fn auth_middleware(
     State(state): State<AppState>,
     mut request: Request,
     next: Next,
 ) -> Result<Response, AuthError> {
-    let presented = match presented_api_key(request.headers()) {
-        PresentedKey::Value(value) => value,
-        PresentedKey::Missing | PresentedKey::Invalid => {
-            tracing::debug!(
-                success = false,
-                reason = "invalid_header",
-                "Authentication failed"
-            );
-            return Err(AuthError::InvalidCredentials);
-        }
-    };
-
-    let deadline = request.extensions().get::<RequestDeadline>().copied();
-    let auth_result = match deadline {
-        Some(deadline) => {
-            state
-                .auth_service
-                .authenticate_with_deadline(&presented, deadline)
-                .await
-        }
-        None => state.auth_service.authenticate(&presented).await,
-    };
-    let auth_context = match auth_result {
-        Ok(context) => context,
-        Err(AuthenticateError::InvalidCredentials) => {
-            tracing::debug!(
-                success = false,
-                reason = "invalid_credentials",
-                "Authentication failed"
-            );
-            return Err(AuthError::InvalidCredentials);
-        }
-        Err(AuthenticateError::StoreUnavailable) => {
-            tracing::debug!(
-                success = false,
-                reason = "store_unavailable",
-                "Authentication failed"
-            );
-            return Err(AuthError::StoreUnavailable);
-        }
-        Err(AuthenticateError::DeadlineExceeded) => {
-            tracing::debug!(
-                success = false,
-                reason = "deadline_exceeded",
-                "Authentication failed"
-            );
-            return Err(AuthError::DeadlineExceeded);
-        }
-    };
-
-    request.extensions_mut().insert(auth_context);
+    authenticate_request(&state, &mut request).await?;
     Ok(next.run(request).await)
+}
+
+#[tracing::instrument(
+    level = "debug",
+    skip(state, request),
+    fields(
+        auth_method = "api_key",
+        auth_duration_ms = tracing::field::Empty,
+        outcome = tracing::field::Empty,
+    )
+)]
+async fn authenticate_request(
+    state: &AppState,
+    request: &mut Request,
+) -> Result<(), AuthError> {
+    let started = Instant::now();
+    let result = match presented_api_key(request.headers()) {
+        PresentedKey::Missing | PresentedKey::Invalid => {
+            Err((AuthError::InvalidCredentials, "invalid_credentials"))
+        }
+        PresentedKey::Value(presented) => {
+            let deadline = request.extensions().get::<RequestDeadline>().copied();
+            let auth_result = match deadline {
+                Some(deadline) => {
+                    state
+                        .auth_service
+                        .authenticate_with_deadline(&presented, deadline)
+                        .await
+                }
+                None => state.auth_service.authenticate(&presented).await,
+            };
+            match auth_result {
+                Ok(context) => {
+                    request.extensions_mut().insert(context);
+                    Ok("authenticated")
+                }
+                Err(AuthenticateError::InvalidCredentials) => {
+                    Err((AuthError::InvalidCredentials, "invalid_credentials"))
+                }
+                Err(AuthenticateError::StoreUnavailable) => {
+                    Err((AuthError::StoreUnavailable, "store_unavailable"))
+                }
+                Err(AuthenticateError::DeadlineExceeded) => {
+                    Err((AuthError::DeadlineExceeded, "deadline_exceeded"))
+                }
+            }
+        }
+    };
+
+    let auth_duration_ms = started.elapsed().as_millis() as u64;
+    let span = tracing::Span::current();
+    span.record("auth_duration_ms", auth_duration_ms);
+    let (outcome, result) = match result {
+        Ok(outcome) => (outcome, Ok(())),
+        Err((error, outcome)) => (outcome, Err(error)),
+    };
+    span.record("outcome", outcome);
+    tracing::debug!(auth_duration_ms, outcome, "authentication finished");
+    result
 }
 
 pub(crate) enum PresentedKey {

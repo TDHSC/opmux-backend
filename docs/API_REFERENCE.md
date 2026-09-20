@@ -377,8 +377,10 @@ rejections, use one envelope:
 `error.request_id` equals the `X-Request-ID` response header. A valid `X-Correlation-ID` (non-empty,
 at most 256 bytes, valid header text) is echoed even on early failure. Empty, overlong, or non-UTF-8
 correlation values are ignored and replaced with no correlation header; a request ID is still
-generated. Codes and messages do not copy client correlation IDs, prompts, metadata, SQL, provider
-bodies, secrets, or credential-bearing URLs.
+generated. Request-scoped logs inherit those IDs from a root span opened before authentication.
+Authentication duration ends before downstream inference or management work. Codes and messages do
+not copy client correlation IDs, prompts, metadata, SQL, provider bodies, secrets, or
+credential-bearing URLs.
 
 Documented codes:
 

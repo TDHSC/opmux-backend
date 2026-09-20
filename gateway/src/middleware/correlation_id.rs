@@ -10,17 +10,21 @@
 use axum::{
     body::Body,
     extract::Request,
-    http::{HeaderValue, Response},
+    http::{HeaderMap, HeaderValue, Response},
     middleware::Next,
 };
+use tracing::Instrument;
 use uuid::Uuid;
 
-use crate::core::correlation::RequestContext;
+use crate::core::correlation::{http_request_span, RequestContext};
 
 /// Correlation ID middleware with fail-safe design.
 ///
+/// Opens the root `http_request` span before authentication so early
+/// failures inherit `request_id` and a validated client correlation ID.
+///
 /// # Flow
-/// 1. Generate unique `request_id` (UUID v4)
+/// 1. Generate unique `request_id` (UUID v4) and enter the root span
 /// 2. Extract optional `X-Correlation-ID` header with validation
 /// 3. Create `RequestContext` and inject into request extensions
 /// 4. Process request through handler chain
@@ -56,97 +60,89 @@ pub async fn correlation_id_middleware(
     mut request: Request,
     next: Next,
 ) -> Response<Body> {
-    // 1. Generate request_id (UUID v4 always succeeds)
     let request_id = Uuid::new_v4().to_string();
+    let span = http_request_span(&request_id, None);
 
-    // 2. Extract client_correlation_id with validation
-    let client_correlation_id = request
-        .headers()
-        .get("X-Correlation-ID")
-        .and_then(|v| {
-            // Validate UTF-8 encoding
-            match v.to_str() {
-                Ok(s) => Some(s),
-                Err(e) => {
-                    tracing::warn!(
-                        error = ?e,
-                        "Invalid UTF-8 in X-Correlation-ID header, ignoring"
-                    );
-                    None
-                }
-            }
-        })
-        .and_then(|s| {
-            // Validate length and non-empty
-            if s.is_empty() {
-                tracing::debug!("Empty X-Correlation-ID header, ignoring");
-                None
-            } else if s.len() > 256 {
-                tracing::warn!(
-                    length = s.len(),
-                    "X-Correlation-ID exceeds max length (256), rejecting"
-                );
-                None
-            } else {
-                Some(s.to_string())
-            }
-        });
+    async move {
+        let client_correlation_id = extract_client_correlation_id(request.headers());
+        if let Some(correlation_id) = client_correlation_id.as_deref() {
+            tracing::Span::current().record(
+                "client_correlation_id",
+                tracing::field::display(correlation_id),
+            );
+        }
 
-    // 3. Create RequestContext (always succeeds)
-    let request_context =
-        RequestContext::new(request_id.clone(), client_correlation_id.clone());
+        let request_context =
+            RequestContext::new(request_id, client_correlation_id.clone());
+        request.extensions_mut().insert(request_context.clone());
+        tracing::debug!("request context assigned");
 
-    tracing::debug!(
-        request_id = %request_context.request_id,
-        client_correlation_id = ?request_context.client_correlation_id,
-        "Correlation IDs assigned"
-    );
+        let mut response = crate::core::http_error::scope_request_context(
+            request_context.clone(),
+            next.run(request),
+        )
+        .await;
+        attach_correlation_headers(
+            &mut response,
+            &request_context.request_id,
+            request_context.client_correlation_id.as_deref(),
+        );
+        response
+    }
+    .instrument(span)
+    .await
+}
 
-    // 4. Inject into request extensions and task-local request scope so
-    // error envelopes can copy the same request_id as response headers.
-    request.extensions_mut().insert(request_context.clone());
+fn extract_client_correlation_id(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get("X-Correlation-ID")?;
+    let text = match value.to_str() {
+        Ok(text) => text,
+        Err(_) => {
+            tracing::warn!("Invalid UTF-8 in X-Correlation-ID header, ignoring");
+            return None;
+        }
+    };
+    if text.is_empty() {
+        tracing::debug!("Empty X-Correlation-ID header, ignoring");
+        None
+    } else if text.len() > 256 {
+        tracing::warn!(
+            length = text.len(),
+            "X-Correlation-ID exceeds max length (256), rejecting"
+        );
+        None
+    } else {
+        Some(text.to_string())
+    }
+}
 
-    // 5. Process request through handler chain
-    let mut response = crate::core::http_error::scope_request_context(
-        request_context,
-        next.run(request),
-    )
-    .await;
-
-    // 6. Add response headers (best effort, never fail)
-    // Always add X-Request-ID
-    match HeaderValue::from_str(&request_id) {
+fn attach_correlation_headers(
+    response: &mut Response<Body>,
+    request_id: &str,
+    client_correlation_id: Option<&str>,
+) {
+    match HeaderValue::from_str(request_id) {
         Ok(header_value) => {
             response.headers_mut().insert("X-Request-ID", header_value);
         }
-        Err(e) => {
-            tracing::error!(
-                request_id = %request_id,
-                error = ?e,
-                "Failed to create X-Request-ID header value"
-            );
+        Err(_) => {
+            tracing::error!("Failed to create X-Request-ID header value");
         }
     }
 
-    // Echo X-Correlation-ID if provided by client
-    if let Some(client_id) = client_correlation_id {
-        match HeaderValue::from_str(&client_id) {
-            Ok(header_value) => {
-                response
-                    .headers_mut()
-                    .insert("X-Correlation-ID", header_value);
-            }
-            Err(e) => {
-                tracing::error!(
-                    client_correlation_id = %client_id,
-                    error = ?e,
-                    "Failed to create X-Correlation-ID header value"
-                );
-            }
+    let Some(client_id) = client_correlation_id else {
+        return;
+    };
+    match HeaderValue::from_str(client_id) {
+        Ok(header_value) => {
+            response
+                .headers_mut()
+                .insert("X-Correlation-ID", header_value);
+        }
+        Err(_) => {
+            tracing::error!("Failed to create X-Correlation-ID header value");
         }
     }
-
-    response
 }
 
 #[cfg(test)]

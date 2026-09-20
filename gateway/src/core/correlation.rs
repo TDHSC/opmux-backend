@@ -74,6 +74,40 @@ impl RequestContext {
             timestamp: Utc::now(),
         }
     }
+
+    /// Root HTTP span created before authentication and handler work.
+    ///
+    /// Child spans and events inherit `request_id` and, when present, the
+    /// validated client correlation ID.
+    pub fn root_span(&self) -> tracing::Span {
+        http_request_span(&self.request_id, self.client_correlation_id.as_deref())
+    }
+}
+
+/// Creates the root request span before authentication and handlers.
+///
+/// # Parameters
+/// - `request_id` - System-generated request ID
+/// - `client_correlation_id` - Validated client correlation, if any
+///
+/// # Returns
+/// Span that request-scoped logs should inherit
+pub fn http_request_span(
+    request_id: &str,
+    client_correlation_id: Option<&str>,
+) -> tracing::Span {
+    let span = tracing::info_span!(
+        "http_request",
+        request_id = %request_id,
+        client_correlation_id = tracing::field::Empty,
+    );
+    if let Some(correlation_id) = client_correlation_id {
+        span.record(
+            "client_correlation_id",
+            tracing::field::display(correlation_id),
+        );
+    }
+    span
 }
 
 #[cfg(test)]
@@ -111,5 +145,25 @@ mod tests {
         assert_eq!(context.request_id, cloned.request_id);
         assert_eq!(context.client_correlation_id, cloned.client_correlation_id);
         assert_eq!(context.timestamp, cloned.timestamp);
+    }
+
+    #[test]
+    fn root_span_records_request_and_optional_correlation() {
+        let with_corr = RequestContext::new(
+            "req-span-1".to_string(),
+            Some("corr-span-1".to_string()),
+        );
+        let span = with_corr.root_span();
+        assert_eq!(
+            span.metadata().map(|meta| meta.name()),
+            Some("http_request")
+        );
+
+        let without_corr = RequestContext::new("req-span-2".to_string(), None);
+        let span = without_corr.root_span();
+        assert_eq!(
+            span.metadata().map(|meta| meta.name()),
+            Some("http_request")
+        );
     }
 }

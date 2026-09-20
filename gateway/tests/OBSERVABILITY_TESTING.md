@@ -24,6 +24,10 @@ Expected:
 
 - `X-Request-ID` exists in response headers
 - `X-Correlation-ID: manual-corr-001` echoed in response headers
+- With `RUST_LOG=gateway=debug LOG_FORMAT=json`, request-scoped lines include the same `request_id`
+  (and the client correlation when provided). Auth, input, overload, and upstream failures keep that
+  correlation. Fresh debug output must omit credentials, prompts, metadata, SQL, and provider
+  bodies. Authentication `auth_duration_ms` must not grow by a delayed simulator response.
 
 ## 2) Health endpoint response
 

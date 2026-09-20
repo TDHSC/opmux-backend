@@ -16,8 +16,9 @@ use serde_json::Value;
 
 /// HTTP handler for AI routing ingress endpoint.
 ///
-/// This is the ROOT SPAN for request tracing. All child spans automatically
-/// inherit `request_id` and `client_correlation_id` from this span.
+/// This is a child of the root `http_request` span created before
+/// authentication. Child spans inherit `request_id` and optional client
+/// correlation from that root.
 ///
 /// # Flow
 /// 1. Validates inference capability
@@ -40,7 +41,6 @@ use serde_json::Value;
     fields(
         request_id = %request_context.request_id,
         client_correlation_id = ?request_context.client_correlation_id,
-        user_id = %auth_context.client_id,
         endpoint = "/api/v1/route",
         prompt_length = tracing::field::Empty,
     )
