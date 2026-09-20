@@ -14,8 +14,6 @@ mod tests {
     use serial_test::serial;
     use std::collections::HashMap;
     use std::sync::Arc;
-    use std::time::Duration;
-    use tokio::sync::RwLock;
 
     /// Mock LLM vendor for testing health checks.
     ///
@@ -123,15 +121,10 @@ mod tests {
 
         let repository = ExecutorRepository { vendors };
 
-        Some(Arc::new(ExecutorService {
-            repository: Arc::new(repository),
-            config: crate::features::executor::config::ExecutorConfig::mock_policy(
-                3, 30_000,
-            ),
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        }))
+        Some(Arc::new(ExecutorService::from_repository(
+            repository,
+            crate::features::executor::config::ExecutorConfig::mock_policy(3, 30_000),
+        )))
     }
 
     #[tokio::test]
@@ -365,15 +358,10 @@ mod tests {
         );
 
         let repository = ExecutorRepository { vendors };
-        let executor = Arc::new(ExecutorService {
-            repository: Arc::new(repository),
-            config: crate::features::executor::config::ExecutorConfig::mock_policy(
-                3, 30_000,
-            ),
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        });
+        let executor = Arc::new(ExecutorService::from_repository(
+            repository,
+            crate::features::executor::config::ExecutorConfig::mock_policy(3, 30_000),
+        ));
 
         // Create HealthService with executor
         let service = HealthService::with_executor(executor);

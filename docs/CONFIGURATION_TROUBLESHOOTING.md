@@ -76,8 +76,12 @@ responses are classified from headers without waiting for an unused error body. 
 switching is enforced in catalog order under that shared budget: transient transport, attempt
 timeout, and provider 5xx may continue to a later target; client, protocol, shared-credential,
 quota, and same-account throttling errors do not switch models. A fallback whose output-token cap
-cannot satisfy the already-validated request is skipped without rewriting parameters. Target
-circuits, concurrency admission, and inbound raw-body enforcement are later milestones.
+cannot satisfy the already-validated request is skipped without rewriting parameters. Target-scoped
+circuits open after `circuit_failure_threshold` consecutive eligible hop failures and skip that
+target for `circuit_cooldown_ms` without consuming an attempt. A healthy same-provider fallback
+remains usable. After cooldown, at most one half-open probe is admitted per target; success closes
+the circuit and failure reopens it. Permanent credential, quota, protocol, and rejection errors do
+not open circuits. Concurrency admission and inbound raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |
@@ -219,6 +223,8 @@ Action: inspect upstream availability, timeout, and base URL settings.
 
 ### `/api/v1/route` returns `503 circuit_open`
 
-Cause: consecutive transient failures tripped circuit breaker.
+Cause: every eligible target on the route is circuit-open after consecutive transient hop failures.
 
-Action: wait cooldown window and recover upstream connectivity.
+Action: wait `circuit_cooldown_ms`, then retry. A single half-open probe recovers a healthy target.
+Another same-provider model can remain usable while one target is open. Permanent credential or
+quota failures do not open circuits.

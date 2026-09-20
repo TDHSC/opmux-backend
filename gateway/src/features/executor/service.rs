@@ -5,6 +5,7 @@ use super::{
         evaluate_retry_delay, plan_retry_delay, provider_minimum_cannot_fit,
         AttemptBudget, DelayError, SystemJitter,
     },
+    circuit::{CircuitAdmission, TargetCircuitRegistry},
     config::ExecutorConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult},
@@ -12,28 +13,8 @@ use super::{
 };
 use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
-use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant};
-use tokio::sync::RwLock;
-
-const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 3;
-const DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_SECS: u64 = 30;
-
-#[derive(Debug, Clone)]
-pub(crate) struct CircuitBreakerState {
-    consecutive_failures: u32,
-    opened_until: Option<Instant>,
-}
-
-impl CircuitBreakerState {
-    fn new() -> Self {
-        Self {
-            consecutive_failures: 0,
-            opened_until: None,
-        }
-    }
-}
+use std::time::Duration;
 
 /// Service for LLM execution with business logic.
 ///
@@ -44,9 +25,8 @@ pub struct ExecutorService {
     pub(crate) repository: Arc<ExecutorRepository>,
     /// Executor configuration for retry logic and timeout settings
     pub(crate) config: ExecutorConfig,
-    pub(crate) circuit_breakers: Arc<RwLock<HashMap<String, CircuitBreakerState>>>,
-    pub(crate) circuit_breaker_failure_threshold: u32,
-    pub(crate) circuit_breaker_open_duration: Duration,
+    /// Target-scoped circuit breakers with single-flight half-open probes
+    pub(crate) circuits: TargetCircuitRegistry,
 }
 
 impl ExecutorService {
@@ -62,61 +42,18 @@ impl ExecutorService {
     /// Returns `NoVendorsConfigured` if no vendors are configured
     pub fn from_config(config: ExecutorConfig) -> Result<Self, ExecutorError> {
         let repository = ExecutorRepository::from_config(config.clone())?;
-        Ok(Self {
+        Ok(Self::from_repository(repository, config))
+    }
+
+    /// Builds a service around an already-constructed repository.
+    pub(crate) fn from_repository(
+        repository: ExecutorRepository,
+        config: ExecutorConfig,
+    ) -> Self {
+        Self {
+            circuits: TargetCircuitRegistry::from_config(&config),
             repository: Arc::new(repository),
             config,
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
-            circuit_breaker_open_duration: Duration::from_secs(
-                DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_SECS,
-            ),
-        })
-    }
-
-    async fn circuit_open_retry_after_ms(&self, vendor_id: &str) -> Option<u64> {
-        let mut breakers = self.circuit_breakers.write().await;
-        let state = breakers
-            .entry(vendor_id.to_string())
-            .or_insert_with(CircuitBreakerState::new);
-
-        match state.opened_until {
-            Some(until) if until > Instant::now() => {
-                Some((until - Instant::now()).as_millis() as u64)
-            }
-            Some(_) => {
-                state.opened_until = None;
-                state.consecutive_failures = 0;
-                None
-            }
-            None => None,
-        }
-    }
-
-    async fn record_vendor_success(&self, vendor_id: &str) {
-        let mut breakers = self.circuit_breakers.write().await;
-        let state = breakers
-            .entry(vendor_id.to_string())
-            .or_insert_with(CircuitBreakerState::new);
-        state.consecutive_failures = 0;
-        state.opened_until = None;
-    }
-
-    async fn record_vendor_failure(&self, vendor_id: &str) {
-        let mut breakers = self.circuit_breakers.write().await;
-        let state = breakers
-            .entry(vendor_id.to_string())
-            .or_insert_with(CircuitBreakerState::new);
-        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
-
-        if state.consecutive_failures >= self.circuit_breaker_failure_threshold {
-            let opened_until = Instant::now() + self.circuit_breaker_open_duration;
-            state.opened_until = Some(opened_until);
-            state.consecutive_failures = 0;
-            tracing::warn!(
-                vendor_id = %vendor_id,
-                open_duration_secs = self.circuit_breaker_open_duration.as_secs(),
-                "Circuit breaker opened for vendor"
-            );
         }
     }
 
@@ -265,8 +202,102 @@ impl ExecutorService {
         deadline: RequestDeadline,
     ) -> Result<ExecutionResult, ExecutorError> {
         let mut budget = AttemptBudget::new(self.config.max_total_attempts);
-        self.execute_attempts(plan, params, deadline, &mut budget)
-            .await
+        self.execute_attempts(
+            plan,
+            params,
+            deadline,
+            &mut budget,
+            self.config.max_retries,
+        )
+        .await
+    }
+
+    /// Runs one hop through target-scoped circuit admission.
+    async fn execute_hop(
+        &self,
+        plan: &RoutePlan,
+        params: &ExecutionParams,
+        deadline: RequestDeadline,
+        budget: &mut AttemptBudget,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        if deadline.is_expired() {
+            return Err(ExecutorError::DeadlineExceeded);
+        }
+        if budget.remaining() == 0 {
+            return Err(ExecutorError::ApiCallFailed(
+                "Max retries exceeded".to_string(),
+            ));
+        }
+
+        match self.circuits.admit(&plan.target_id) {
+            CircuitAdmission::Reject { retry_after_ms } => {
+                tracing::warn!(
+                    vendor_id = %plan.vendor_id,
+                    target_id = %plan.target_id,
+                    model_id = %plan.model_id,
+                    retry_after_ms,
+                    "Skipping target due to open circuit"
+                );
+                Err(ExecutorError::CircuitOpen {
+                    vendor: plan.vendor_id.clone(),
+                    retry_after_ms,
+                })
+            }
+            CircuitAdmission::Probe(guard) => {
+                tracing::info!(
+                    vendor_id = %plan.vendor_id,
+                    target_id = %plan.target_id,
+                    model_id = %plan.model_id,
+                    "Admitting half-open recovery probe"
+                );
+                match self
+                    .execute_attempts(plan, params, deadline, budget, 0)
+                    .await
+                {
+                    Ok(result) => {
+                        guard.success();
+                        Ok(result)
+                    }
+                    Err(ExecutorError::DeadlineExceeded) => {
+                        Err(ExecutorError::DeadlineExceeded)
+                    }
+                    Err(error) if Self::is_retryable_error(&error) => {
+                        guard.transient_failure();
+                        Err(error)
+                    }
+                    Err(error) => {
+                        guard.ignore_permanent();
+                        Err(error)
+                    }
+                }
+            }
+            CircuitAdmission::Allow => {
+                match self
+                    .execute_attempts(
+                        plan,
+                        params,
+                        deadline,
+                        budget,
+                        self.config.max_retries,
+                    )
+                    .await
+                {
+                    Ok(result) => {
+                        self.circuits.record_success(&plan.target_id);
+                        Ok(result)
+                    }
+                    Err(ExecutorError::DeadlineExceeded) => {
+                        Err(ExecutorError::DeadlineExceeded)
+                    }
+                    Err(error) => {
+                        if Self::is_retryable_error(&error) {
+                            self.circuits.record_failure(&plan.target_id);
+                        }
+                        Err(error)
+                    }
+                }
+            }
+        }
     }
 
     /// Runs bounded attempts for one hop against the shared request budget.
@@ -276,7 +307,7 @@ impl ExecutorService {
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
             model_id = %plan.model_id,
-            max_retries = self.config.max_retries,
+            max_retries,
         )
     )]
     async fn execute_attempts(
@@ -285,8 +316,8 @@ impl ExecutorService {
         params: &ExecutionParams,
         deadline: RequestDeadline,
         budget: &mut AttemptBudget,
+        max_retries: u32,
     ) -> Result<ExecutionResult, ExecutorError> {
-        let max_retries = self.config.max_retries;
         let mut last_error = None;
         let mut retry_after_ms: Option<u64> = None;
         let max_attempt = Duration::from_millis(self.config.timeout_ms);
@@ -595,17 +626,6 @@ impl ExecutorService {
                 );
                 continue;
             }
-            if let Some(retry_after_ms) =
-                self.circuit_open_retry_after_ms(&fallback.vendor_id).await
-            {
-                tracing::warn!(
-                    fallback_index = index + 1,
-                    vendor_id = %fallback.vendor_id,
-                    retry_after_ms = retry_after_ms,
-                    "Skipping fallback due to open circuit"
-                );
-                continue;
-            }
 
             tracing::info!(
                 fallback_index = index + 1,
@@ -616,12 +636,8 @@ impl ExecutorService {
                 "Attempting configured fallback target"
             );
 
-            match self
-                .execute_attempts(fallback, params, deadline, budget)
-                .await
-            {
+            match self.execute_hop(fallback, params, deadline, budget).await {
                 Ok(result) => {
-                    self.record_vendor_success(&fallback.vendor_id).await;
                     tracing::info!(
                         fallback_index = index + 1,
                         fallback_count = fallback_plans.len(),
@@ -636,9 +652,6 @@ impl ExecutorService {
                     return Err(ExecutorError::DeadlineExceeded);
                 }
                 Err(e) => {
-                    if Self::is_retryable_error(&e) {
-                        self.record_vendor_failure(&fallback.vendor_id).await;
-                    }
                     if let Some(terminal) =
                         Self::terminate_for_provider_minimum(&e, deadline)
                     {
@@ -751,32 +764,6 @@ impl ExecutorService {
         }
 
         let mut budget = AttemptBudget::new(self.config.max_total_attempts);
-
-        if let Some(retry_after_ms) =
-            self.circuit_open_retry_after_ms(&plan.vendor_id).await
-        {
-            tracing::warn!(
-                vendor_id = %plan.vendor_id,
-                retry_after_ms = retry_after_ms,
-                "Primary vendor circuit is open, skipping primary execution"
-            );
-
-            let params = Self::extract_params(payload)?;
-            let circuit_open_error = ExecutorError::CircuitOpen {
-                vendor: plan.vendor_id.clone(),
-                retry_after_ms,
-            };
-            return self
-                .execute_fallbacks(
-                    &plan.fallback_plans,
-                    &params,
-                    circuit_open_error,
-                    deadline,
-                    &mut budget,
-                )
-                .await;
-        }
-
         let params = Self::extract_params(payload)?;
 
         tracing::info!(
@@ -786,12 +773,8 @@ impl ExecutorService {
             plan.model_id
         );
 
-        match self
-            .execute_attempts(plan, &params, deadline, &mut budget)
-            .await
-        {
+        match self.execute_hop(plan, &params, deadline, &mut budget).await {
             Ok(result) => {
-                self.record_vendor_success(&plan.vendor_id).await;
                 tracing::info!(
                     "Primary execution succeeded: vendor={}, target={}, model={}, tokens={}, cost=${}",
                     plan.vendor_id,
@@ -804,9 +787,6 @@ impl ExecutorService {
             }
             Err(ExecutorError::DeadlineExceeded) => Err(ExecutorError::DeadlineExceeded),
             Err(primary_error) => {
-                if Self::is_retryable_error(&primary_error) {
-                    self.record_vendor_failure(&plan.vendor_id).await;
-                }
                 if let Some(terminal) =
                     Self::terminate_for_provider_minimum(&primary_error, deadline)
                 {

@@ -49,7 +49,7 @@ pub enum ErrorCode {
     InternalError,
     /// Overall protected-request deadline elapsed.
     DeadlineExceeded,
-    /// No eligible target is currently usable. Owned by later circuits.
+    /// No eligible target is currently usable because circuits are open.
     CircuitOpen,
     /// Local generation admission is saturated. Owned by later admission.
     Overloaded,

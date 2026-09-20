@@ -154,6 +154,10 @@ pub struct ExecutorConfig {
     pub max_total_attempts: u32,
     /// Exponential full-jitter cap in milliseconds
     pub backoff_cap_ms: u64,
+    /// Consecutive eligible hop failures before a target circuit opens
+    pub circuit_failure_threshold: u32,
+    /// Target circuit cooldown in milliseconds
+    pub circuit_cooldown_ms: u64,
 }
 
 impl fmt::Debug for ExecutorConfig {
@@ -168,6 +172,8 @@ impl fmt::Debug for ExecutorConfig {
             .field("max_retries", &self.max_retries)
             .field("max_total_attempts", &self.max_total_attempts)
             .field("backoff_cap_ms", &self.backoff_cap_ms)
+            .field("circuit_failure_threshold", &self.circuit_failure_threshold)
+            .field("circuit_cooldown_ms", &self.circuit_cooldown_ms)
             .finish()
     }
 }
@@ -204,6 +210,8 @@ impl ExecutorConfig {
             max_retries: settings.limits.retries_per_target,
             max_total_attempts: settings.limits.max_total_attempts,
             backoff_cap_ms: settings.limits.backoff_cap_ms(),
+            circuit_failure_threshold: settings.limits.circuit_failure_threshold,
+            circuit_cooldown_ms: settings.limits.circuit_cooldown_ms(),
         }
     }
 
@@ -219,6 +227,8 @@ impl ExecutorConfig {
             max_retries,
             max_total_attempts: max_retries.saturating_add(1).max(1),
             backoff_cap_ms: 2_000,
+            circuit_failure_threshold: 3,
+            circuit_cooldown_ms: 30_000,
         }
     }
 
@@ -260,6 +270,14 @@ impl ExecutorConfig {
             max_retries,
             max_total_attempts,
             backoff_cap_ms,
+            circuit_failure_threshold: env::var("OPMUX_CIRCUIT_FAILURE_THRESHOLD")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(3),
+            circuit_cooldown_ms: env::var("OPMUX_CIRCUIT_COOLDOWN_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(30_000),
         }
     }
 
@@ -344,6 +362,8 @@ mod tests {
         assert_eq!(config.max_retries, 1);
         assert_eq!(config.max_total_attempts, 3);
         assert_eq!(config.backoff_cap_ms, 2_000);
+        assert_eq!(config.circuit_failure_threshold, 3);
+        assert_eq!(config.circuit_cooldown_ms, 30_000);
     }
 
     #[test]

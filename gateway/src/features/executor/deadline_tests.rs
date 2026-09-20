@@ -16,7 +16,6 @@ use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::RwLock;
 
 struct ScriptedVendor {
     vendor_id: String,
@@ -139,19 +138,14 @@ fn service_with(
     for (id, vendor) in vendors {
         vendor_map.insert(id, vendor);
     }
-    ExecutorService {
-        repository: Arc::new(ExecutorRepository {
+    let mut config = ExecutorConfig::mock_policy(max_retries, timeout_ms);
+    config.max_total_attempts = 16;
+    ExecutorService::from_repository(
+        ExecutorRepository {
             vendors: vendor_map,
-        }),
-        config: {
-            let mut config = ExecutorConfig::mock_policy(max_retries, timeout_ms);
-            config.max_total_attempts = 16;
-            config
         },
-        circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-        circuit_breaker_failure_threshold: 3,
-        circuit_breaker_open_duration: Duration::from_secs(30),
-    }
+        config,
+    )
 }
 
 fn plan(vendor_id: &str, model_id: &str, fallbacks: Vec<RoutePlan>) -> RoutePlan {

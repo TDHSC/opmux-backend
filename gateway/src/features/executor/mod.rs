@@ -20,6 +20,7 @@
 
 pub mod bounded_body;
 pub(crate) mod budget;
+pub(crate) mod circuit;
 pub mod config;
 pub mod error;
 pub mod models;
@@ -39,6 +40,8 @@ pub use service::ExecutorService;
 // Tests in separate files
 #[cfg(test)]
 mod budget_tests;
+#[cfg(test)]
+mod circuit_tests;
 #[cfg(test)]
 mod deadline_tests;
 #[cfg(test)]

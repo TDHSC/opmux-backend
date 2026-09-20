@@ -18,20 +18,23 @@ use gateway::{
 };
 use serial_test::serial;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use support::{
     auth_service_from_pool, cleanup_clients, isolate_provider_environment,
     min_padded_chat_completion_len, padded_chat_completion_bytes,
     provision_inference_key, test_pool, CapturedRequest, OpenAiSimulator,
     ScriptedResponse,
 };
+use tokio::time::sleep;
 use tower::ServiceExt;
 
 const MODEL_A: &str = "fallback-model-a";
 const MODEL_B: &str = "fallback-model-b";
 const MODEL_C: &str = "fallback-model-c";
+const REPORTED_A_OK: &str = "reported-fallback-a";
 const REPORTED_B: &str = "reported-fallback-b";
 const REPORTED_C: &str = "reported-fallback-c";
+const CONTENT_A_OK: &str = "FALLBACK_A_RECOVERED";
 const CONTENT_B: &str = "FALLBACK_B_OK";
 const CONTENT_C: &str = "FALLBACK_C_OK";
 const PROMPT_TOKENS: i64 = 120;
@@ -621,5 +624,224 @@ async fn eligibility_matrix_prevents_futile_same_provider_switching() {
         "deadline must not call fallback models, got {models:?}"
     );
     assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+fn circuit_settings(
+    simulator: &OpenAiSimulator,
+    cooldown: Duration,
+    mutate: impl FnOnce(&mut Settings),
+) -> Settings {
+    chain_settings(simulator, |settings| {
+        settings.limits.retries_per_target = 0;
+        settings.limits.max_total_attempts = 8;
+        settings.limits.circuit_failure_threshold = 1;
+        settings.limits.circuit_cooldown = cooldown;
+        settings.catalog.routes.insert(
+            "beta-only".to_string(),
+            Route {
+                primary: "beta".to_string(),
+                fallbacks: Vec::new(),
+            },
+        );
+        mutate(settings);
+    })
+}
+
+async fn wait_generation_at_least(simulator: &OpenAiSimulator, expected: usize) {
+    let started = Instant::now();
+    while simulator.generation_count() < expected {
+        assert!(
+            started.elapsed() < Duration::from_secs(1),
+            "timed out waiting for {expected} generation calls, saw {}",
+            simulator.generation_count()
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn open_primary_circuit_skips_a_and_keeps_same_provider_b() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = router(
+        circuit_settings(&simulator, Duration::from_secs(30), |_| {}),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let first =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(first.status(), StatusCode::OK);
+    let first_body = body_json(first).await;
+    assert_eq!(first_body["response"]["content"], CONTENT_B);
+    assert_eq!(first_body["model_used"], REPORTED_B);
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_B]);
+
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let second =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(second.status(), StatusCode::OK);
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_B, MODEL_B]);
+
+    simulator.enqueue_chat(chat_reported(REPORTED_B, "DIRECT_B_OK"));
+    let direct = post_route(
+        app,
+        &issued.credential,
+        route_body("beta-only", Some(false)),
+    )
+    .await;
+    assert_eq!(direct.status(), StatusCode::OK);
+    let direct_body = body_json(direct).await;
+    assert_eq!(direct_body["response"]["content"], "DIRECT_B_OK");
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_B, MODEL_B],
+    );
+    assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn all_eligible_open_targets_return_circuit_open_without_generation() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = router(
+        circuit_settings(&simulator, Duration::from_secs(30), |settings| {
+            settings.catalog.routes.insert(
+                "ab".to_string(),
+                Route {
+                    primary: "alpha".to_string(),
+                    fallbacks: vec!["beta".to_string()],
+                },
+            );
+        }),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(upstream_500());
+    let first = post_route(app.clone(), &issued.credential, route_body("ab", None)).await;
+    let first_status = first.status();
+    let first_body = body_json(first).await;
+    assert_eq!(first_status, StatusCode::BAD_GATEWAY);
+    assert_envelope(first_status, &first_body, "UPSTREAM_ERROR");
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_B]);
+
+    let before = simulator.generation_count();
+    let second = post_route(app, &issued.credential, route_body("ab", None)).await;
+    let status = second.status();
+    let body = body_json(second).await;
+    assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    assert_envelope(status, &body, "CIRCUIT_OPEN");
+    assert_eq!(simulator.generation_count(), before);
+    assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn half_open_probe_is_single_flight_and_success_closes() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let cooldown = Duration::from_millis(80);
+    let app = router(
+        circuit_settings(&simulator, cooldown, |_| {}),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let opened =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(opened.status(), StatusCode::OK);
+    sleep(cooldown + Duration::from_millis(40)).await;
+
+    let (held_ok, hold) = chat_reported(REPORTED_A_OK, CONTENT_A_OK).hold();
+    simulator.enqueue_chat(held_ok);
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    simulator.enqueue_chat(chat_reported(MODEL_A, "A_RESTORED"));
+
+    let probe = tokio::spawn({
+        let app = app.clone();
+        let credential = issued.credential.clone();
+        async move { post_route(app, &credential, route_body("chain", None)).await }
+    });
+    wait_generation_at_least(&simulator, 3).await;
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_B, MODEL_A]);
+
+    let waiter =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(waiter.status(), StatusCode::OK);
+    let waiter_body = body_json(waiter).await;
+    assert_eq!(waiter_body["response"]["content"], CONTENT_B);
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_A, MODEL_B],
+    );
+
+    hold.release();
+    let probe_response = probe.await.expect("join probe");
+    assert_eq!(probe_response.status(), StatusCode::OK);
+    let probe_body = body_json(probe_response).await;
+    assert_eq!(probe_body["response"]["content"], CONTENT_A_OK);
+
+    let restored = post_route(app, &issued.credential, route_body("chain", None)).await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored_body = body_json(restored).await;
+    assert_eq!(restored_body["response"]["content"], "A_RESTORED");
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_A, MODEL_B, MODEL_A],
+    );
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn failed_probe_reopens_target_circuit() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let cooldown = Duration::from_millis(80);
+    let app = router(
+        circuit_settings(&simulator, cooldown, |_| {}),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let opened =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(opened.status(), StatusCode::OK);
+    sleep(cooldown + Duration::from_millis(40)).await;
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let failed_probe =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(failed_probe.status(), StatusCode::OK);
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_A, MODEL_B],
+    );
+
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let skipped = post_route(app, &issued.credential, route_body("chain", None)).await;
+    assert_eq!(skipped.status(), StatusCode::OK);
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_A, MODEL_B, MODEL_B],
+    );
     cleanup_clients(&pool, &[issued.client_id]).await;
 }

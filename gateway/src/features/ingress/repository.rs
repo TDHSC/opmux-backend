@@ -91,7 +91,6 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::RwLock;
 
     #[derive(Clone)]
     struct MockVendor {
@@ -152,13 +151,10 @@ mod tests {
             }),
         );
 
-        let executor = Arc::new(ExecutorService {
-            repository: Arc::new(ExecutorRepository { vendors }),
-            config: ExecutorConfig::mock_policy(0, 30_000),
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        });
+        let executor = Arc::new(ExecutorService::from_repository(
+            ExecutorRepository { vendors },
+            ExecutorConfig::mock_policy(0, 30_000),
+        ));
 
         IngressRepository::new(executor)
     }

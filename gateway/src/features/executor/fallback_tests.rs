@@ -2,6 +2,7 @@
 
 use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
+use crate::features::executor::circuit::TargetCircuitRegistry;
 use crate::features::executor::{
     config::ExecutorConfig,
     error::ExecutorError,
@@ -15,7 +16,6 @@ use serde_json::json;
 use std::collections::{HashMap, VecDeque};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::RwLock;
 
 const MODEL_A: &str = "fallback-model-a";
 const MODEL_B: &str = "fallback-model-b";
@@ -157,18 +157,33 @@ fn service_with(
     max_retries: u32,
     max_total_attempts: u32,
 ) -> ExecutorService {
+    service_with_circuit(
+        vendor,
+        max_retries,
+        max_total_attempts,
+        3,
+        Duration::from_secs(30),
+    )
+}
+
+fn service_with_circuit(
+    vendor: SharedProviderVendor,
+    max_retries: u32,
+    max_total_attempts: u32,
+    threshold: u32,
+    cooldown: Duration,
+) -> ExecutorService {
     let mut vendors: HashMap<String, Arc<dyn LLMVendor>> = HashMap::new();
     vendors.insert("openai".to_string(), Arc::new(vendor));
     let mut config = ExecutorConfig::mock_policy(max_retries, 10_000);
     config.max_total_attempts = max_total_attempts;
     config.backoff_cap_ms = 1;
-    ExecutorService {
-        repository: Arc::new(ExecutorRepository { vendors }),
-        config,
-        circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-        circuit_breaker_failure_threshold: 3,
-        circuit_breaker_open_duration: Duration::from_secs(30),
-    }
+    config.circuit_failure_threshold = threshold;
+    config.circuit_cooldown_ms = u64::try_from(cooldown.as_millis()).unwrap_or(u64::MAX);
+    let mut service =
+        ExecutorService::from_repository(ExecutorRepository { vendors }, config);
+    service.circuits = TargetCircuitRegistry::with_system_clock(threshold, cooldown);
+    service
 }
 
 fn equal_chain() -> RoutePlan {
@@ -543,4 +558,114 @@ async fn deadline_during_fallback_is_authoritative() {
         other => panic!("expected DeadlineExceeded, got {other:?}"),
     }
     assert_eq!(observed_models(&calls), vec![MODEL_A]);
+}
+
+#[tokio::test]
+async fn open_primary_target_does_not_block_same_provider_fallback() {
+    let (vendor, calls, _params) = SharedProviderVendor::new(HashMap::from([
+        (MODEL_A.to_string(), vec![Err(network())]),
+        (
+            MODEL_B.to_string(),
+            vec![
+                Ok(success(MODEL_B, "b-first")),
+                Ok(success(MODEL_B, "b-second")),
+                Ok(success(MODEL_B, "b-direct")),
+            ],
+        ),
+    ]));
+    let service = service_with_circuit(vendor, 0, 8, 1, Duration::from_secs(60));
+    let plan = chain(hop("alpha", MODEL_A, 512), vec![hop("beta", MODEL_B, 512)]);
+    let payload = payload_with_tokens(32);
+    let deadline = RequestDeadline::from_timeout(Duration::from_secs(30));
+
+    let first = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect("fallback B should succeed after A opens");
+    assert_eq!(first.content, "b-first");
+
+    let second = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect("open A must still reach healthy same-provider B");
+    assert_eq!(second.content, "b-second");
+
+    let direct_b = service
+        .execute(&hop("beta", MODEL_B, 512), &payload, deadline)
+        .await
+        .expect("direct B must remain usable");
+    assert_eq!(direct_b.content, "b-direct");
+
+    assert_eq!(
+        observed_models(&calls),
+        vec![MODEL_A, MODEL_B, MODEL_B, MODEL_B]
+    );
+}
+
+#[tokio::test]
+async fn skipping_open_target_consumes_no_attempt_and_all_open_returns_circuit_open() {
+    let (vendor, calls, _params) = SharedProviderVendor::new(HashMap::from([
+        (MODEL_A.to_string(), vec![Err(network())]),
+        (MODEL_B.to_string(), vec![Err(network())]),
+    ]));
+    let service = service_with_circuit(vendor, 0, 8, 1, Duration::from_secs(60));
+    let plan = chain(hop("alpha", MODEL_A, 512), vec![hop("beta", MODEL_B, 512)]);
+    let payload = payload_with_tokens(32);
+    let deadline = RequestDeadline::from_timeout(Duration::from_secs(30));
+
+    let first = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect_err("both hops fail");
+    match first {
+        ExecutorError::NetworkError(message) => assert_eq!(message, "transient"),
+        other => panic!("expected primary NetworkError, got {other:?}"),
+    }
+    assert_eq!(observed_models(&calls), vec![MODEL_A, MODEL_B]);
+
+    let second = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect_err("all eligible targets circuit-open");
+    match second {
+        ExecutorError::CircuitOpen { retry_after_ms, .. } => {
+            assert!(retry_after_ms > 0);
+        }
+        other => panic!("expected CircuitOpen, got {other:?}"),
+    }
+    assert_eq!(
+        observed_models(&calls),
+        vec![MODEL_A, MODEL_B],
+        "skipping open targets must not start provider calls"
+    );
+}
+
+#[tokio::test]
+async fn permanent_failures_do_not_open_target_circuit() {
+    let (vendor, calls, _params) = SharedProviderVendor::new(HashMap::from([
+        (
+            MODEL_A.to_string(),
+            vec![
+                Err(ExecutorError::AuthenticationFailed("openai".into())),
+                Err(ExecutorError::AuthenticationFailed("openai".into())),
+            ],
+        ),
+        (
+            MODEL_B.to_string(),
+            vec![Ok(success(MODEL_B, "should-not-run"))],
+        ),
+    ]));
+    let service = service_with_circuit(vendor, 0, 8, 1, Duration::from_secs(60));
+    let plan = chain(hop("alpha", MODEL_A, 512), vec![hop("beta", MODEL_B, 512)]);
+    let payload = payload_with_tokens(32);
+    let deadline = RequestDeadline::from_timeout(Duration::from_secs(30));
+
+    let first = service.execute(&plan, &payload, deadline).await;
+    assert!(matches!(first, Err(ExecutorError::AuthenticationFailed(_))));
+    let second = service.execute(&plan, &payload, deadline).await;
+    assert!(matches!(
+        second,
+        Err(ExecutorError::AuthenticationFailed(_))
+    ));
+    assert_eq!(observed_models(&calls), vec![MODEL_A, MODEL_A]);
 }

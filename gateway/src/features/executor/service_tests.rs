@@ -4,6 +4,7 @@
 mod tests {
     use crate::core::contracts::RoutePlan;
     use crate::core::deadline::RequestDeadline;
+    use crate::features::executor::circuit::TargetCircuitRegistry;
     use crate::features::executor::{
         config::{ExecutorConfig, OpenAIConfig},
         error::ExecutorError,
@@ -18,7 +19,6 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use std::time::Duration;
-    use tokio::sync::RwLock;
 
     /// Configurable mock vendor for testing.
     ///
@@ -170,18 +170,12 @@ mod tests {
         }
 
         let config = ExecutorConfig::mock_policy(3, 30_000);
-
-        let repository = ExecutorRepository {
-            vendors: vendor_map,
-        };
-
-        ExecutorService {
-            repository: Arc::new(repository),
+        ExecutorService::from_repository(
+            ExecutorRepository {
+                vendors: vendor_map,
+            },
             config,
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        }
+        )
     }
 
     #[test]
@@ -697,13 +691,10 @@ mod tests {
         );
 
         let repository = ExecutorRepository { vendors };
-        let service = ExecutorService {
-            repository: Arc::new(repository),
-            config: ExecutorConfig::mock_policy(3, 30_000),
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        };
+        let service = ExecutorService::from_repository(
+            repository,
+            ExecutorConfig::mock_policy(3, 30_000),
+        );
 
         // Call check_all_vendors_health
         // Should succeed because at least one vendor (healthy-vendor) is healthy
@@ -774,13 +765,10 @@ mod tests {
         );
 
         let repository = ExecutorRepository { vendors };
-        let service = ExecutorService {
-            repository: Arc::new(repository),
-            config: ExecutorConfig::mock_policy(3, 30_000),
-            circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
-            circuit_breaker_failure_threshold: 3,
-            circuit_breaker_open_duration: Duration::from_secs(30),
-        };
+        let service = ExecutorService::from_repository(
+            repository,
+            ExecutorConfig::mock_policy(3, 30_000),
+        );
 
         // Call check_all_vendors_health
         // Should fail because all vendors panic
@@ -806,8 +794,8 @@ mod tests {
         let mut service =
             create_mock_service(vec![("openai".to_string(), failing_vendor)]);
         service.config.max_retries = 0;
-        service.circuit_breaker_failure_threshold = 2;
-        service.circuit_breaker_open_duration = Duration::from_secs(60);
+        service.circuits =
+            TargetCircuitRegistry::with_system_clock(2, Duration::from_secs(60));
 
         let payload = json!({
             "messages": [
@@ -856,8 +844,8 @@ mod tests {
             ("backup".to_string(), healthy_fallback),
         ]);
         service.config.max_retries = 0;
-        service.circuit_breaker_failure_threshold = 1;
-        service.circuit_breaker_open_duration = Duration::from_secs(60);
+        service.circuits =
+            TargetCircuitRegistry::with_system_clock(1, Duration::from_secs(60));
 
         let payload = json!({
             "messages": [
@@ -895,8 +883,8 @@ mod tests {
         let mut service =
             create_mock_service(vec![("openai".to_string(), auth_failing_vendor)]);
         service.config.max_retries = 0;
-        service.circuit_breaker_failure_threshold = 1;
-        service.circuit_breaker_open_duration = Duration::from_secs(60);
+        service.circuits =
+            TargetCircuitRegistry::with_system_clock(1, Duration::from_secs(60));
 
         let payload = json!({
             "messages": [

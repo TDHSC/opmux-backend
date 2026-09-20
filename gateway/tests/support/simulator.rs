@@ -17,6 +17,7 @@ use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
 /// Dummy provider credential accepted by the fixture. Not a live key.
@@ -116,6 +117,26 @@ pub enum ScriptedResponse {
         /// Response produced after the stall.
         inner: Box<ScriptedResponse>,
     },
+    /// Wait for an explicit release before producing the inner response.
+    Held {
+        /// Signaled by [`ResponseHold::release`].
+        notify: Arc<Notify>,
+        /// Response produced after release.
+        inner: Box<ScriptedResponse>,
+    },
+}
+
+/// Releases a held simulator response.
+#[derive(Clone)]
+pub struct ResponseHold {
+    notify: Arc<Notify>,
+}
+
+impl ResponseHold {
+    /// Lets the waiting handler continue.
+    pub fn release(&self) {
+        self.notify.notify_waiters();
+    }
 }
 
 impl ScriptedResponse {
@@ -233,6 +254,18 @@ impl ScriptedResponse {
             before_body: delay,
             inner: Box::new(self),
         }
+    }
+
+    /// Holds this response until the returned latch is released.
+    pub fn hold(self) -> (Self, ResponseHold) {
+        let notify = Arc::new(Notify::new());
+        (
+            Self::Held {
+                notify: notify.clone(),
+                inner: Box::new(self),
+            },
+            ResponseHold { notify },
+        )
     }
 }
 
@@ -539,8 +572,8 @@ fn render(
             }
             response
         }
-        ScriptedResponse::Delayed { .. } => {
-            unreachable!("delayed scripts are unwrapped before render")
+        ScriptedResponse::Delayed { .. } | ScriptedResponse::Held { .. } => {
+            unreachable!("delayed or held scripts are unwrapped before render")
         }
     }
 }
@@ -550,19 +583,26 @@ async fn respond(
     request_model: Option<&str>,
     state: &Arc<SimulatorInner>,
 ) -> Response {
-    match script {
-        ScriptedResponse::Delayed {
-            before_headers,
-            before_body,
-            inner,
-        } => {
-            if !before_headers.is_zero() {
-                tokio::time::sleep(before_headers).await;
+    let mut script = script;
+    loop {
+        match script {
+            ScriptedResponse::Delayed {
+                before_headers,
+                before_body,
+                inner,
+            } => {
+                if !before_headers.is_zero() {
+                    tokio::time::sleep(before_headers).await;
+                }
+                let response = render(*inner, request_model, state);
+                return stall_body(response, before_body).await;
             }
-            let response = render(*inner, request_model, state);
-            stall_body(response, before_body).await
+            ScriptedResponse::Held { notify, inner } => {
+                notify.notified().await;
+                script = *inner;
+            }
+            other => return render(other, request_model, state),
         }
-        other => render(other, request_model, state),
     }
 }
 

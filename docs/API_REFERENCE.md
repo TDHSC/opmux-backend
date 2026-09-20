@@ -333,6 +333,7 @@ Response `200 OK`:
   - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`)
   - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
   - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)
+    or all eligible targets circuit-open (`CIRCUIT_OPEN`)
 
 Protected route, key-create, key-list, and key-delete errors, including JSON and path extraction
 rejections, use one envelope:
@@ -371,7 +372,7 @@ Documented codes:
 | `UPSTREAM_RATE_LIMIT`         | 429    | Upstream throttled the request                         |
 | `INTERNAL_ERROR`              | 500    | Unexpected internal fault                              |
 | `DEADLINE_EXCEEDED`           | 504    | Protected-request deadline elapsed                     |
-| `CIRCUIT_OPEN`                | 503    | Reserved for later circuit exhaustion                  |
+| `CIRCUIT_OPEN`                | 503    | All eligible targets are circuit-open                  |
 | `OVERLOADED`                  | 429    | Reserved for later local admission                     |
 | `PAYLOAD_TOO_LARGE`           | 413    | Reserved for later raw-body limits                     |
 
