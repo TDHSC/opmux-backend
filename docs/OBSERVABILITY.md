@@ -38,8 +38,9 @@ metrics.
 - `GET /metrics` - Prometheus metrics payload (when enabled). Internal scrape surface: no
   application auth; restrict it at the network layer in production. HTTP counts/duration include
   auth failures. Execution series cover attempts, retries, fallback, circuit state/transitions,
-  deadlines, local overload, and successful usage. Labels are bounded route templates, configured
-  target IDs, and finite outcome classes. See [PROMETHEUS.md](PROMETHEUS.md).
+  deadlines, local overload, and successful usage. Labels are bounded route templates, accepted
+  catalog target IDs exported verbatim, and finite outcome classes. See
+  [PROMETHEUS.md](PROMETHEUS.md).
 
 ## Local verification
 

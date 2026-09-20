@@ -10,7 +10,7 @@ use axum::{
     http::{Request, StatusCode},
 };
 use gateway::{
-    core::config::{Route, Settings},
+    core::config::{Route, Settings, Target},
     core::metrics::{
         MetricsConfig, CIRCUIT_STATE, CIRCUIT_TRANSITIONS_TOTAL, DEADLINE_EXCEEDED_TOTAL,
         EXECUTION_ATTEMPTS_TOTAL, EXECUTION_FALLBACKS_TOTAL, EXECUTION_RETRIES_TOTAL,
@@ -38,6 +38,47 @@ const UNKNOWN_ROUTE: &str = "obs002-unknown-route";
 const REPORTED_MODEL: &str = "obs002-reported-model";
 const CORRELATION: &str = "obs002-corr-unique";
 const PROMPT_SENTINEL: &str = "OBS002_PROMPT_SENTINEL";
+const DOTTED_A: &str = "alpha.primary";
+const DOTTED_B: &str = "beta.fallback";
+
+fn long_target_c() -> String {
+    let id = format!("configured-long-target-{}", "c".repeat(50));
+    assert!(id.len() > 64);
+    id
+}
+
+fn clone_primary(settings: &Settings) -> Target {
+    settings
+        .catalog
+        .targets
+        .get("primary")
+        .expect("primary target")
+        .clone()
+}
+
+fn install_dotted_long_chain(settings: &mut Settings) {
+    let template = clone_primary(settings);
+    let long_c = long_target_c();
+    settings
+        .catalog
+        .targets
+        .insert(DOTTED_A.to_string(), template.clone());
+    settings
+        .catalog
+        .targets
+        .insert(DOTTED_B.to_string(), template.clone());
+    settings.catalog.targets.insert(long_c.clone(), template);
+    settings.catalog.routes.insert(
+        "default".to_string(),
+        Route {
+            primary: DOTTED_A.to_string(),
+            fallbacks: vec![DOTTED_B.to_string(), long_c],
+        },
+    );
+    settings.limits.retries_per_target = 0;
+    settings.limits.max_total_attempts = 3;
+    settings.limits.max_fallback_targets = 2;
+}
 
 struct Fixture {
     pool: sqlx::PgPool,
@@ -597,28 +638,52 @@ async fn overall_deadline_records_without_counting_usage() {
         settings.limits.max_total_attempts = 1;
         settings.limits.protected_request_deadline = Duration::from_millis(200);
         settings.limits.max_attempt_timeout = Duration::from_millis(200);
+        settings.limits.max_fallback_targets = 0;
+        settings.catalog.routes.insert(
+            "default".to_string(),
+            Route {
+                primary: "primary".to_string(),
+                fallbacks: Vec::new(),
+            },
+        );
     })
     .await;
-    fixture
-        .simulator
-        .enqueue_chat(chat_usage().delay_headers(Duration::from_secs(2)));
+    let (held, hold) = chat_usage().hold();
+    fixture.simulator.enqueue_chat(held);
     let before = scrape(fixture.app.clone()).await;
     let generations = fixture.simulator.generation_count();
-    let started = Instant::now();
 
-    let response = post_route(
-        fixture.app.clone(),
-        Some(&fixture.issued.credential),
-        route_body(),
-        "obs002-deadline",
-    )
-    .await;
+    let admitted = tokio::spawn({
+        let app = fixture.app.clone();
+        let credential = fixture.issued.credential.clone();
+        async move {
+            post_route(app, Some(&credential), route_body(), "obs002-deadline").await
+        }
+    });
+    let wait_started = Instant::now();
+    while fixture.simulator.generation_count() < generations + 1 {
+        assert!(
+            wait_started.elapsed() < Duration::from_secs(2),
+            "simulator call never started"
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+    assert_eq!(fixture.simulator.generation_count(), generations + 1);
+
+    let response = admitted.await.expect("deadline join");
     assert_eq!(response.status(), StatusCode::GATEWAY_TIMEOUT);
-    assert!(started.elapsed() < Duration::from_secs(2));
-    assert!(fixture.simulator.generation_count() <= generations + 1);
 
     let after = scrape(fixture.app.clone()).await;
-    assert!(delta(&before, &after, DEADLINE_EXCEEDED_TOTAL, &[]) >= 1.0);
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "deadline"), ("target", "primary")]
+        ),
+        1.0
+    );
+    assert_eq!(delta(&before, &after, DEADLINE_EXCEEDED_TOTAL, &[]), 1.0);
     assert_eq!(
         delta(
             &before,
@@ -628,6 +693,179 @@ async fn overall_deadline_records_without_counting_usage() {
         ),
         0.0
     );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_RETRIES_TOTAL,
+            &[("target", "primary")]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_FALLBACKS_TOTAL,
+            &[("from_target", "primary"), ("to_target", "secondary")]
+        ),
+        0.0
+    );
+
+    hold.release();
+    sleep(Duration::from_millis(80)).await;
+    let late = scrape(fixture.app.clone()).await;
+    assert_eq!(
+        delta(
+            &after,
+            &late,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "deadline"), ("target", "primary")]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &after,
+            &late,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "success"), ("target", "primary")]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &after,
+            &late,
+            SUCCESSFUL_PROMPT_TOKENS_TOTAL,
+            &[("target", "primary")]
+        ),
+        0.0
+    );
+    assert_eq!(delta(&after, &late, DEADLINE_EXCEEDED_TOTAL, &[]), 0.0);
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn dotted_and_long_targets_keep_adjacent_fallback_identity() {
+    let long_c = long_target_c();
+    let fixture = Fixture::new(install_dotted_long_chain).await;
+    fixture.simulator.enqueue_chat(upstream_500());
+    fixture.simulator.enqueue_chat(upstream_500());
+    fixture.simulator.enqueue_chat(chat_usage());
+    let before = scrape(fixture.app.clone()).await;
+    let generations = fixture.simulator.generation_count();
+
+    let response = post_route(
+        fixture.app.clone(),
+        Some(&fixture.issued.credential),
+        route_body(),
+        "obs002-dotted-long",
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(fixture.simulator.generation_count(), generations + 3);
+
+    let after = scrape(fixture.app.clone()).await;
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "retryable"), ("target", DOTTED_A)]
+        ),
+        1.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "retryable"), ("target", DOTTED_B)]
+        ),
+        1.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "success"), ("target", long_c.as_str())]
+        ),
+        1.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_FALLBACKS_TOTAL,
+            &[("from_target", DOTTED_A), ("to_target", DOTTED_B)]
+        ),
+        1.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_FALLBACKS_TOTAL,
+            &[("from_target", DOTTED_B), ("to_target", long_c.as_str())]
+        ),
+        1.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            SUCCESSFUL_PROMPT_TOKENS_TOTAL,
+            &[("target", long_c.as_str())]
+        ),
+        PROMPT_TOKENS as f64
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            SUCCESSFUL_PROMPT_TOKENS_TOTAL,
+            &[("target", DOTTED_A)]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            SUCCESSFUL_PROMPT_TOKENS_TOTAL,
+            &[("target", DOTTED_B)]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "success"), ("target", "unknown")]
+        ),
+        0.0
+    );
+    assert_eq!(
+        delta(
+            &before,
+            &after,
+            EXECUTION_ATTEMPTS_TOTAL,
+            &[("outcome", "retryable"), ("target", "unknown")]
+        ),
+        0.0
+    );
+    for (metric, key, value) in emitted_label_values(&after) {
+        if matches!(key.as_str(), "target" | "from_target" | "to_target") {
+            assert_ne!(
+                value, "unknown",
+                "{metric} collapsed a configured catalog id"
+            );
+        }
+    }
     fixture.drop_rows().await;
 }
 
@@ -850,11 +1088,11 @@ async fn identifying_values_never_become_metric_labels() {
         "protocol",
         "rejected",
         "deadline",
+        "cancelled",
         "circuit_open",
         "internal",
     ];
     let allowed_states = ["closed", "half_open", "open"];
-    let allowed_targets = ["primary", "secondary", "unknown"];
     for (metric, key, value) in emitted_label_values(&body) {
         match key.as_str() {
             "endpoint" => assert!(
@@ -877,10 +1115,24 @@ async fn identifying_values_never_become_metric_labels() {
                 allowed_outcomes.contains(&value.as_str()),
                 "unbounded outcome label"
             ),
-            "target" | "from_target" | "to_target" => assert!(
-                allowed_targets.contains(&value.as_str()),
-                "unbounded target label"
-            ),
+            "target" | "from_target" | "to_target" => {
+                assert_ne!(value, UNKNOWN_ROUTE);
+                assert_ne!(value, REPORTED_MODEL);
+                assert_ne!(value, CORRELATION);
+                assert!(!value.contains(PROMPT_SENTINEL));
+                assert!(
+                    !value.contains("http://") && !value.contains("https://"),
+                    "url became a target label on {metric}"
+                );
+                assert!(
+                    !value.starts_with('/'),
+                    "raw path became a target label on {metric}"
+                );
+                assert_ne!(
+                    value, "unknown",
+                    "configured catalog ids must not collapse to unknown"
+                );
+            }
             "to_state" => assert!(
                 allowed_states.contains(&value.as_str()),
                 "unbounded circuit state label"

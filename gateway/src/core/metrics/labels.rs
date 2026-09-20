@@ -3,13 +3,9 @@
 //! Execution labels are operator-configured catalog identifiers and a finite
 //! set of protocol/outcome classes. They are never credentials, prompts,
 //! metadata, tenant/key/request/correlation IDs, raw paths, URLs, provider
-//! model strings, or raw error bodies.
-
-/// Replacement for a value that is not a safe catalog identifier.
-pub const UNKNOWN_ID: &str = "unknown";
-
-/// Inclusive maximum length of a configured target or route identifier label.
-pub const MAX_CATALOG_ID_LEN: usize = 64;
+//! model strings, or raw error bodies. Cardinality is bounded by catalog
+//! membership: accepted target IDs are exported verbatim and escaped by the
+//! Prometheus exporter.
 
 /// Outcome class for one started provider attempt.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -32,6 +28,8 @@ pub enum AttemptOutcome {
     Rejected,
     /// Overall protected-request deadline elapsed.
     Deadline,
+    /// Started attempt dropped before completion while the deadline remained.
+    Cancelled,
     /// Target circuit skipped or exhausted the route.
     CircuitOpen,
     /// Unexpected internal execution fault.
@@ -51,6 +49,7 @@ impl AttemptOutcome {
             Self::Protocol => "protocol",
             Self::Rejected => "rejected",
             Self::Deadline => "deadline",
+            Self::Cancelled => "cancelled",
             Self::CircuitOpen => "circuit_open",
             Self::Internal => "internal",
         }
@@ -88,24 +87,14 @@ impl CircuitStateLabel {
     }
 }
 
-/// Returns a catalog identifier when it is a bounded configured ID.
+/// Returns an accepted configured catalog identifier verbatim.
 ///
-/// Other values collapse to [`UNKNOWN_ID`] so URLs, request IDs, and raw
-/// paths cannot become series.
+/// Callers must pass operator-configured target IDs from the catalog, never
+/// unvalidated request IDs, provider model strings, or URLs. The Prometheus
+/// exporter escapes label values; this function does not truncate, hash, or
+/// collapse identifiers to `unknown`.
 pub fn bound_catalog_id(value: &str) -> &str {
-    if is_configured_id(value) {
-        value
-    } else {
-        UNKNOWN_ID
-    }
-}
-
-fn is_configured_id(value: &str) -> bool {
-    let len = value.len();
-    (1..=MAX_CATALOG_ID_LEN).contains(&len)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    value
 }
 
 #[cfg(test)]
@@ -113,22 +102,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn catalog_ids_stay_verbatim_and_unsafe_values_collapse() {
+    fn accepted_catalog_ids_stay_verbatim() {
         assert_eq!(bound_catalog_id("primary"), "primary");
         assert_eq!(bound_catalog_id("alpha-1"), "alpha-1");
         assert_eq!(bound_catalog_id("Secondary_2"), "Secondary_2");
-        assert_eq!(
-            bound_catalog_id("http://127.0.0.1/v1/chat/completions"),
-            UNKNOWN_ID
-        );
-        assert_eq!(bound_catalog_id("/api/v1/route?x=1"), UNKNOWN_ID);
-        assert_eq!(bound_catalog_id("req/obs002"), UNKNOWN_ID);
-        assert_eq!(bound_catalog_id(""), UNKNOWN_ID);
-        assert_eq!(
-            bound_catalog_id(&"a".repeat(MAX_CATALOG_ID_LEN + 1)),
-            UNKNOWN_ID
-        );
-        assert_eq!(bound_catalog_id("reported model"), UNKNOWN_ID);
+        assert_eq!(bound_catalog_id("alpha.primary"), "alpha.primary");
+        let long = format!("configured-long-target-{}", "c".repeat(50));
+        assert!(long.len() > 64);
+        assert_eq!(bound_catalog_id(&long), long);
+        assert_eq!(AttemptOutcome::Cancelled.as_str(), "cancelled");
         assert_ne!(AttemptOutcome::RateLimit.as_str(), "overloaded");
         assert_ne!(AttemptOutcome::RateLimit.as_str(), "OVERLOADED");
     }

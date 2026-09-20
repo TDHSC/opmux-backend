@@ -5,6 +5,8 @@
 //! refinement uses a short window inside the remaining attempt budget.
 
 use super::error::ExecutorError;
+use crate::core::deadline::RequestDeadline;
+use crate::core::metrics::{AttemptOutcome, ExecutionMetrics};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -79,6 +81,60 @@ impl AttemptContext {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .clone()
+    }
+}
+
+/// Records one started-attempt outcome exactly once on completion or drop.
+///
+/// Drop uses `deadline` when the request has expired and `cancelled` otherwise.
+/// This guard does not increment the overall deadline counter.
+pub(crate) struct StartedAttempt {
+    metrics: Arc<dyn ExecutionMetrics>,
+    target_id: String,
+    deadline: RequestDeadline,
+    recorded: bool,
+}
+
+impl StartedAttempt {
+    /// Starts accounting for one dispatched provider attempt.
+    pub(crate) fn new(
+        metrics: Arc<dyn ExecutionMetrics>,
+        target_id: impl Into<String>,
+        deadline: RequestDeadline,
+    ) -> Self {
+        Self {
+            metrics,
+            target_id: target_id.into(),
+            deadline,
+            recorded: false,
+        }
+    }
+
+    /// Records `outcome` once and suppresses the drop path.
+    pub(crate) fn complete(mut self, outcome: AttemptOutcome) {
+        self.record(outcome);
+    }
+
+    fn record(&mut self, outcome: AttemptOutcome) {
+        if self.recorded {
+            return;
+        }
+        self.recorded = true;
+        self.metrics.record_attempt(&self.target_id, outcome);
+    }
+}
+
+impl Drop for StartedAttempt {
+    fn drop(&mut self) {
+        if self.recorded {
+            return;
+        }
+        let outcome = if self.deadline.is_expired() {
+            AttemptOutcome::Deadline
+        } else {
+            AttemptOutcome::Cancelled
+        };
+        self.record(outcome);
     }
 }
 

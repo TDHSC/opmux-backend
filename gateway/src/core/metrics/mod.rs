@@ -25,9 +25,9 @@ pub use execution::{
     EXECUTION_RETRIES_TOTAL, OVERLOAD_REJECTED_TOTAL, SUCCESSFUL_COMPLETION_TOKENS_TOTAL,
     SUCCESSFUL_PROMPT_TOKENS_TOTAL,
 };
-pub use labels::{
-    bound_catalog_id, AttemptOutcome, CircuitStateLabel, MAX_CATALOG_ID_LEN, UNKNOWN_ID,
-};
+#[cfg(test)]
+pub use execution::{MetricEvent, RecordingExecutionMetrics};
+pub use labels::{bound_catalog_id, AttemptOutcome, CircuitStateLabel};
 
 /// Metrics configuration.
 #[derive(Debug, Clone)]

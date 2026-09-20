@@ -48,7 +48,7 @@ Recorded only for started provider calls and local admission outcomes:
 | -------------------------------------------- | -------------------------- | ----------------------------------------------------- |
 | `gateway_execution_attempts_total`           | `target`, `outcome`        | One increment per started provider attempt            |
 | `gateway_execution_retries_total`            | `target`                   | Extra call on the same target after a prior attempt   |
-| `gateway_execution_fallbacks_total`          | `from_target`, `to_target` | Execution moved to a later configured target          |
+| `gateway_execution_fallbacks_total`          | `from_target`, `to_target` | Adjacent evaluated hop to a later configured target   |
 | `gateway_circuit_transitions_total`          | `target`, `to_state`       | Circuit phase change (`closed`, `half_open`, `open`)  |
 | `gateway_circuit_state`                      | `target`                   | Gauge: 0 closed, 1 half-open, 2 open                  |
 | `gateway_deadline_exceeded_total`            | none                       | Overall protected-request deadline expiry             |
@@ -56,10 +56,20 @@ Recorded only for started provider calls and local admission outcomes:
 | `gateway_successful_prompt_tokens_total`     | `target`                   | Validated prompt tokens from successful responses     |
 | `gateway_successful_completion_tokens_total` | `target`                   | Validated completion tokens from successful responses |
 
-`target` / `from_target` / `to_target` are operator-configured catalog target IDs (or `unknown` if a
-value is not a safe identifier). `outcome` is one of: `success`, `retryable`, `timeout`,
-`rate_limit`, `quota`, `upstream_auth`, `protocol`, `rejected`, `deadline`, `circuit_open`,
-`internal`.
+`target` / `from_target` / `to_target` are accepted operator-configured catalog target IDs, exported
+verbatim. Cardinality is bounded by catalog membership. The Prometheus exporter escapes label
+values; identifiers are not truncated, hashed, or collapsed to `unknown`. Callers never source these
+labels from unvalidated request IDs, provider-returned model strings, or URLs.
+
+`outcome` is one of: `success`, `retryable`, `timeout`, `rate_limit`, `quota`, `upstream_auth`,
+`protocol`, `rejected`, `deadline`, `cancelled`, `circuit_open`, `internal`. A started attempt that
+is dropped after the overall deadline records `deadline`; a drop while time remains records
+`cancelled`. Cancelled work does not record successful usage. The attempt guard does not increment
+`gateway_deadline_exceeded_total`.
+
+Fallback series record adjacent evaluated hops (`A -> B`, then `B -> C`). An incompatible token-cap
+skip does not count as an evaluated hop, so skipping `B` records `A -> C`. Circuit-skipped hops do
+not fabricate provider attempts.
 
 Rejected requests (missing/invalid credentials, unknown routes, local overload) are not execution
 attempts. Failed-attempt usage is not counted. Local overload and provider throttling

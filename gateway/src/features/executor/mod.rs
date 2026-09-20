@@ -49,6 +49,8 @@ mod deadline_tests;
 #[cfg(test)]
 mod fallback_tests;
 #[cfg(test)]
+mod metrics_tests;
+#[cfg(test)]
 mod repository_tests;
 #[cfg(test)]
 mod service_tests;

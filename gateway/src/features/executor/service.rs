@@ -1,7 +1,7 @@
 // Service Layer - Business logic for LLM execution (retry, fallback, parameter extraction)
 
 use super::{
-    attempt::AttemptContext,
+    attempt::{AttemptContext, StartedAttempt},
     budget::{
         evaluate_retry_delay, plan_retry_delay, provider_minimum_cannot_fit,
         AttemptBudget, DelayError, SystemJitter,
@@ -462,18 +462,22 @@ impl ExecutorService {
                 }
             }
 
+            let Some(cutoff) = deadline.attempt_cutoff(max_attempt) else {
+                return Err(self.deadline_exceeded());
+            };
             if !budget.try_start() {
                 break;
             }
-
-            let Some(attempt_timeout) = deadline.cap(max_attempt) else {
-                return Err(self.deadline_exceeded());
-            };
             if attempt > 0 {
                 self.metrics.record_retry(&plan.target_id);
             }
-            let cutoff = tokio::time::Instant::now() + attempt_timeout;
+            let attempt_timeout = cutoff.duration_since(tokio::time::Instant::now());
             let attempt_ctx = AttemptContext::new(cutoff);
+            let guard = StartedAttempt::new(
+                self.metrics.clone(),
+                plan.target_id.clone(),
+                deadline,
+            );
             let outcome = tokio::time::timeout_at(
                 cutoff,
                 self.repository.call_llm(plan, params, &attempt_ctx),
@@ -483,8 +487,7 @@ impl ExecutorService {
             // success. Inner-future-first timeout polling can complete the
             // attempt at the same instant the deadline elapses.
             if deadline.is_expired() {
-                self.metrics
-                    .record_attempt(&plan.target_id, AttemptOutcome::Deadline);
+                guard.complete(AttemptOutcome::Deadline);
                 return Err(self.deadline_exceeded());
             }
             let error = match outcome {
@@ -498,24 +501,28 @@ impl ExecutorService {
                             "Execution succeeded after retry"
                         );
                     }
+                    guard.complete(AttemptOutcome::Success);
                     self.record_success(&plan.target_id, &result);
                     return Ok(result);
                 }
-                Ok(Err(error)) => error,
+                Ok(Err(error)) => {
+                    guard.complete(attempt_outcome(&error));
+                    error
+                }
                 Err(_elapsed) => match attempt_ctx.observed() {
-                    Some(observed) => observed,
-                    None if deadline.is_expired() => {
-                        self.metrics
-                            .record_attempt(&plan.target_id, AttemptOutcome::Deadline);
-                        return Err(self.deadline_exceeded());
+                    Some(observed) => {
+                        guard.complete(attempt_outcome(&observed));
+                        observed
                     }
                     None => {
-                        ExecutorError::TimeoutError(attempt_timeout.as_millis() as u64)
+                        let error = ExecutorError::TimeoutError(
+                            attempt_timeout.as_millis() as u64,
+                        );
+                        guard.complete(AttemptOutcome::Timeout);
+                        error
                     }
                 },
             };
-            self.metrics
-                .record_attempt(&plan.target_id, attempt_outcome(&error));
             if Self::is_retryable_error(&error) {
                 retry_after_ms = match &error {
                     ExecutorError::RateLimitExceeded {
@@ -706,6 +713,7 @@ impl ExecutorService {
             fallback_plans.len()
         );
 
+        let mut from_target = primary_target_id.to_string();
         for (index, fallback) in fallback_plans.iter().enumerate() {
             if deadline.is_expired() {
                 return Err(self.deadline_exceeded());
@@ -731,7 +739,7 @@ impl ExecutorService {
                 "Attempting configured fallback target"
             );
             self.metrics
-                .record_fallback(primary_target_id, &fallback.target_id);
+                .record_fallback(&from_target, &fallback.target_id);
 
             match self.execute_hop(fallback, params, deadline, budget).await {
                 Ok(result) => {
@@ -749,6 +757,7 @@ impl ExecutorService {
                     return Err(error);
                 }
                 Err(e) => {
+                    from_target = fallback.target_id.clone();
                     if let Some(terminal) =
                         Self::terminate_for_provider_minimum(&e, deadline)
                     {
@@ -918,8 +927,6 @@ impl ExecutorService {
     }
 
     fn record_success(&self, target_id: &str, result: &ExecutionResult) {
-        self.metrics
-            .record_attempt(target_id, AttemptOutcome::Success);
         self.metrics.record_successful_usage(
             target_id,
             result.prompt_tokens,

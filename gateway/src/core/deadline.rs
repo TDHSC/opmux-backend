@@ -74,6 +74,35 @@ impl RequestDeadline {
             Some(remaining.min(max))
         }
     }
+
+    /// Absolute cutoff for one provider attempt.
+    ///
+    /// Uses this request deadline instant, not a later `now` plus a previously
+    /// observed remaining duration.
+    ///
+    /// # Parameters
+    /// - `max_attempt` - Configured per-attempt maximum
+    ///
+    /// # Returns
+    /// `None` when the deadline has elapsed or the capped cutoff is not in the
+    /// future, otherwise `min(now + max_attempt, deadline)`
+    pub fn attempt_cutoff(self, max_attempt: Duration) -> Option<tokio::time::Instant> {
+        let now = tokio::time::Instant::now();
+        if now >= self.deadline {
+            return None;
+        }
+        let max_cutoff = now + max_attempt;
+        let cutoff = if self.deadline < max_cutoff {
+            self.deadline
+        } else {
+            max_cutoff
+        };
+        if now >= cutoff {
+            None
+        } else {
+            Some(cutoff)
+        }
+    }
 }
 
 #[cfg(test)]
@@ -114,5 +143,26 @@ mod tests {
             .expect("deadline still open");
         assert!(capped <= Duration::from_millis(15));
         assert!(capped > Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attempt_cutoff_uses_absolute_deadline_not_later_now_plus_remaining() {
+        let deadline = RequestDeadline::from_timeout(Duration::from_millis(100));
+        tokio::time::advance(Duration::from_millis(40)).await;
+        let stale_remaining = deadline.remaining();
+        tokio::time::advance(Duration::from_millis(10)).await;
+        let cutoff = deadline
+            .attempt_cutoff(Duration::from_secs(10))
+            .expect("deadline still open");
+        assert_eq!(cutoff, deadline.as_instant());
+        assert!(cutoff < tokio::time::Instant::now() + stale_remaining);
+        assert!(deadline.attempt_cutoff(Duration::from_millis(5)).is_some());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn attempt_cutoff_returns_none_after_expiry() {
+        let deadline = RequestDeadline::from_timeout(Duration::from_millis(10));
+        tokio::time::advance(Duration::from_millis(10)).await;
+        assert!(deadline.attempt_cutoff(Duration::from_secs(10)).is_none());
     }
 }
