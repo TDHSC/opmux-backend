@@ -10,8 +10,10 @@
 //! ```
 
 use gateway::core::contracts::RoutePlan;
+use gateway::core::deadline::RequestDeadline;
 use gateway::features::executor::{config::ExecutorConfig, service::ExecutorService};
 use serde_json::json;
+use std::time::Duration;
 
 const LIVE_OPT_IN: &str = "OPMUX_LIVE_PROVIDER_TESTS";
 
@@ -59,7 +61,13 @@ async fn test_openai_api_basic_execution() {
 
     let plan = create_test_route_plan("openai", "gpt-3.5-turbo");
     let payload = create_test_payload("Say 'Hello, World!' and nothing else.");
-    let result = service.execute(&plan, &payload).await;
+    let result = service
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
+        .await;
 
     match result {
         Ok(execution_result) => {
@@ -106,7 +114,13 @@ async fn test_openai_api_with_different_models() {
         "max_tokens": 30
     });
 
-    let result = service.execute(&plan, &payload).await;
+    let result = service
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
+        .await;
     assert!(result.is_ok(), "gpt-3.5-turbo should succeed");
 }
 
@@ -128,7 +142,13 @@ async fn test_openai_api_parameter_extraction() {
         "max_tokens": 20
     });
 
-    let result = service.execute(&plan, &payload).await;
+    let result = service
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
+        .await;
     match result {
         Ok(execution_result) => {
             assert!(!execution_result.content.is_empty());
@@ -150,7 +170,13 @@ async fn test_openai_api_retry_logic() {
 
     let plan = create_test_route_plan("openai", "gpt-3.5-turbo");
     let payload = create_test_payload("Say 'Test' and nothing else.");
-    let result = service.execute(&plan, &payload).await;
+    let result = service
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
+        .await;
     assert!(
         result.is_ok(),
         "Retry logic should handle transient failures"
@@ -168,7 +194,13 @@ async fn test_openai_api_unsupported_model() {
 
     let plan = create_test_route_plan("openai", "gpt-5-ultra");
     let payload = create_test_payload("Test");
-    let result = service.execute(&plan, &payload).await;
+    let result = service
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
+        .await;
     assert!(result.is_err(), "Should fail with unsupported model");
 }
 
@@ -191,7 +223,11 @@ async fn test_openai_api_cost_calculation() {
     });
 
     let result = service
-        .execute(&plan, &payload)
+        .execute(
+            &plan,
+            &payload,
+            RequestDeadline::from_timeout(Duration::from_secs(60)),
+        )
         .await
         .expect("API call should succeed");
 

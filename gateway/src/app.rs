@@ -87,7 +87,9 @@ impl Application {
 /// Middleware runs from the last layer added to the first:
 /// 1. Correlation ID - generates request_id for every route, including metrics
 /// 2. Metrics (when enabled) - records HTTP metrics, including auth failures
-/// 3. Auth (protected routes only) - validates authentication
+/// 3. Deadline (protected routes only) - one monotonic budget covering auth,
+///    body extraction, and execution. Health and metrics stay outside it.
+/// 4. Auth (protected routes only) - validates authentication
 ///
 /// # Parameters
 /// - `state` - Injected application state
@@ -106,6 +108,10 @@ pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Route
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::auth_middleware,
+        ))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            crate::middleware::deadline::deadline_middleware,
         ))
         .with_state(state.clone());
 

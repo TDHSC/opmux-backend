@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::core::contracts::RoutePlan;
+    use crate::core::deadline::RequestDeadline;
     use crate::features::executor::{
         config::{ExecutorConfig, OpenAIConfig},
         error::ExecutorError,
@@ -134,6 +135,10 @@ mod tests {
             // Success case
             Ok(())
         }
+    }
+
+    fn generous_deadline() -> RequestDeadline {
+        RequestDeadline::from_timeout(Duration::from_secs(60))
     }
 
     fn test_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
@@ -295,6 +300,12 @@ mod tests {
         assert!(!ExecutorService::is_retryable_error(&error));
     }
 
+    #[test]
+    fn test_is_not_retryable_error_deadline_exceeded() {
+        let error = ExecutorError::DeadlineExceeded;
+        assert!(!ExecutorService::is_retryable_error(&error));
+    }
+
     #[tokio::test]
     async fn test_execute_fallbacks_empty_list() {
         let service = create_test_service();
@@ -308,7 +319,7 @@ mod tests {
         let primary_error = ExecutorError::ApiCallFailed("Primary failed".to_string());
 
         let result = service
-            .execute_fallbacks(&[], &params, primary_error.clone())
+            .execute_fallbacks(&[], &params, primary_error.clone(), generous_deadline())
             .await;
 
         assert!(result.is_err());
@@ -411,7 +422,11 @@ mod tests {
         };
 
         let result = service
-            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .execute_with_retry(
+                &test_plan("mock", "model-1"),
+                &params,
+                generous_deadline(),
+            )
             .await;
 
         assert!(result.is_ok());
@@ -446,7 +461,11 @@ mod tests {
         // Spawn task to advance time
         let handle = tokio::spawn(async move {
             service
-                .execute_with_retry(&test_plan("mock", "model-1"), &params)
+                .execute_with_retry(
+                    &test_plan("mock", "model-1"),
+                    &params,
+                    generous_deadline(),
+                )
                 .await
         });
 
@@ -484,7 +503,11 @@ mod tests {
         // Spawn task to advance time
         let handle = tokio::spawn(async move {
             service
-                .execute_with_retry(&test_plan("mock", "model-1"), &params)
+                .execute_with_retry(
+                    &test_plan("mock", "model-1"),
+                    &params,
+                    generous_deadline(),
+                )
                 .await
         });
 
@@ -525,7 +548,11 @@ mod tests {
         };
 
         let result = service
-            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .execute_with_retry(
+                &test_plan("mock", "model-1"),
+                &params,
+                generous_deadline(),
+            )
             .await;
 
         assert!(result.is_err());
@@ -562,7 +589,11 @@ mod tests {
         };
 
         match service
-            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .execute_with_retry(
+                &test_plan("mock", "model-1"),
+                &params,
+                generous_deadline(),
+            )
             .await
         {
             Err(ExecutorError::JsonError(_)) => {}
@@ -595,7 +626,11 @@ mod tests {
         };
 
         match service
-            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .execute_with_retry(
+                &test_plan("mock", "model-1"),
+                &params,
+                generous_deadline(),
+            )
             .await
         {
             Err(ExecutorError::InvalidUpstreamResult) => {}
@@ -796,13 +831,13 @@ mod tests {
             fallback_plans: vec![],
         };
 
-        let first = service.execute(&plan, &payload).await;
+        let first = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(matches!(first, Err(ExecutorError::NetworkError(_))));
 
-        let second = service.execute(&plan, &payload).await;
+        let second = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(matches!(second, Err(ExecutorError::NetworkError(_))));
 
-        let third = service.execute(&plan, &payload).await;
+        let third = service.execute(&plan, &payload, generous_deadline()).await;
         match third {
             Err(ExecutorError::CircuitOpen {
                 vendor,
@@ -850,10 +885,10 @@ mod tests {
             }],
         };
 
-        let first = service.execute(&plan, &payload).await;
+        let first = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(first.is_ok());
 
-        let second = service.execute(&plan, &payload).await;
+        let second = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(second.is_ok());
     }
 
@@ -882,10 +917,10 @@ mod tests {
             fallback_plans: vec![],
         };
 
-        let first = service.execute(&plan, &payload).await;
+        let first = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(matches!(first, Err(ExecutorError::AuthenticationFailed(_))));
 
-        let second = service.execute(&plan, &payload).await;
+        let second = service.execute(&plan, &payload, generous_deadline()).await;
         assert!(matches!(
             second,
             Err(ExecutorError::AuthenticationFailed(_))

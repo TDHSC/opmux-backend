@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::core::correlation::RequestContext;
+    use crate::core::deadline::RequestDeadline;
     use crate::features::auth::{
         ApiKeyKind, AuthContext, AuthService, UnavailableAuthStore,
     };
@@ -139,6 +140,9 @@ mod tests {
             .layer(Extension(RequestContext::new(
                 "req-handler-1".to_string(),
                 Some("corr-1".to_string()),
+            )))
+            .layer(Extension(RequestDeadline::from_timeout(
+                Duration::from_secs(60),
             )))
             .with_state(app_state)
     }

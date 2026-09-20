@@ -2,6 +2,7 @@
 
 use super::error::IngressError;
 use crate::core::contracts::RoutePlan;
+use crate::core::deadline::RequestDeadline;
 use crate::features::executor::{models::ExecutionResult, service::ExecutorService};
 use std::sync::Arc;
 
@@ -33,6 +34,7 @@ impl IngressRepository {
     /// # Parameters
     /// - `plan` - Flat routing plan selected from the operator catalog
     /// - `payload` - Request payload containing only the original user prompt
+    /// - `deadline` - Shared protected-request deadline
     ///
     /// # Returns
     /// ExecutionResult with response content, token counts, and cost metrics
@@ -40,7 +42,7 @@ impl IngressRepository {
     /// # Errors
     /// Returns ExecutionFailed if LLM execution fails
     #[tracing::instrument(
-        skip(self, payload),
+        skip(self, payload, deadline),
         fields(
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
@@ -51,11 +53,12 @@ impl IngressRepository {
         &self,
         plan: &RoutePlan,
         payload: &serde_json::Value,
+        deadline: RequestDeadline,
     ) -> Result<ExecutionResult, IngressError> {
         tracing::debug!("Executing LLM call via ExecutorService");
         let result = self
             .executor_service
-            .execute(plan, payload)
+            .execute(plan, payload, deadline)
             .await
             .map_err(IngressError::from)?;
 
@@ -74,6 +77,7 @@ impl IngressRepository {
 mod tests {
     use super::*;
     use crate::core::contracts::RoutePlan;
+    use crate::core::deadline::RequestDeadline;
     use crate::features::executor::{
         config::ExecutorConfig,
         error::ExecutorError,
@@ -178,7 +182,11 @@ mod tests {
         });
 
         let result = repository
-            .execute_llm_call(&plan, &payload)
+            .execute_llm_call(
+                &plan,
+                &payload,
+                RequestDeadline::from_timeout(Duration::from_secs(60)),
+            )
             .await
             .expect("executor call should succeed");
 

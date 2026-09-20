@@ -183,9 +183,10 @@ pub(crate) struct RawLimits {
 /// Validated policy limits injected at startup.
 ///
 /// Milestone 1 validates and injects these values. Upstream success bodies
-/// are bounded by `max_upstream_response_bytes` while reading. Request-deadline,
-/// fallback, circuit, concurrency, and inbound raw-size enforcement are later
-/// features and must not be described as already active.
+/// are bounded by `max_upstream_response_bytes` while reading. The protected
+/// request deadline is enforced across authentication, body extraction, and
+/// execution. Fallback, circuit, concurrency, and inbound raw-size
+/// enforcement are later features and must not be described as already active.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PolicyLimits {
     /// Overall protected-request deadline.

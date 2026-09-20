@@ -4,7 +4,7 @@ use super::{
     error::IngressError, service::IngressResponse, validate::parse_ingress_request,
 };
 use crate::{
-    core::{correlation::RequestContext, extract::ApiJson},
+    core::{correlation::RequestContext, deadline::RequestDeadline, extract::ApiJson},
     features::auth::{ApiKeyKind, AuthContext},
     AppState,
 };
@@ -29,12 +29,13 @@ use serde_json::Value;
 /// - `state` - Application state with shared services (injected via Axum state)
 /// - `request_context` - Request correlation context (injected by correlation_id_middleware)
 /// - `auth_context` - Authentication context (injected by auth middleware)
+/// - `deadline` - Shared protected-request deadline (injected by deadline middleware)
 /// - `body` - JSON AI routing request
 ///
 /// # Returns
 /// JSON response with AI content, model info, cost, and timing
 #[tracing::instrument(
-    skip(state, request_context, auth_context, body),
+    skip(state, request_context, auth_context, deadline, body),
     fields(
         request_id = %request_context.request_id,
         client_correlation_id = ?request_context.client_correlation_id,
@@ -46,6 +47,7 @@ use serde_json::Value;
 pub async fn ingress_handler(
     State(state): State<AppState>,
     Extension(request_context): Extension<RequestContext>,
+    Extension(deadline): Extension<RequestDeadline>,
     auth_context: AuthContext,
     ApiJson(body): ApiJson<Value>,
 ) -> Result<ResponseJson<IngressResponse>, IngressError> {
@@ -63,7 +65,11 @@ pub async fn ingress_handler(
     tracing::Span::current().record("prompt_length", request.prompt.len());
     tracing::debug!("Request validation passed");
 
-    match state.ingress_service.process_request(request).await {
+    match state
+        .ingress_service
+        .process_request(request, deadline)
+        .await
+    {
         Ok(response) => {
             tracing::info!(
                 model = %response.model_used,

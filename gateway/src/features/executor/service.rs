@@ -7,6 +7,7 @@ use super::{
     repository::ExecutorRepository,
 };
 use crate::core::contracts::RoutePlan;
+use crate::core::deadline::RequestDeadline;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -247,6 +248,8 @@ impl ExecutorService {
     /// # Parameters
     /// - `plan` - Selected hop, including catalog target identity and wire model
     /// - `params` - Execution parameters shared across retries for this hop
+    /// - `deadline` - Shared protected-request deadline; remaining time is
+    ///   injected rather than reset per attempt
     ///
     /// # Returns
     /// Execution result with AI response and metrics
@@ -257,8 +260,9 @@ impl ExecutorService {
     /// - Model not supported
     /// - All retry attempts exhausted
     /// - Non-retryable error occurs
+    /// - The shared deadline elapsed or the future was cancelled
     #[tracing::instrument(
-        skip(self, params),
+        skip(self, params, deadline),
         fields(
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
@@ -270,15 +274,19 @@ impl ExecutorService {
         &self,
         plan: &RoutePlan,
         params: &ExecutionParams,
+        deadline: RequestDeadline,
     ) -> Result<ExecutionResult, ExecutorError> {
         let max_retries = self.config.max_retries;
         let mut last_error = None;
         let mut retry_after_ms: Option<u64> = None;
+        let max_attempt = Duration::from_millis(self.config.timeout_ms);
 
-        // Retry loop with exponential backoff
         for attempt in 0..=max_retries {
+            if deadline.is_expired() {
+                return Err(ExecutorError::DeadlineExceeded);
+            }
+
             if attempt > 0 {
-                // Exponential backoff with full jitter
                 let backoff_ms = Self::jittered_backoff_ms(attempt);
                 let delay_ms = retry_after_ms
                     .take()
@@ -293,12 +301,33 @@ impl ExecutorService {
                     plan.model_id,
                     delay_ms
                 );
-                tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
+                if delay_ms > 0 {
+                    let delay = Duration::from_millis(delay_ms);
+                    if tokio::time::timeout_at(
+                        deadline.as_instant(),
+                        tokio::time::sleep(delay),
+                    )
+                    .await
+                    .is_err()
+                    {
+                        return Err(ExecutorError::DeadlineExceeded);
+                    }
+                }
+                if deadline.is_expired() {
+                    return Err(ExecutorError::DeadlineExceeded);
+                }
             }
 
-            // Attempt execution via repository
-            match self.repository.call_llm(plan, params).await {
-                Ok(result) => {
+            let Some(attempt_timeout) = deadline.cap(max_attempt) else {
+                return Err(ExecutorError::DeadlineExceeded);
+            };
+            match tokio::time::timeout(
+                attempt_timeout,
+                self.repository.call_llm(plan, params),
+            )
+            .await
+            {
+                Ok(Ok(result)) => {
                     if attempt > 0 {
                         tracing::info!(
                             "Execution succeeded after {} retries: vendor={}, target={}, model={}",
@@ -310,8 +339,7 @@ impl ExecutorService {
                     }
                     return Ok(result);
                 }
-                Err(e) => {
-                    // Determine if error is retryable
+                Ok(Err(e)) => {
                     if Self::is_retryable_error(&e) {
                         let rate_limit_retry_after = match &e {
                             ExecutorError::RateLimitExceeded {
@@ -334,6 +362,23 @@ impl ExecutorService {
                     } else {
                         return Err(e);
                     }
+                }
+                Err(_elapsed) => {
+                    if deadline.is_expired() {
+                        return Err(ExecutorError::DeadlineExceeded);
+                    }
+                    let e =
+                        ExecutorError::TimeoutError(attempt_timeout.as_millis() as u64);
+                    tracing::warn!(
+                        attempt,
+                        max_retries,
+                        vendor_id = %plan.vendor_id,
+                        target_id = %plan.target_id,
+                        model_id = %plan.model_id,
+                        "Retryable error"
+                    );
+                    last_error = Some(e);
+                    continue;
                 }
             }
         }
@@ -401,18 +446,24 @@ impl ExecutorService {
     /// - `fallback_plans` - List of fallback routing plans
     /// - `params` - Execution parameters (shared across all attempts)
     /// - `primary_error` - Error from primary execution attempt
+    /// - `deadline` - Shared protected-request deadline
     ///
     /// # Returns
     /// Execution result from first successful fallback
     ///
     /// # Errors
-    /// Returns primary error if no fallbacks exist or all fallbacks fail
+    /// Returns primary error if no fallbacks exist or all fallbacks fail.
+    /// Overall deadline expiry is authoritative over the primary error.
     pub(crate) async fn execute_fallbacks(
         &self,
         fallback_plans: &[RoutePlan],
         params: &ExecutionParams,
         primary_error: ExecutorError,
+        deadline: RequestDeadline,
     ) -> Result<ExecutionResult, ExecutorError> {
+        if deadline.is_expired() {
+            return Err(ExecutorError::DeadlineExceeded);
+        }
         if fallback_plans.is_empty() {
             return Err(primary_error);
         }
@@ -422,8 +473,10 @@ impl ExecutorService {
             fallback_plans.len()
         );
 
-        // Try each fallback plan sequentially
         for (index, fallback) in fallback_plans.iter().enumerate() {
+            if deadline.is_expired() {
+                return Err(ExecutorError::DeadlineExceeded);
+            }
             if let Some(retry_after_ms) =
                 self.circuit_open_retry_after_ms(&fallback.vendor_id).await
             {
@@ -445,8 +498,7 @@ impl ExecutorService {
                 fallback.model_id
             );
 
-            // Each fallback gets full retry logic and its own target pricing.
-            match self.execute_with_retry(fallback, params).await {
+            match self.execute_with_retry(fallback, params, deadline).await {
                 Ok(result) => {
                     self.record_vendor_success(&fallback.vendor_id).await;
                     tracing::info!(
@@ -458,6 +510,9 @@ impl ExecutorService {
                         fallback.model_id
                     );
                     return Ok(result);
+                }
+                Err(ExecutorError::DeadlineExceeded) => {
+                    return Err(ExecutorError::DeadlineExceeded);
                 }
                 Err(e) => {
                     if Self::is_retryable_error(&e) {
@@ -471,12 +526,14 @@ impl ExecutorService {
                         model_id = %fallback.model_id,
                         "Fallback attempt failed"
                     );
-                    // Continue to next fallback
                     continue;
                 }
             }
         }
 
+        if deadline.is_expired() {
+            return Err(ExecutorError::DeadlineExceeded);
+        }
         Err(primary_error)
     }
 
@@ -536,6 +593,8 @@ impl ExecutorService {
     /// # Parameters
     /// - `plan` - Routing plan from Router Service
     /// - `payload` - Original request payload
+    /// - `deadline` - Shared protected-request deadline covering earlier
+    ///   authentication and body work
     ///
     /// # Returns
     /// Execution result with AI response and metrics
@@ -544,8 +603,9 @@ impl ExecutorService {
     /// Returns error if:
     /// - Payload is invalid
     /// - Primary execution fails and no fallbacks succeed
+    /// - The shared deadline elapsed before or during execution
     #[tracing::instrument(
-        skip(self, payload),
+        skip(self, payload, deadline),
         fields(
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
@@ -556,7 +616,12 @@ impl ExecutorService {
         &self,
         plan: &RoutePlan,
         payload: &serde_json::Value,
+        deadline: RequestDeadline,
     ) -> Result<ExecutionResult, ExecutorError> {
+        if deadline.is_expired() {
+            return Err(ExecutorError::DeadlineExceeded);
+        }
+
         if let Some(retry_after_ms) =
             self.circuit_open_retry_after_ms(&plan.vendor_id).await
         {
@@ -572,11 +637,15 @@ impl ExecutorService {
                 retry_after_ms,
             };
             return self
-                .execute_fallbacks(&plan.fallback_plans, &params, circuit_open_error)
+                .execute_fallbacks(
+                    &plan.fallback_plans,
+                    &params,
+                    circuit_open_error,
+                    deadline,
+                )
                 .await;
         }
 
-        // Extract parameters once (shared across retries and fallbacks)
         let params = Self::extract_params(payload)?;
 
         tracing::info!(
@@ -586,8 +655,7 @@ impl ExecutorService {
             plan.model_id
         );
 
-        // Try primary plan with retry logic
-        match self.execute_with_retry(plan, &params).await {
+        match self.execute_with_retry(plan, &params, deadline).await {
             Ok(result) => {
                 self.record_vendor_success(&plan.vendor_id).await;
                 tracing::info!(
@@ -600,12 +668,18 @@ impl ExecutorService {
                 );
                 Ok(result)
             }
+            Err(ExecutorError::DeadlineExceeded) => Err(ExecutorError::DeadlineExceeded),
             Err(primary_error) => {
                 if Self::is_retryable_error(&primary_error) {
                     self.record_vendor_failure(&plan.vendor_id).await;
                 }
-                self.execute_fallbacks(&plan.fallback_plans, &params, primary_error)
-                    .await
+                self.execute_fallbacks(
+                    &plan.fallback_plans,
+                    &params,
+                    primary_error,
+                    deadline,
+                )
+                .await
             }
         }
     }

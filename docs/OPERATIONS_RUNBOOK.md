@@ -121,6 +121,14 @@ curl -i http://127.0.0.1:3000/metrics
 - Validate vendor credentials and upstream endpoint connectivity.
 - Confirm circuit breaker behavior via repeated `/api/v1/route` calls.
 
+### Symptom: `/api/v1/route` returns `504 DEADLINE_EXCEEDED`
+
+- The protected-request deadline covers authentication, body receipt, and execution as one budget.
+- Slow clients, delayed authentication, or a slow upstream can exhaust it; retries do not start
+  after expiry.
+- `/health` and `/metrics` are not gated by that deadline.
+- Per-attempt timeout, retry, and Retry-After policy still apply within the remaining budget.
+
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
 
 - This indicates repeated transient failures for a vendor.

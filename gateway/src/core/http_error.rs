@@ -47,7 +47,7 @@ pub enum ErrorCode {
     UpstreamRateLimit,
     /// Unexpected internal fault.
     InternalError,
-    /// Overall protected-request deadline elapsed. Owned by later execution.
+    /// Overall protected-request deadline elapsed.
     DeadlineExceeded,
     /// No eligible target is currently usable. Owned by later circuits.
     CircuitOpen,

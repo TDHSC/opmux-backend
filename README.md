@@ -131,9 +131,11 @@ for the canonical schema, documented defaults, and numeric bounds.
 Omitted optional limits default to a 30-second protected-request deadline, 10-second attempt
 maximum, one retry per target, three total provider attempts, at most two fallback targets, and a
 2-second backoff cap. Those values are validated and injected at startup.
-`max_upstream_response_bytes` (default 1 MiB) is enforced while reading provider success bodies.
-Request-deadline, fallback, circuit, concurrency, and inbound raw-size enforcement are later
-features and are not active yet.
+`max_upstream_response_bytes` (default 1 MiB) is enforced while reading provider success bodies. The
+protected-request deadline covers authentication, body extraction, and execution as one monotonic
+budget; expiry returns sanitized `504 DEADLINE_EXCEEDED` and does not start later provider attempts.
+Health and metrics stay outside that deadline. Fallback, circuit, concurrency, and inbound raw-size
+enforcement are later features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the

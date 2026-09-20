@@ -59,9 +59,12 @@ compatible `OPENAI_TIMEOUT_MS` / `EXECUTOR_*` names.
 
 These limits are validated and injected now. `max_prompt_chars` and per-target `max_output_tokens`
 are enforced on `POST /api/v1/route`. `max_upstream_response_bytes` is enforced while accumulating
-the provider response, including when `Content-Length` is missing or chunked. Protected-request
-deadline, fallback execution, target circuits, concurrency admission, and inbound raw-body
-enforcement are later milestones.
+the provider response, including when `Content-Length` is missing or chunked.
+`protected_request_deadline_ms` is one monotonic budget for authentication, body extraction, and
+execution; later layers receive remaining time rather than a reset timeout. Expiry returns
+`504 DEADLINE_EXCEEDED` and does not start additional provider attempts. `/health` and `/metrics`
+are outside that deadline. Fallback execution, target circuits, concurrency admission, and inbound
+raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |

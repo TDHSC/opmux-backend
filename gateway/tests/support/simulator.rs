@@ -16,6 +16,7 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tokio::task::JoinHandle;
 
 /// Dummy provider credential accepted by the fixture. Not a live key.
@@ -105,6 +106,15 @@ pub enum ScriptedResponse {
         chunked: bool,
         /// Extra bytes the stream can still yield if the client keeps reading.
         extra_unread_bytes: usize,
+    },
+    /// Delay headers and/or the first body bytes of an inner script.
+    Delayed {
+        /// Sleep before the handler returns status and headers.
+        before_headers: Duration,
+        /// Sleep after headers, before the first body chunk.
+        before_body: Duration,
+        /// Response produced after the stall.
+        inner: Box<ScriptedResponse>,
     },
 }
 
@@ -204,6 +214,24 @@ impl ScriptedResponse {
             advertised_content_length: Some(content_length),
             chunked: false,
             extra_unread_bytes: 0,
+        }
+    }
+
+    /// Stalls sending status/headers, then yields `self`.
+    pub fn delay_headers(self, delay: Duration) -> Self {
+        Self::Delayed {
+            before_headers: delay,
+            before_body: Duration::ZERO,
+            inner: Box::new(self),
+        }
+    }
+
+    /// Sends headers, then stalls before the first body chunk.
+    pub fn delay_body(self, delay: Duration) -> Self {
+        Self::Delayed {
+            before_headers: Duration::ZERO,
+            before_body: delay,
+            inner: Box::new(self),
         }
     }
 }
@@ -511,7 +539,46 @@ fn render(
             }
             response
         }
+        ScriptedResponse::Delayed { .. } => {
+            unreachable!("delayed scripts are unwrapped before render")
+        }
     }
+}
+
+async fn respond(
+    script: ScriptedResponse,
+    request_model: Option<&str>,
+    state: &Arc<SimulatorInner>,
+) -> Response {
+    match script {
+        ScriptedResponse::Delayed {
+            before_headers,
+            before_body,
+            inner,
+        } => {
+            if !before_headers.is_zero() {
+                tokio::time::sleep(before_headers).await;
+            }
+            let response = render(*inner, request_model, state);
+            stall_body(response, before_body).await
+        }
+        other => render(other, request_model, state),
+    }
+}
+
+async fn stall_body(response: Response, delay: Duration) -> Response {
+    if delay.is_zero() {
+        return response;
+    }
+    let (parts, body) = response.into_parts();
+    let collected = axum::body::to_bytes(body, MAX_CAPTURE_BYTES)
+        .await
+        .unwrap_or_default();
+    let stalled = Body::from_stream(futures_util::stream::once(async move {
+        tokio::time::sleep(delay).await;
+        Ok::<Bytes, std::io::Error>(collected)
+    }));
+    Response::from_parts(parts, stalled)
 }
 
 fn streamed_body(
@@ -558,7 +625,7 @@ async fn models_handler(
     let script = lock_vec(&state.models_script)
         .pop_front()
         .unwrap_or_else(ScriptedResponse::models_ok);
-    render(script, None, &state)
+    respond(script, None, &state).await
 }
 
 async fn chat_handler(
@@ -588,5 +655,5 @@ async fn chat_handler(
     let script = lock_vec(&state.chat_script)
         .pop_front()
         .unwrap_or_else(ScriptedResponse::chat_ok);
-    render(script, model.as_deref(), &state)
+    respond(script, model.as_deref(), &state).await
 }

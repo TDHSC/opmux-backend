@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
     use crate::core::config::Settings;
+    use crate::core::deadline::RequestDeadline;
     use crate::features::executor::{
         config::ExecutorConfig,
         error::ExecutorError,
@@ -98,6 +99,10 @@ mod tests {
         })
     }
 
+    fn generous_deadline() -> RequestDeadline {
+        RequestDeadline::from_timeout(Duration::from_secs(60))
+    }
+
     fn service_with_models(models: Vec<&str>) -> IngressService {
         IngressService::new(
             create_mock_executor_service(models),
@@ -111,13 +116,16 @@ mod tests {
             service_with_models(vec!["example-chat-model", "example-chat-model-mini"]);
 
         let result = service
-            .process_request(IngressRequest {
-                prompt: "Hello ingress".to_string(),
-                metadata: json!({ "rewrite": false, "conversation_id": "ignored" }),
-                route: None,
-                allow_fallback: None,
-                parameters: GenerationParameters::default(),
-            })
+            .process_request(
+                IngressRequest {
+                    prompt: "Hello ingress".to_string(),
+                    metadata: json!({ "rewrite": false, "conversation_id": "ignored" }),
+                    route: None,
+                    allow_fallback: None,
+                    parameters: GenerationParameters::default(),
+                },
+                generous_deadline(),
+            )
             .await
             .expect("ingress request should succeed");
 
@@ -137,13 +145,16 @@ mod tests {
             service_with_models(vec!["example-chat-model", "example-chat-model-mini"]);
 
         let result = service
-            .process_request(IngressRequest {
-                prompt: "Named route".to_string(),
-                metadata: json!({}),
-                route: Some("fast".to_string()),
-                allow_fallback: Some(false),
-                parameters: GenerationParameters::default(),
-            })
+            .process_request(
+                IngressRequest {
+                    prompt: "Named route".to_string(),
+                    metadata: json!({}),
+                    route: Some("fast".to_string()),
+                    allow_fallback: Some(false),
+                    parameters: GenerationParameters::default(),
+                },
+                generous_deadline(),
+            )
             .await
             .expect("named route should succeed");
 
@@ -155,13 +166,16 @@ mod tests {
         let service = service_with_models(vec!["example-chat-model"]);
 
         let result = service
-            .process_request(IngressRequest {
-                prompt: "Unknown route".to_string(),
-                metadata: json!({}),
-                route: Some("missing".to_string()),
-                allow_fallback: None,
-                parameters: GenerationParameters::default(),
-            })
+            .process_request(
+                IngressRequest {
+                    prompt: "Unknown route".to_string(),
+                    metadata: json!({}),
+                    route: Some("missing".to_string()),
+                    allow_fallback: None,
+                    parameters: GenerationParameters::default(),
+                },
+                generous_deadline(),
+            )
             .await;
 
         match result {
@@ -177,13 +191,16 @@ mod tests {
         let service = service_with_models(vec!["gpt-3.5-turbo"]);
 
         let result = service
-            .process_request(IngressRequest {
-                prompt: "Trigger unsupported model".to_string(),
-                metadata: json!({}),
-                route: None,
-                allow_fallback: Some(false),
-                parameters: GenerationParameters::default(),
-            })
+            .process_request(
+                IngressRequest {
+                    prompt: "Trigger unsupported model".to_string(),
+                    metadata: json!({}),
+                    route: None,
+                    allow_fallback: Some(false),
+                    parameters: GenerationParameters::default(),
+                },
+                generous_deadline(),
+            )
             .await;
 
         match result {
@@ -206,16 +223,19 @@ mod tests {
             service_with_models(vec!["example-chat-model", "example-chat-model-mini"]);
 
         let result = service
-            .process_request(IngressRequest {
-                prompt: "too many tokens".to_string(),
-                metadata: json!({}),
-                route: None,
-                allow_fallback: Some(false),
-                parameters: GenerationParameters {
-                    max_tokens: Some(513),
-                    ..GenerationParameters::default()
+            .process_request(
+                IngressRequest {
+                    prompt: "too many tokens".to_string(),
+                    metadata: json!({}),
+                    route: None,
+                    allow_fallback: Some(false),
+                    parameters: GenerationParameters {
+                        max_tokens: Some(513),
+                        ..GenerationParameters::default()
+                    },
                 },
-            })
+                generous_deadline(),
+            )
             .await;
 
         match result {

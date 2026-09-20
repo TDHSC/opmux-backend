@@ -2,7 +2,7 @@
 
 ## OVERVIEW
 
-HTTP middleware stack for correlation IDs, metrics, and authentication.
+HTTP middleware stack for correlation IDs, metrics, protected-request deadlines, and authentication.
 
 ## WHERE TO LOOK
 
@@ -10,6 +10,7 @@ HTTP middleware stack for correlation IDs, metrics, and authentication.
 | ------------------ | ------------------------------------------ | -------------------------- |
 | Middleware exports | `gateway/src/middleware/mod.rs`            | Re-exports and module list |
 | Auth enforcement   | `gateway/src/middleware/auth.rs`           | API key checks             |
+| Protected deadline | `gateway/src/middleware/deadline.rs`       | Auth, body, and execution  |
 | Correlation IDs    | `gateway/src/middleware/correlation_id.rs` | Request ID injection       |
 
 ## CONVENTIONS

@@ -15,7 +15,7 @@
 //!
 //! let config = ExecutorConfig::from_env();
 //! let service = ExecutorService::from_config(config)?;
-//! let result = service.execute(&plan, &payload).await?;
+//! let result = service.execute(&plan, &payload, deadline).await?;
 //! ```
 
 pub mod bounded_body;
@@ -36,6 +36,8 @@ pub use repository::ExecutorRepository;
 pub use service::ExecutorService;
 
 // Tests in separate files
+#[cfg(test)]
+mod deadline_tests;
 #[cfg(test)]
 mod repository_tests;
 #[cfg(test)]

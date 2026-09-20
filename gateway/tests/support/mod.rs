@@ -38,13 +38,37 @@ pub fn settings_for_simulator(simulator: &OpenAiSimulator) -> Arc<Settings> {
     ))
 }
 
+/// Builds dummy local settings and applies test-only limit overrides.
+pub fn settings_for_simulator_with(
+    simulator: &OpenAiSimulator,
+    mutate: impl FnOnce(&mut Settings),
+) -> Arc<Settings> {
+    let mut settings =
+        Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
+    mutate(&mut settings);
+    Arc::new(settings)
+}
+
 /// Builds the production router against an owned simulator and injected auth.
 pub fn production_router_with_auth(
     simulator: &OpenAiSimulator,
     auth_service: Arc<AuthService>,
     metrics: MetricsConfig,
 ) -> axum::Router {
-    Application::from_settings(settings_for_simulator(simulator), auth_service)
+    production_router_with_settings(
+        settings_for_simulator(simulator),
+        auth_service,
+        metrics,
+    )
+}
+
+/// Builds the production router from explicit settings and injected auth.
+pub fn production_router_with_settings(
+    settings: Arc<Settings>,
+    auth_service: Arc<AuthService>,
+    metrics: MetricsConfig,
+) -> axum::Router {
+    Application::from_settings(settings, auth_service)
         .expect("application should build from fixture settings")
         .into_router(metrics)
 }

@@ -5,6 +5,8 @@ use super::{
     repository::IngressRepository, routing::resolve_route,
 };
 use crate::core::config::Settings;
+use crate::core::deadline::RequestDeadline;
+use crate::features::executor::error::ExecutorError;
 use crate::features::executor::service::ExecutorService;
 use serde::Serialize;
 use serde_json::{json, Number, Value};
@@ -122,22 +124,30 @@ impl IngressService {
     ///
     /// # Parameters
     /// - `request` - AI routing request with prompt, opaque metadata, and optional route controls
+    /// - `deadline` - Shared protected-request deadline from outer middleware
     ///
     /// # Returns
     /// Complete AI response with metadata (cost, model, processing time)
     ///
     /// # Errors
     /// Returns `InvalidRequest` for an unknown route or a token cap the selected
-    /// primary cannot satisfy, before provider access.
+    /// primary cannot satisfy, before provider access. Returns a deadline error
+    /// when the injected budget has already elapsed.
     #[tracing::instrument(
-        skip(self, request),
+        skip(self, request, deadline),
         fields(prompt_length = request.prompt.len())
     )]
     pub async fn process_request(
         &self,
         request: IngressRequest,
+        deadline: RequestDeadline,
     ) -> Result<IngressResponse, IngressError> {
         tracing::debug!("Starting request processing");
+        if deadline.is_expired() {
+            return Err(IngressError::ExecutionFailed(
+                ExecutorError::DeadlineExceeded,
+            ));
+        }
         let start_time = std::time::Instant::now();
 
         let resolved = resolve_route(
@@ -185,7 +195,7 @@ impl IngressService {
         tracing::debug!("Executing LLM call via ExecutorService");
         let llm_result = self
             .repository
-            .execute_llm_call(&resolved.plan, &payload)
+            .execute_llm_call(&resolved.plan, &payload, deadline)
             .await?;
         tracing::debug!(
             tokens = llm_result.prompt_tokens + llm_result.completion_tokens,

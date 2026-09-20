@@ -312,6 +312,7 @@ Response `200 OK`:
   - `502 Bad Gateway` upstream credential, protocol, oversized, or other provider failure
     (`UPSTREAM_AUTHENTICATION`, `UPSTREAM_PROTOCOL`, `UPSTREAM_ERROR`). Provider 401/403 is never a
     gateway `401`.
+  - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`)
   - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
   - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)
 
@@ -351,7 +352,7 @@ Documented codes:
 | `UPSTREAM_ERROR`              | 502    | Other upstream execution failure                       |
 | `UPSTREAM_RATE_LIMIT`         | 429    | Upstream throttled the request                         |
 | `INTERNAL_ERROR`              | 500    | Unexpected internal fault                              |
-| `DEADLINE_EXCEEDED`           | 504    | Reserved for later deadline enforcement                |
+| `DEADLINE_EXCEEDED`           | 504    | Protected-request deadline elapsed                     |
 | `CIRCUIT_OPEN`                | 503    | Reserved for later circuit exhaustion                  |
 | `OVERLOADED`                  | 429    | Reserved for later local admission                     |
 | `PAYLOAD_TOO_LARGE`           | 413    | Reserved for later raw-body limits                     |
