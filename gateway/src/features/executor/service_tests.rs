@@ -267,6 +267,24 @@ mod tests {
         assert!(!ExecutorService::is_retryable_error(&error));
     }
 
+    #[test]
+    fn test_is_not_retryable_error_json() {
+        let error = ExecutorError::JsonError("malformed upstream JSON".to_string());
+        assert!(!ExecutorService::is_retryable_error(&error));
+    }
+
+    #[test]
+    fn test_is_not_retryable_error_invalid_upstream_result() {
+        let error = ExecutorError::InvalidUpstreamResult;
+        assert!(!ExecutorService::is_retryable_error(&error));
+    }
+
+    #[test]
+    fn test_is_not_retryable_error_missing_pricing() {
+        let error = ExecutorError::MissingPricing;
+        assert!(!ExecutorService::is_retryable_error(&error));
+    }
+
     #[tokio::test]
     async fn test_execute_fallbacks_empty_list() {
         let service = create_test_service();
@@ -500,6 +518,66 @@ mod tests {
             }
             _ => panic!("Expected AuthenticationFailed error"),
         }
+    }
+
+    #[tokio::test]
+    async fn protocol_json_error_is_not_retried() {
+        let mock_vendor = MockVendor::new_fail_then_succeed(
+            "mock",
+            vec!["model-1"],
+            10,
+            ExecutorError::JsonError("malformed upstream JSON".to_string()),
+        );
+        let remaining = mock_vendor.fail_count.clone().expect("fail counter");
+        let before = remaining.load(Ordering::SeqCst);
+        let service =
+            create_mock_service(vec![("mock".to_string(), Arc::new(mock_vendor))]);
+        let params = ExecutionParams {
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stream: false,
+        };
+
+        match service.execute_with_retry("mock", "model-1", &params).await {
+            Err(ExecutorError::JsonError(_)) => {}
+            other => panic!("expected JsonError, got {other:?}"),
+        }
+        assert_eq!(before.saturating_sub(remaining.load(Ordering::SeqCst)), 1);
+    }
+
+    #[tokio::test]
+    async fn protocol_invalid_upstream_result_is_not_retried() {
+        let mock_vendor = MockVendor::new_fail_then_succeed(
+            "mock",
+            vec!["model-1"],
+            10,
+            ExecutorError::InvalidUpstreamResult,
+        );
+        let remaining = mock_vendor.fail_count.clone().expect("fail counter");
+        let before = remaining.load(Ordering::SeqCst);
+        let service =
+            create_mock_service(vec![("mock".to_string(), Arc::new(mock_vendor))]);
+        let params = ExecutionParams {
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: "Hello".to_string(),
+            }],
+            temperature: None,
+            max_tokens: None,
+            top_p: None,
+            stream: false,
+        };
+
+        match service.execute_with_retry("mock", "model-1", &params).await {
+            Err(ExecutorError::InvalidUpstreamResult) => {}
+            other => panic!("expected InvalidUpstreamResult, got {other:?}"),
+        }
+        assert_eq!(before.saturating_sub(remaining.load(Ordering::SeqCst)), 1);
     }
 
     #[tokio::test]

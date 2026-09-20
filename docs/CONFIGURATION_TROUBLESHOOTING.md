@@ -57,8 +57,10 @@ Environment overrides are validated with the same bounds. Canonical `OPMUX_*` va
 compatible `OPENAI_TIMEOUT_MS` / `EXECUTOR_*` names.
 
 These limits are validated and injected now. `max_prompt_chars` and per-target `max_output_tokens`
-are enforced on `POST /api/v1/route`. Protected-request deadline, fallback execution, target
-circuits, concurrency admission, and raw-body enforcement are later milestones.
+are enforced on `POST /api/v1/route`. `max_upstream_response_bytes` is enforced while accumulating
+the provider response, including when `Content-Length` is missing or chunked. Protected-request
+deadline, fallback execution, target circuits, concurrency admission, and inbound raw-body
+enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |

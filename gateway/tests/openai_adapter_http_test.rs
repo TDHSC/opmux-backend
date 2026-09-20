@@ -3,12 +3,14 @@
 mod support;
 
 use gateway::features::executor::{
+    error::ExecutorError,
     models::{ExecutionParams, Message},
     vendors::{openai::OpenAIVendor, LLMVendor},
 };
 use serial_test::serial;
 use support::{
-    isolate_provider_environment, openai_config_for_simulator, OpenAiSimulator,
+    isolate_provider_environment, min_padded_chat_completion_len,
+    openai_config_for_simulator, padded_chat_completion_bytes, OpenAiSimulator,
     ScriptedResponse, SIMULATED_CONTENT,
 };
 
@@ -178,4 +180,217 @@ async fn inherited_provider_env_cannot_redirect_adapter_to_external_url() {
     let capture = simulator.captured().into_iter().next().unwrap();
     assert!(capture.authorization_matches_fixture);
     assert_ne!(simulator.credential(), "sk-inherited-must-not-be-used");
+}
+
+const RAW_UPSTREAM_SENTINEL: &str = "RAW_UPSTREAM_SENTINEL";
+
+fn valid_chat_json() -> serde_json::Value {
+    serde_json::json!({
+        "id": "chatcmpl-local-fixture",
+        "object": "chat.completion",
+        "created": 0,
+        "model": "gpt-4",
+        "choices": [{
+            "index": 0,
+            "message": {"role": "assistant", "content": SIMULATED_CONTENT},
+            "finish_reason": "stop"
+        }],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }
+    })
+}
+
+fn assert_protocol_error(error: ExecutorError, expect_json: bool) {
+    let text = error.to_string();
+    assert!(
+        !text.contains(RAW_UPSTREAM_SENTINEL),
+        "protocol error leaked raw upstream content"
+    );
+    assert!(!text.contains(SIMULATED_CONTENT));
+    if expect_json {
+        match error {
+            ExecutorError::JsonError(_) => {}
+            other => panic!("expected JsonError, got {other:?}"),
+        }
+    } else {
+        match error {
+            ExecutorError::InvalidUpstreamResult => {}
+            other => panic!("expected InvalidUpstreamResult, got {other:?}"),
+        }
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_rejects_malformed_success_payloads_without_fabricating_results() {
+    isolate_provider_environment();
+    let mut empty_choices = valid_chat_json();
+    empty_choices["choices"] = serde_json::json!([]);
+    let mut missing_model = valid_chat_json();
+    missing_model.as_object_mut().unwrap().remove("model");
+    let mut missing_content = valid_chat_json();
+    missing_content["choices"][0]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("content");
+    let mut missing_role = valid_chat_json();
+    missing_role["choices"][0]["message"]
+        .as_object_mut()
+        .unwrap()
+        .remove("role");
+    let mut missing_finish = valid_chat_json();
+    missing_finish["choices"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("finish_reason");
+    let mut missing_usage = valid_chat_json();
+    missing_usage.as_object_mut().unwrap().remove("usage");
+    let mut non_text = valid_chat_json();
+    non_text["choices"][0]["message"]["content"] = serde_json::json!([
+        {"type": "text", "text": SIMULATED_CONTENT}
+    ]);
+    let mut negative = valid_chat_json();
+    negative["usage"]["prompt_tokens"] = serde_json::json!(-1);
+    let mut fractional = valid_chat_json();
+    fractional["usage"]["completion_tokens"] = serde_json::json!(1.5);
+    let mut inconsistent = valid_chat_json();
+    inconsistent["usage"]["total_tokens"] = serde_json::json!(99);
+
+    let cases: Vec<(&str, Vec<u8>, bool)> = vec![
+        (
+            "malformed_json",
+            format!("{{not-json {RAW_UPSTREAM_SENTINEL}").into_bytes(),
+            true,
+        ),
+        (
+            "empty_choices",
+            empty_choices.to_string().into_bytes(),
+            false,
+        ),
+        (
+            "missing_model",
+            missing_model.to_string().into_bytes(),
+            false,
+        ),
+        (
+            "missing_content",
+            missing_content.to_string().into_bytes(),
+            false,
+        ),
+        ("missing_role", missing_role.to_string().into_bytes(), false),
+        (
+            "missing_finish_reason",
+            missing_finish.to_string().into_bytes(),
+            false,
+        ),
+        (
+            "missing_usage",
+            missing_usage.to_string().into_bytes(),
+            false,
+        ),
+        ("non_text_content", non_text.to_string().into_bytes(), false),
+        ("negative_tokens", negative.to_string().into_bytes(), false),
+        (
+            "fractional_tokens",
+            fractional.to_string().into_bytes(),
+            false,
+        ),
+        (
+            "inconsistent_total",
+            inconsistent.to_string().into_bytes(),
+            false,
+        ),
+    ];
+
+    for (name, body, expect_json) in cases {
+        let simulator = OpenAiSimulator::start().await;
+        simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(body));
+        let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+            .expect("adapter should construct with dummy local config");
+        let error = vendor
+            .execute("gpt-4", user_params(name))
+            .await
+            .expect_err(name);
+        assert_protocol_error(error, expect_json);
+        assert_eq!(simulator.generation_count(), 1, "{name} must not retry");
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_parses_a_valid_response_after_a_protocol_error() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+        format!("{{not-json {RAW_UPSTREAM_SENTINEL}").into_bytes(),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+        .expect("adapter should construct with dummy local config");
+
+    let error = vendor
+        .execute("gpt-4", user_params("first malformed"))
+        .await
+        .expect_err("malformed payload must fail");
+    assert_protocol_error(error, true);
+
+    let result = vendor
+        .execute("gpt-4", user_params("second valid"))
+        .await
+        .expect("later valid payload must parse");
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert_eq!(result.model_used, "gpt-4");
+    assert_eq!(result.prompt_tokens, 10);
+    assert_eq!(result.completion_tokens, 5);
+    assert_eq!(simulator.generation_count(), 2);
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_enforces_response_size_while_reading() {
+    isolate_provider_environment();
+    let bound = min_padded_chat_completion_len() + 32;
+    let exact = padded_chat_completion_bytes(bound);
+    let over = padded_chat_completion_bytes(bound + 1);
+    assert_eq!(exact.len(), bound);
+    assert_eq!(over.len(), bound + 1);
+
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(exact));
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(over.clone()));
+    simulator.enqueue_chat(ScriptedResponse::advertised_length(
+        over.clone(),
+        (bound as u64) + 1,
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chunked(over, 256_000));
+    let mut config = openai_config_for_simulator(&simulator);
+    config.max_response_bytes = bound as u64;
+    let vendor = OpenAIVendor::new(config)
+        .expect("adapter should construct with dummy local config");
+
+    let ok = vendor
+        .execute("gpt-4", user_params("exact bound"))
+        .await
+        .expect("exact-bound JSON must succeed");
+    assert_eq!(ok.content, SIMULATED_CONTENT);
+    assert_eq!(ok.prompt_tokens, 10);
+    assert_eq!(ok.completion_tokens, 5);
+
+    for name in ["one over", "advertised length", "chunked"] {
+        let error = vendor
+            .execute("gpt-4", user_params(name))
+            .await
+            .expect_err(name);
+        match &error {
+            ExecutorError::InvalidUpstreamResult => {}
+            other => panic!("{name} expected InvalidUpstreamResult, got {other:?}"),
+        }
+        let text = error.to_string();
+        assert!(!text.contains(&"a".repeat(32)));
+        assert!(!text.contains("XXXX"));
+    }
+    assert_eq!(simulator.generation_count(), 4);
 }

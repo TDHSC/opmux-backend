@@ -23,8 +23,8 @@ pub use db::{
 pub use env::isolate_provider_environment;
 pub use proxy::RecoverableDbProxy;
 pub use simulator::{
-    CapturedRequest, OpenAiSimulator, ScriptedResponse, FIXTURE_PROVIDER_KEY,
-    SIMULATED_CONTENT,
+    min_padded_chat_completion_len, padded_chat_completion_bytes, CapturedRequest,
+    OpenAiSimulator, ScriptedResponse, FIXTURE_PROVIDER_KEY, SIMULATED_CONTENT,
 };
 
 /// Former public mock gateway key. Runtime authentication must reject it.

@@ -21,7 +21,12 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   `cost` is a USD estimate for that successful response from the selected target's configured
   per-million prices (illustrative `1.0`/`2.0` with 120/30 tokens is `0.00018`), rounded to 8
   decimal places. Missing prices fail rather than becoming zero. The estimate is not current
-  provider billing and does not total retries or abandoned work.
+  provider billing and does not total retries or abandoned work. Malformed successful payloads,
+  empty choices, missing or invalid required fields, and impossible usage fail as upstream protocol
+  errors without fabricating model, content, usage, or cost. Provider response bodies are capped by
+  `max_upstream_response_bytes` while the bytes are read, including chunked transfer and advertised
+  `Content-Length`. Those protocol faults are not retried as network failures. Canonical 502 mapping
+  is later work.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
@@ -41,9 +46,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
 operator-configured routes only; there is no Memory/Router service and no conversation history. The
 OpenAI adapter speaks Chat Completions against the configured base URL; live-provider verification
-remains deferred. Eligible fallback policy, standardized error envelopes, and upstream body-size
-bounds are later work. Planned Rewrite/Validation microservices and additional vendors should not be
-treated as implemented capabilities. Explicit `stream`/`rewrite` requests are rejected.
+remains deferred. Eligible fallback policy and standardized error envelopes are later work. Planned
+Rewrite/Validation microservices and additional vendors should not be treated as implemented
+capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 ## Getting Started
 
@@ -121,8 +126,10 @@ for the canonical schema, documented defaults, and numeric bounds.
 
 Omitted optional limits default to a 30-second protected-request deadline, 10-second attempt
 maximum, one retry per target, three total provider attempts, at most two fallback targets, and a
-2-second backoff cap. Those values are validated and injected at startup. Request-deadline,
-fallback, circuit, concurrency, and raw-size enforcement are later features and are not active yet.
+2-second backoff cap. Those values are validated and injected at startup.
+`max_upstream_response_bytes` (default 1 MiB) is enforced while reading provider success bodies.
+Request-deadline, fallback, circuit, concurrency, and inbound raw-size enforcement are later
+features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the

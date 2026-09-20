@@ -288,13 +288,21 @@ Response `200 OK`:
   and does not total retries or abandoned work.
 
 - `processing_time_ms` is a nonnegative elapsed-time measurement for the request.
+- Malformed successful Chat Completions JSON, empty `choices`, missing required `model` / message
+  `content` / `role` / `finish_reason` / `usage`, non-text content, negative or fractional token
+  counts, and inconsistent `total_tokens` fail as upstream protocol errors. The gateway does not
+  invent `model_used`, content, usage, or a zero `cost`. Raw upstream bytes are not copied into the
+  client error. These faults are not retried as transport failures.
+- Provider bodies are limited by `max_upstream_response_bytes` (default 1048576) while reading,
+  including advertised `Content-Length` and chunked/no-length transfer. An oversized upstream body
+  is an upstream-result error, not a client `413`.
 
 - Response codes:
   - `200 OK` success
   - `400 Bad Request` invalid JSON, unknown/unsupported control, or out-of-range parameter
   - `401 Unauthorized` invalid/missing/ambiguous API key
   - `403 Forbidden` authenticated management key (generation requires inference)
-  - `500 Internal Server Error` execution failed
+  - `500 Internal Server Error` execution failed, including invalid or oversized upstream results
   - `503 Service Unavailable` authentication datastore unavailable or circuit breaker open
 
 Error payload format:

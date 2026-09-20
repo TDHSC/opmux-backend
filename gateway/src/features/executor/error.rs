@@ -171,8 +171,10 @@ impl From<reqwest::Error> for ExecutorError {
     fn from(err: reqwest::Error) -> Self {
         if err.is_timeout() {
             Self::TimeoutError(0) // Actual timeout value should be tracked separately
+        } else if err.is_decode() {
+            Self::JsonError("malformed upstream JSON".to_string())
         } else if err.is_connect() || err.is_request() {
-            Self::NetworkError(err.to_string())
+            Self::NetworkError("upstream transport error".to_string())
         } else if err.is_status() {
             if let Some(status) = err.status() {
                 // Use u16 comparison instead of StatusCode
@@ -184,19 +186,19 @@ impl From<reqwest::Error> for ExecutorError {
                         retry_after_ms: None,
                     }
                 } else {
-                    Self::ApiCallFailed(format!("HTTP {}: {}", status, err))
+                    Self::ApiCallFailed(format!("HTTP {status}"))
                 }
             } else {
-                Self::ApiCallFailed(err.to_string())
+                Self::ApiCallFailed("HTTP status error".to_string())
             }
         } else {
-            Self::NetworkError(err.to_string())
+            Self::NetworkError("upstream transport error".to_string())
         }
     }
 }
 
 impl From<serde_json::Error> for ExecutorError {
-    fn from(err: serde_json::Error) -> Self {
-        Self::JsonError(err.to_string())
+    fn from(_err: serde_json::Error) -> Self {
+        Self::JsonError("malformed upstream JSON".to_string())
     }
 }

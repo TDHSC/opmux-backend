@@ -19,6 +19,7 @@ use serial_test::serial;
 use std::sync::Arc;
 use support::{
     auth_service_from_pool, cleanup_clients, isolate_provider_environment,
+    min_padded_chat_completion_len, padded_chat_completion_bytes,
     provision_inference_key, test_pool, CapturedRequest, OpenAiSimulator,
     ScriptedResponse, SIMULATED_CONTENT,
 };
@@ -231,5 +232,134 @@ async fn named_targets_use_own_prices_when_provider_reports_the_same_model() {
     assert_eq!(generation_body(&captures[0])["model"], DEFAULT_MODEL);
     assert_eq!(generation_body(&captures[1])["model"], FAST_MODEL);
     assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+const RAW_UPSTREAM_SENTINEL: &str = "RAW_UPSTREAM_SENTINEL";
+
+fn results_router_with_limit(
+    simulator: &OpenAiSimulator,
+    auth_service: Arc<AuthService>,
+    max_upstream_response_bytes: u64,
+) -> axum::Router {
+    let mut settings =
+        Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
+    settings.limits.max_upstream_response_bytes = max_upstream_response_bytes;
+    Application::from_settings(Arc::new(settings), auth_service)
+        .expect("application should build from openai-results fixture settings")
+        .into_router(MetricsConfig::disabled())
+}
+
+fn assert_protocol_http_error(status: StatusCode, body: &serde_json::Value, raw: &str) {
+    assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert!(status.is_server_error(), "protocol faults must not succeed");
+    assert!(body.get("response").is_none());
+    assert!(body.get("model_used").is_none());
+    assert!(body.get("cost").is_none());
+    assert!(body.get("usage").is_none());
+    let encoded = body.to_string();
+    assert!(!encoded.contains(raw));
+    assert!(!encoded.contains(SIMULATED_CONTENT));
+    let code = body["error"]["code"].as_str().unwrap_or_default();
+    assert!(
+        code == "invalid_upstream_result" || code == "internal_error",
+        "unexpected protocol error code {code}"
+    );
+}
+
+async fn route_json(
+    app: axum::Router,
+    credential: &str,
+) -> (StatusCode, serde_json::Value) {
+    let response = post_route(
+        app,
+        credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {}
+        }),
+    )
+    .await;
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+#[serial]
+async fn production_router_rejects_malformed_success_payloads_without_retry() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let empty_choices = serde_json::json!({
+        "id": "chatcmpl-local-fixture",
+        "object": "chat.completion",
+        "created": 0,
+        "model": DEFAULT_MODEL,
+        "choices": [],
+        "usage": {
+            "prompt_tokens": 10,
+            "completion_tokens": 5,
+            "total_tokens": 15
+        }
+    });
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+        format!("{{not-json {RAW_UPSTREAM_SENTINEL}").into_bytes(),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+        empty_choices.to_string().into_bytes(),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let app = results_router(&simulator, auth_service_from_pool(pool.clone()));
+
+    let (malformed_status, malformed_body) =
+        route_json(app.clone(), &issued.credential).await;
+    assert_protocol_http_error(malformed_status, &malformed_body, RAW_UPSTREAM_SENTINEL);
+    assert_eq!(simulator.generation_count(), 1);
+
+    let (empty_status, empty_body) = route_json(app.clone(), &issued.credential).await;
+    assert_protocol_http_error(empty_status, &empty_body, RAW_UPSTREAM_SENTINEL);
+    assert_eq!(simulator.generation_count(), 2);
+
+    let (ok_status, ok_body) = route_json(app, &issued.credential).await;
+    assert_eq!(ok_status, StatusCode::OK);
+    assert_eq!(ok_body["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(simulator.generation_count(), 3);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn production_router_bounds_upstream_bodies_across_transfer_modes() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let bound = min_padded_chat_completion_len() + 32;
+    let exact = padded_chat_completion_bytes(bound);
+    let over = padded_chat_completion_bytes(bound + 1);
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(exact));
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(over.clone()));
+    simulator.enqueue_chat(ScriptedResponse::advertised_length(
+        over.clone(),
+        (bound as u64) + 1,
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chunked(over, 256_000));
+    let app = results_router_with_limit(
+        &simulator,
+        auth_service_from_pool(pool.clone()),
+        bound as u64,
+    );
+
+    let (ok_status, ok_body) = route_json(app.clone(), &issued.credential).await;
+    assert_eq!(ok_status, StatusCode::OK);
+    assert_eq!(ok_body["response"]["content"], SIMULATED_CONTENT);
+
+    for _ in 0..3 {
+        let (status, body) = route_json(app.clone(), &issued.credential).await;
+        assert_protocol_http_error(status, &body, "aaaaaaaa");
+        assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    }
+    assert_eq!(simulator.generation_count(), 4);
     cleanup_clients(&pool, &[issued.client_id]).await;
 }

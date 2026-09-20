@@ -18,9 +18,11 @@
 //! let result = service.execute(&plan, &payload).await?;
 //! ```
 
+pub mod bounded_body;
 pub mod config;
 pub mod error;
 pub mod models;
+pub(crate) mod openai_response;
 pub mod pricing;
 pub mod repository;
 pub mod service;

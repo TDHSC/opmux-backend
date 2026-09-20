@@ -2,12 +2,15 @@
 //!
 //! Sends one `POST {base_url}/chat/completions` request per call. `model_used`
 //! is the provider-reported model. Cost uses the selected target's configured
-//! prices, not a hardcoded model-price table.
+//! prices, not a hardcoded model-price table. Success bodies are accumulated
+//! up to `max_response_bytes` before deserialization.
 
 use crate::features::executor::{
+    bounded_body::read_bounded_response_body,
     config::OpenAIConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult, Message},
+    openai_response::parse_successful_chat_completion,
     pricing::estimate_successful_response_cost,
     vendors::traits::LLMVendor,
 };
@@ -27,29 +30,6 @@ struct ChatCompletionRequest {
     max_tokens: Option<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     top_p: Option<f64>,
-}
-
-/// OpenAI Chat Completions API response.
-#[derive(Debug, Deserialize)]
-struct ChatCompletionResponse {
-    /// Provider-reported model. May differ from the requested alias.
-    model: String,
-    choices: Vec<Choice>,
-    usage: Usage,
-}
-
-#[derive(Debug, Deserialize)]
-struct Choice {
-    message: Message,
-    finish_reason: String,
-}
-
-#[derive(Debug, Deserialize)]
-struct Usage {
-    prompt_tokens: i64,
-    completion_tokens: i64,
-    #[allow(dead_code)]
-    total_tokens: i64,
 }
 
 /// OpenAI vendor implementation.
@@ -152,7 +132,8 @@ impl LLMVendor for OpenAIVendor {
             } else {
                 None
             };
-            let error_text = response.text().await.unwrap_or_default();
+            let _ = read_bounded_response_body(response, self.config.max_response_bytes)
+                .await;
             return Err(match status {
                 StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                     ExecutorError::AuthenticationFailed("openai".to_string())
@@ -161,45 +142,19 @@ impl LLMVendor for OpenAIVendor {
                     vendor: "openai".to_string(),
                     retry_after_ms,
                 },
-                status if status.is_client_error() => ExecutorError::InvalidPayload(
-                    format!("OpenAI API error {}: {}", status, error_text),
-                ),
-                status if status.is_server_error() => ExecutorError::ApiCallFailed(
-                    format!("OpenAI API error {}: {}", status, error_text),
-                ),
-                _ => ExecutorError::ApiCallFailed(format!(
-                    "OpenAI API error {}: {}",
-                    status, error_text
-                )),
+                status if status.is_client_error() => {
+                    ExecutorError::InvalidPayload(format!("OpenAI API error {status}"))
+                }
+                status if status.is_server_error() => {
+                    ExecutorError::ApiCallFailed(format!("OpenAI API error {status}"))
+                }
+                _ => ExecutorError::ApiCallFailed(format!("OpenAI API error {status}")),
             });
         }
 
-        let api_response: ChatCompletionResponse = response.json().await?;
-
-        let choice = api_response.choices.first().ok_or_else(|| {
-            ExecutorError::ApiCallFailed("No choices in response".to_string())
-        })?;
-
-        let content = choice.message.content.clone();
-        let role = choice.message.role.clone();
-        let finish_reason = choice.finish_reason.clone();
-        let model_used = api_response.model;
-
-        let total_cost = self.calculate_cost(
-            api_response.usage.prompt_tokens,
-            api_response.usage.completion_tokens,
-            model,
-        )?;
-
-        Ok(ExecutionResult {
-            content,
-            role,
-            model_used,
-            prompt_tokens: api_response.usage.prompt_tokens,
-            completion_tokens: api_response.usage.completion_tokens,
-            total_cost,
-            finish_reason,
-        })
+        let body =
+            read_bounded_response_body(response, self.config.max_response_bytes).await?;
+        parse_successful_chat_completion(&body, self.config.pricing.get(model))
     }
 
     async fn health_check(&self, timeout_secs: u64) -> Result<(), ExecutorError> {

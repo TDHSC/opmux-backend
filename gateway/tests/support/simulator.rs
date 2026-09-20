@@ -3,15 +3,18 @@
 #![allow(dead_code)]
 
 use axum::{
+    body::{Body, Bytes},
     extract::{Request, State},
     http::{header, HeaderMap, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Router,
 };
+use futures_util::stream;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::task::JoinHandle;
 
@@ -88,6 +91,21 @@ pub enum ScriptedResponse {
         /// Content-Type value.
         content_type: &'static str,
     },
+    /// Raw body with explicit length or chunked transfer.
+    Raw {
+        /// HTTP status code.
+        status: u16,
+        /// Payload bytes the client is intended to read first.
+        body: Vec<u8>,
+        /// Content-Type value.
+        content_type: &'static str,
+        /// When set, advertise this Content-Length even if it does not match `body`.
+        advertised_content_length: Option<u64>,
+        /// When true, stream without Content-Length so HTTP/1.1 uses chunked encoding.
+        chunked: bool,
+        /// Extra bytes the stream can still yield if the client keeps reading.
+        extra_unread_bytes: usize,
+    },
 }
 
 impl ScriptedResponse {
@@ -155,6 +173,88 @@ impl ScriptedResponse {
             retry_after: None,
         }
     }
+
+    /// JSON or malformed bytes with a 200 status.
+    pub fn raw_json_bytes(body: impl Into<Vec<u8>>) -> Self {
+        Self::Bytes {
+            status: 200,
+            body: body.into(),
+            content_type: "application/json",
+        }
+    }
+
+    /// Chunked success/error body without Content-Length.
+    pub fn chunked(body: impl Into<Vec<u8>>, extra_unread_bytes: usize) -> Self {
+        Self::Raw {
+            status: 200,
+            body: body.into(),
+            content_type: "application/json",
+            advertised_content_length: None,
+            chunked: true,
+            extra_unread_bytes,
+        }
+    }
+
+    /// Body with an explicit advertised Content-Length, which may lie.
+    pub fn advertised_length(body: impl Into<Vec<u8>>, content_length: u64) -> Self {
+        Self::Raw {
+            status: 200,
+            body: body.into(),
+            content_type: "application/json",
+            advertised_content_length: Some(content_length),
+            chunked: false,
+            extra_unread_bytes: 0,
+        }
+    }
+}
+
+/// Minimum compact Chat Completions JSON used by padded fixtures.
+pub fn min_padded_chat_completion_len() -> usize {
+    padded_chat_completion_bytes_with(None, "gpt-4", SIMULATED_CONTENT).len()
+}
+
+/// Valid Chat Completions JSON padded to an exact byte length.
+pub fn padded_chat_completion_bytes(target_len: usize) -> Vec<u8> {
+    padded_chat_completion_bytes_with(Some(target_len), "gpt-4", SIMULATED_CONTENT)
+}
+
+fn padded_chat_completion_bytes_with(
+    target_len: Option<usize>,
+    model: &str,
+    content: &str,
+) -> Vec<u8> {
+    let make = |pad: &str| {
+        json!({
+            "id": "chatcmpl-bound",
+            "object": "chat.completion",
+            "created": 0,
+            "model": model,
+            "choices": [{
+                "index": 0,
+                "message": {"role": "assistant", "content": content},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "total_tokens": 15
+            },
+            "pad": pad
+        })
+        .to_string()
+    };
+    let empty = make("");
+    let Some(target_len) = target_len else {
+        return empty.into_bytes();
+    };
+    assert!(
+        target_len >= empty.len(),
+        "target length {target_len} is below minimum padded chat JSON {}",
+        empty.len()
+    );
+    let out = make(&"a".repeat(target_len - empty.len()));
+    assert_eq!(out.len(), target_len);
+    out.into_bytes()
 }
 
 struct SimulatorInner {
@@ -162,6 +262,7 @@ struct SimulatorInner {
     captures: Mutex<Vec<CapturedRequest>>,
     chat_script: Mutex<VecDeque<ScriptedResponse>>,
     models_script: Mutex<VecDeque<ScriptedResponse>>,
+    chat_bytes_yielded: Arc<AtomicUsize>,
 }
 
 /// Owned loopback OpenAI simulator. Aborting the task releases the listener.
@@ -187,6 +288,7 @@ impl OpenAiSimulator {
             captures: Mutex::new(Vec::new()),
             chat_script: Mutex::new(VecDeque::new()),
             models_script: Mutex::new(VecDeque::new()),
+            chat_bytes_yielded: Arc::new(AtomicUsize::new(0)),
         });
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
@@ -262,6 +364,11 @@ impl OpenAiSimulator {
             .filter(|capture| capture.is_models_probe())
             .count()
     }
+
+    /// Bytes yielded by the most recent Chat Completions response stream.
+    pub fn last_chat_bytes_yielded(&self) -> usize {
+        self.inner.chat_bytes_yielded.load(Ordering::SeqCst)
+    }
 }
 
 impl Drop for OpenAiSimulator {
@@ -310,7 +417,11 @@ fn unauthorized() -> Response {
         .into_response()
 }
 
-fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
+fn render(
+    script: ScriptedResponse,
+    request_model: Option<&str>,
+    state: &Arc<SimulatorInner>,
+) -> Response {
     match script {
         ScriptedResponse::ChatSuccess {
             content,
@@ -323,7 +434,7 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
             let model = model
                 .or_else(|| request_model.map(ToOwned::to_owned))
                 .unwrap_or_else(|| "gpt-4".to_string());
-            axum::Json(json!({
+            let body = json!({
                 "id": "chatcmpl-local-fixture",
                 "object": "chat.completion",
                 "created": 0,
@@ -338,8 +449,12 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
                     "completion_tokens": completion_tokens,
                     "total_tokens": prompt_tokens + completion_tokens
                 }
-            }))
-            .into_response()
+            });
+            let encoded = body.to_string().into_bytes();
+            state
+                .chat_bytes_yielded
+                .store(encoded.len(), Ordering::SeqCst);
+            axum::Json(body).into_response()
         }
         ScriptedResponse::Json {
             status,
@@ -348,6 +463,10 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
         } => {
             let status =
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            let encoded = body.to_string().into_bytes();
+            state
+                .chat_bytes_yielded
+                .store(encoded.len(), Ordering::SeqCst);
             let mut response = (status, axum::Json(body)).into_response();
             if let Some(retry_after) = retry_after {
                 if let Ok(value) = retry_after.parse() {
@@ -363,9 +482,61 @@ fn render(script: ScriptedResponse, request_model: Option<&str>) -> Response {
         } => {
             let status =
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            state.chat_bytes_yielded.store(body.len(), Ordering::SeqCst);
             (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
         }
+        ScriptedResponse::Raw {
+            status,
+            body,
+            content_type,
+            advertised_content_length,
+            chunked,
+            extra_unread_bytes,
+        } => {
+            let status =
+                StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
+            state.chat_bytes_yielded.store(0, Ordering::SeqCst);
+            let stream_body =
+                streamed_body(body, extra_unread_bytes, state.chat_bytes_yielded.clone());
+            let mut response =
+                (status, [(header::CONTENT_TYPE, content_type)], stream_body)
+                    .into_response();
+            if let Some(length) = advertised_content_length {
+                response.headers_mut().insert(
+                    header::CONTENT_LENGTH,
+                    length.to_string().parse().expect("content-length"),
+                );
+            } else if chunked {
+                response.headers_mut().remove(header::CONTENT_LENGTH);
+            }
+            response
+        }
     }
+}
+
+fn streamed_body(
+    body: Vec<u8>,
+    extra_unread_bytes: usize,
+    yielded: Arc<AtomicUsize>,
+) -> Body {
+    const CHUNK_SIZE: usize = 16;
+    let mut chunks: Vec<Bytes> = body
+        .chunks(CHUNK_SIZE)
+        .map(Bytes::copy_from_slice)
+        .collect();
+    let mut remaining_extra = extra_unread_bytes;
+    while remaining_extra > 0 {
+        let size = remaining_extra.min(CHUNK_SIZE);
+        chunks.push(Bytes::from(vec![b'X'; size]));
+        remaining_extra -= size;
+    }
+    if chunks.is_empty() {
+        chunks.push(Bytes::new());
+    }
+    Body::from_stream(stream::iter(chunks.into_iter().map(move |chunk| {
+        yielded.fetch_add(chunk.len(), Ordering::SeqCst);
+        Ok::<Bytes, std::io::Error>(chunk)
+    })))
 }
 
 async fn models_handler(
@@ -387,7 +558,7 @@ async fn models_handler(
     let script = lock_vec(&state.models_script)
         .pop_front()
         .unwrap_or_else(ScriptedResponse::models_ok);
-    render(script, None)
+    render(script, None, &state)
 }
 
 async fn chat_handler(
@@ -413,8 +584,9 @@ async fn chat_handler(
         return unauthorized();
     }
 
+    state.chat_bytes_yielded.store(0, Ordering::SeqCst);
     let script = lock_vec(&state.chat_script)
         .pop_front()
         .unwrap_or_else(ScriptedResponse::chat_ok);
-    render(script, model.as_deref())
+    render(script, model.as_deref(), &state)
 }

@@ -4,7 +4,7 @@ use std::collections::HashMap;
 use std::env;
 use std::fmt;
 
-use crate::core::config::Settings;
+use crate::core::config::{Settings, MAX_UPSTREAM_RESPONSE_BYTES};
 
 /// Model pricing information for a selected target.
 ///
@@ -41,6 +41,8 @@ pub struct OpenAIConfig {
     pub supported_models: Vec<String>,
     /// Pricing information for each model
     pub pricing: HashMap<String, ModelPricing>,
+    /// Maximum upstream success body size in bytes
+    pub max_response_bytes: u64,
 }
 
 impl fmt::Debug for OpenAIConfig {
@@ -50,6 +52,7 @@ impl fmt::Debug for OpenAIConfig {
             .field("base_url", &"[omitted]")
             .field("timeout_ms", &self.timeout_ms)
             .field("supported_models", &self.supported_models)
+            .field("max_response_bytes", &self.max_response_bytes)
             .finish_non_exhaustive()
     }
 }
@@ -87,6 +90,7 @@ impl OpenAIConfig {
                 "gpt-3.5-turbo".to_string(),
             ],
             pricing,
+            max_response_bytes: MAX_UPSTREAM_RESPONSE_BYTES.default,
         }
     }
 
@@ -117,6 +121,7 @@ impl OpenAIConfig {
                 "gpt-3.5-turbo".to_string(),
             ],
             pricing,
+            max_response_bytes: MAX_UPSTREAM_RESPONSE_BYTES.default,
         }
     }
 
@@ -184,6 +189,7 @@ impl ExecutorConfig {
                 timeout_ms: settings.limits.max_attempt_timeout_ms(),
                 supported_models,
                 pricing,
+                max_response_bytes: settings.limits.max_upstream_response_bytes,
             }),
             anthropic_api_key: None,
             timeout_ms: settings.limits.max_attempt_timeout_ms(),
@@ -295,5 +301,9 @@ mod tests {
         assert_eq!(secondary.input_per_million, 0.25);
         assert_eq!(secondary.output_per_million, 0.5);
         assert!(!openai.pricing.contains_key("gpt-4"));
+        assert_eq!(
+            openai.max_response_bytes,
+            settings.limits.max_upstream_response_bytes
+        );
     }
 }
