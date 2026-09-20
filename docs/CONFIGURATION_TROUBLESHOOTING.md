@@ -229,10 +229,11 @@ Action: provision a tenant and inference key with `opmux-admin` and send that on
 
 ### `/api/v1/route` returns `503 DRAINING`
 
-Cause: the process received SIGTERM or SIGINT and is no longer admitting generation.
+Cause: the process received SIGTERM or SIGINT and closed generation admission. Later acquires are
+draining, not local overload.
 
-Action: route new generation to a replacement process. In-flight work is bounded by
-`SERVER_SHUTDOWN_TIMEOUT`.
+Action: route new generation to a replacement process. Already admitted work is bounded by
+`SERVER_SHUTDOWN_TIMEOUT`; releasing those permits does not reopen admission.
 
 ### `/api/v1/route` returns `503` without a circuit-open body
 

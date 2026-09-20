@@ -80,10 +80,11 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   selected-column, locking, and `last_used_at` UPDATE access, upstream `/models` reachability, and
   at least one usable default-route target. `/models` is not a generation call and cannot override
   circuit-open default-route targets. Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS`
-  (default 5 seconds); failures are never cached. SIGTERM and SIGINT mark `/ready` unready, reject
-  new generation with `503 DRAINING`, and bound in-flight work by `SERVER_SHUTDOWN_TIMEOUT` (default
-  30 seconds). An occupied listen address fails startup with a sanitized `bind_address_in_use`
-  diagnostic and does not disturb the existing listener.
+  (default 5 seconds); failures are never cached. SIGTERM and SIGINT close generation admission,
+  mark `/ready` unready even for in-flight probes, reject later generation with `503 DRAINING`
+  rather than `429 OVERLOADED`, and bound already admitted work by `SERVER_SHUTDOWN_TIMEOUT`
+  (default 30 seconds). An occupied listen address fails startup with a sanitized
+  `bind_address_in_use` diagnostic and does not disturb the existing listener.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects

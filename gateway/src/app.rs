@@ -81,7 +81,8 @@ impl Application {
             executor_config,
             execution_metrics_sink(metrics.enabled),
         )?);
-        let shutdown = ShutdownState::new();
+        let admission = AdmissionLimiter::new(settings.limits.max_concurrent_generations);
+        let shutdown = ShutdownState::with_admission(admission.clone());
         let health_service = Arc::new(
             health::HealthService::with_dependencies(
                 executor_service.clone(),
@@ -95,7 +96,6 @@ impl Application {
             executor_service.clone(),
             settings.clone(),
         ));
-        let admission = AdmissionLimiter::new(settings.limits.max_concurrent_generations);
 
         Ok(Self {
             state: AppState {
@@ -136,8 +136,10 @@ impl Application {
 ///    for JSON extraction. Health, readiness, and metrics stay outside it.
 ///
 /// Generation admission is a non-blocking try-acquire after inference
-/// validation in the route handler. Saturation does not queue and does not
-/// wrap health, readiness, or metrics.
+/// validation in the route handler. Drain closes that same limiter before
+/// publishing the drain flag. Closed maps to `503 DRAINING`; saturation
+/// maps to `429 OVERLOADED`. Saturation does not queue and does not wrap
+/// health, readiness, or metrics.
 ///
 /// # Parameters
 /// - `state` - Injected application state

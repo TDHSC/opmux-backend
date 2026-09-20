@@ -142,6 +142,7 @@ impl ResponseHold {
     /// Lets the waiting handler continue.
     pub fn release(&self) {
         self.notify.notify_waiters();
+        self.notify.notify_one();
     }
 }
 

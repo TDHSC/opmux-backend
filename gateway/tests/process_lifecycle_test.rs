@@ -11,7 +11,9 @@ use axum::{
     http::{Request, StatusCode},
 };
 use gateway::{
-    app::Application, core::metrics::MetricsConfig, features::auth::CREDENTIAL_PREFIX,
+    app::Application,
+    core::{admission::AdmissionDenied, metrics::MetricsConfig},
+    features::auth::CREDENTIAL_PREFIX,
 };
 use serial_test::serial;
 use std::io::{Read, Write};
@@ -402,6 +404,17 @@ async fn wait_generations(simulator: &OpenAiSimulator, count: usize) {
     }
 }
 
+async fn wait_models_probes(simulator: &OpenAiSimulator, count: usize) {
+    let started = Instant::now();
+    while simulator.models_probe_count() < count {
+        assert!(
+            started.elapsed() < Duration::from_millis(500),
+            "simulator did not observe models probe"
+        );
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+}
+
 async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
         .await
@@ -544,6 +557,108 @@ async fn production_router_drain_gates_reject_generation_and_override_ready() {
     assert_eq!(simulator.generation_count(), before);
 
     cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn readiness_started_before_drain_observes_draining_after_held_models_probe() {
+    isolate_provider_environment();
+    let _ttl = TtlGuard::set("0");
+    let pool = test_pool().await;
+    let simulator = OpenAiSimulator::start().await;
+    let (held_models, hold) = ScriptedResponse::models_ok().hold();
+    simulator.enqueue_models(held_models);
+    let application = Application::from_settings_and_metrics(
+        settings_for_simulator(&simulator),
+        auth_service_from_pool(pool.clone()),
+        MetricsConfig::disabled(),
+    )
+    .expect("application");
+    let shutdown = application.state.shutdown.clone();
+    let app = application.into_router(MetricsConfig::disabled());
+
+    assert!(!shutdown.is_draining());
+    assert_eq!(simulator.models_probe_count(), 0);
+
+    let ready_app = app.clone();
+    let ready = tokio::spawn(async move {
+        ready_app
+            .oneshot(
+                Request::builder()
+                    .uri("/ready")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+    });
+    wait_models_probes(&simulator, 1).await;
+    shutdown.mark_draining();
+    hold.release();
+
+    let draining_ready = ready.await.expect("join ready").expect("ready");
+    assert_eq!(draining_ready.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let draining_body = body_json(draining_ready).await;
+    assert_eq!(draining_body["status"], "not_ready");
+    assert_eq!(draining_body["draining"], true);
+    assert_eq!(
+        draining_body["dependencies"]["database"]["status"],
+        "healthy"
+    );
+    assert_eq!(
+        draining_body["dependencies"]["upstream"]["status"],
+        "healthy"
+    );
+    assert_eq!(
+        draining_body["dependencies"]["default_route"]["status"],
+        "healthy"
+    );
+
+    let health = app
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(health.status(), StatusCode::OK);
+    assert_eq!(body_json(health).await["status"], "healthy");
+}
+
+#[tokio::test]
+#[serial]
+async fn stale_not_draining_observation_cannot_admit_after_drain_and_release() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let simulator = OpenAiSimulator::start().await;
+    let application = Application::from_settings_and_metrics(
+        settings_for_simulator(&simulator),
+        auth_service_from_pool(pool.clone()),
+        MetricsConfig::disabled(),
+    )
+    .expect("application");
+    let shutdown = application.state.shutdown.clone();
+    let admission = application.state.admission.clone();
+
+    assert!(!shutdown.is_draining());
+    let predating = admission
+        .try_acquire()
+        .expect("predating permit stays valid");
+    assert!(!shutdown.is_draining());
+
+    shutdown.mark_draining();
+    assert!(shutdown.is_draining());
+    assert!(
+        matches!(admission.try_acquire(), Err(AdmissionDenied::Closed)),
+        "later acquisition must reject after drain is published"
+    );
+
+    drop(predating);
+    assert!(
+        matches!(admission.try_acquire(), Err(AdmissionDenied::Closed)),
+        "releasing a predating permit must not reopen admission"
+    );
 }
 
 async fn drain_signal_run(signal: &str) {

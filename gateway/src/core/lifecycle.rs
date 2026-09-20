@@ -1,10 +1,11 @@
 //! Drain state and bounded process lifecycle for the gateway binary.
 //!
-//! SIGTERM and SIGINT mark the process unready, reject new generation, and
-//! wait at most the configured shutdown grace for admitted work. Grace expiry
-//! cancels remaining owned tasks. Bind failures are sanitized and do not
-//! disturb an existing listener.
+//! SIGTERM and SIGINT close generation admission, mark the process unready,
+//! reject later generation, and wait at most the configured shutdown grace
+//! for admitted work. Grace expiry cancels remaining owned tasks. Bind
+//! failures are sanitized and do not disturb an existing listener.
 
+use super::admission::AdmissionLimiter;
 use axum::Router;
 use std::fmt;
 use std::future::IntoFuture;
@@ -15,23 +16,50 @@ use tokio::net::TcpListener;
 use tokio::sync::watch;
 
 /// Shared drain flag for readiness and generation admission.
-#[derive(Clone, Debug)]
+///
+/// [`Self::mark_draining`] closes the wired [`AdmissionLimiter`] before
+/// publishing the drain flag so later permit acquisition cannot admit
+/// generation. Already held permits remain valid; releasing them cannot
+/// reopen admission.
+#[derive(Clone)]
 pub struct ShutdownState {
     tx: watch::Sender<bool>,
+    admission: AdmissionLimiter,
+}
+
+impl fmt::Debug for ShutdownState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ShutdownState")
+            .field("draining", &self.is_draining())
+            .finish()
+    }
 }
 
 impl ShutdownState {
-    /// Creates a not-draining process state.
+    /// Creates a not-draining process state with a detached limiter.
     pub fn new() -> Self {
+        Self::with_admission(AdmissionLimiter::new(0))
+    }
+
+    /// Creates drain state that closes `admission` before publishing.
+    ///
+    /// # Parameters
+    /// - `admission` - The same limiter used by generation handlers
+    ///
+    /// # Returns
+    /// Drain state wired to `admission`
+    pub fn with_admission(admission: AdmissionLimiter) -> Self {
         let (tx, _) = watch::channel(false);
-        Self { tx }
+        Self { tx, admission }
     }
 
     /// Marks the process as draining.
     ///
-    /// Readiness becomes unready and new generation is rejected. Already
-    /// admitted work may continue until shutdown grace expires.
+    /// Closes the wired generation limiter, then publishes the drain
+    /// flag. Readiness becomes unready and later acquires are denied.
+    /// Already admitted work may continue until shutdown grace expires.
     pub fn mark_draining(&self) {
+        self.admission.close();
         self.tx.send_replace(true);
     }
 
@@ -218,6 +246,7 @@ fn spawn_signal_handler(shutdown: ShutdownState) -> tokio::task::JoinHandle<()> 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::admission::{AdmissionDenied, AdmissionLimiter};
     use std::time::Instant;
 
     #[tokio::test]
@@ -255,5 +284,24 @@ mod tests {
         let started = Instant::now();
         shutdown.wait_until_draining().await;
         assert!(started.elapsed() < Duration::from_millis(50));
+    }
+
+    #[test]
+    fn mark_draining_closes_wired_limiter_before_publishing() {
+        let admission = AdmissionLimiter::new(1);
+        let shutdown = ShutdownState::with_admission(admission.clone());
+        let predating = admission.try_acquire().expect("predating permit");
+        assert!(!shutdown.is_draining());
+        shutdown.mark_draining();
+        assert!(shutdown.is_draining());
+        assert!(matches!(
+            admission.try_acquire(),
+            Err(AdmissionDenied::Closed)
+        ));
+        drop(predating);
+        assert!(matches!(
+            admission.try_acquire(),
+            Err(AdmissionDenied::Closed)
+        ));
     }
 }

@@ -161,7 +161,8 @@ impl HealthConfig {
 /// `/models` reachability, and at least one usable default-route target.
 /// Successful probes may be cached for the configured TTL; failures
 /// are never cached. Draining overrides cached dependency success and
-/// reports not ready.
+/// reports not ready, including when drain starts during an in-flight
+/// probe.
 pub struct HealthService {
     /// Repository for process liveness.
     repository: HealthRepository,
@@ -243,7 +244,7 @@ impl HealthService {
     /// Replaces the drain flag with a shared process-level state.
     ///
     /// # Parameters
-    /// - `shutdown` - Drain flag also used by generation admission
+    /// - `shutdown` - Drain flag wired to the same generation limiter
     ///
     /// # Returns
     /// Service that reports not ready after `shutdown` is marked draining
@@ -359,12 +360,15 @@ impl HealthService {
 
     /// Checks readiness of the authentication database, upstream, and route.
     ///
-    /// Returns 200-equivalent `"ready"` only when all three are healthy.
+    /// Returns 200-equivalent `"ready"` only when all three are healthy and
+    /// the process is not draining.
     /// Successful database and upstream probes may be reused until TTL
     /// expires. Failures are rechecked immediately. Circuit state is never
     /// success-cached. `/models` success cannot override an unusable default
-    /// route. Draining overrides cached dependency success. This method
-    /// does not call generation endpoints.
+    /// route. An initial drain snapshot skips new probes. After awaited
+    /// probes and route evaluation, one final drain snapshot decides
+    /// `draining` and `ready` together. This method does not call generation
+    /// endpoints.
     pub async fn check_readiness(&self) -> Result<ReadinessResponse, HealthError> {
         let timestamp = chrono::Utc::now().to_rfc3339();
         if self.shutdown.is_draining() {
@@ -383,8 +387,11 @@ impl HealthService {
         let (database, upstream) =
             tokio::join!(self.probe_database(), self.probe_upstream());
         let default_route = self.probe_default_route();
-        let ready =
-            database.is_healthy() && upstream.is_healthy() && default_route.is_healthy();
+        let draining = self.shutdown.is_draining();
+        let ready = !draining
+            && database.is_healthy()
+            && upstream.is_healthy()
+            && default_route.is_healthy();
 
         Ok(ReadinessResponse {
             status: if ready {
@@ -393,7 +400,7 @@ impl HealthService {
                 "not_ready".to_string()
             },
             timestamp,
-            draining: false,
+            draining,
             dependencies: ReadinessDependencies {
                 database,
                 upstream,

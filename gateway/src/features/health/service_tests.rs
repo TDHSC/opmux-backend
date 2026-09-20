@@ -31,7 +31,7 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::Arc;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
     use tower::ServiceExt;
     use uuid::Uuid;
 
@@ -42,6 +42,7 @@ mod tests {
         health_check_error: Option<ExecutorError>,
         is_healthy: Option<Arc<AtomicBool>>,
         probes: Arc<std::sync::atomic::AtomicUsize>,
+        hold: Option<Arc<tokio::sync::Notify>>,
     }
 
     impl MockVendor {
@@ -52,6 +53,7 @@ mod tests {
                 health_check_error: None,
                 is_healthy: None,
                 probes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                hold: None,
             }
         }
 
@@ -66,6 +68,7 @@ mod tests {
                 health_check_error: Some(error),
                 is_healthy: None,
                 probes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+                hold: None,
             }
         }
     }
@@ -108,6 +111,9 @@ mod tests {
 
         async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {
             self.probes.fetch_add(1, Ordering::SeqCst);
+            if let Some(hold) = &self.hold {
+                hold.notified().await;
+            }
             if let Some(flag) = &self.is_healthy {
                 if flag.load(Ordering::SeqCst) {
                     return Ok(());
@@ -430,6 +436,7 @@ mod tests {
             health_check_error: None,
             is_healthy: Some(is_healthy.clone()),
             probes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            hold: None,
         };
         let service = ready_service(mock_executor(vendor));
         assert_eq!(service.check_readiness().await.unwrap().status, "not_ready");
@@ -484,6 +491,49 @@ mod tests {
 
         let live = service.check_health().await.unwrap();
         assert_eq!(live.status, "healthy");
+    }
+
+    #[tokio::test]
+    async fn readiness_rechecks_drain_after_held_upstream_probe() {
+        let hold = Arc::new(tokio::sync::Notify::new());
+        let vendor = MockVendor {
+            vendor_id: "mock-vendor".to_string(),
+            supported_models: vec!["example-chat-model".to_string()],
+            health_check_error: None,
+            is_healthy: None,
+            probes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+            hold: Some(hold.clone()),
+        };
+        let probes = vendor.probes.clone();
+        let shutdown = ShutdownState::new();
+        let service = Arc::new(
+            HealthService::with_dependencies(
+                mock_executor(vendor),
+                ready_auth(),
+                Arc::new(Settings::for_tests()),
+                HealthConfig::new(2, 0),
+            )
+            .with_shutdown_state(shutdown.clone()),
+        );
+
+        let check_service = service.clone();
+        let check = tokio::spawn(async move { check_service.check_readiness().await });
+        let started = Instant::now();
+        while probes.load(Ordering::SeqCst) == 0 {
+            assert!(started.elapsed() < Duration::from_millis(500));
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        shutdown.mark_draining();
+        hold.notify_waiters();
+        hold.notify_one();
+
+        let draining = check.await.expect("join").expect("readiness");
+        assert_eq!(draining.status, "not_ready");
+        assert!(draining.draining);
+        assert_eq!(draining.dependencies.database.status, "healthy");
+        assert_eq!(draining.dependencies.upstream.status, "healthy");
+        assert_eq!(draining.dependencies.default_route.status, "healthy");
+        assert_eq!(service.check_health().await.unwrap().status, "healthy");
     }
 
     #[tokio::test]

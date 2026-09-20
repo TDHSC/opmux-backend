@@ -4,7 +4,10 @@ use super::{
     error::IngressError, service::IngressResponse, validate::parse_ingress_request,
 };
 use crate::{
-    core::{correlation::RequestContext, deadline::RequestDeadline, extract::ApiJson},
+    core::{
+        admission::AdmissionDenied, correlation::RequestContext,
+        deadline::RequestDeadline, extract::ApiJson,
+    },
     features::auth::{ApiKeyKind, AuthContext},
     AppState,
 };
@@ -23,8 +26,8 @@ use serde_json::Value;
 /// # Flow
 /// 1. Validates inference capability
 /// 2. Parses the canonical request contract and prompt/parameter bounds
-/// 3. Rejects generation when the process is draining
-/// 4. Acquires a generation admission permit without waiting
+/// 3. Acquires a generation admission permit without waiting
+/// 4. Closed admission maps to draining; saturation maps to overload
 /// 5. Processes the request through stateless configured routing
 /// 6. Returns JSON response or error. The permit is released on every exit.
 ///
@@ -67,17 +70,16 @@ pub async fn ingress_handler(
     tracing::Span::current().record("prompt_length", request.prompt.len());
     tracing::debug!("Request validation passed");
 
-    if state.shutdown.is_draining() {
-        tracing::debug!(
-            reason = "draining",
-            "Generation is not admitted while draining"
-        );
-        return Err(IngressError::Draining);
-    }
-
     let _permit = match state.admission.try_acquire() {
-        Some(permit) => permit,
-        None => {
+        Ok(permit) => permit,
+        Err(AdmissionDenied::Closed) => {
+            tracing::debug!(
+                reason = "draining",
+                "Generation is not admitted while draining"
+            );
+            return Err(IngressError::Draining);
+        }
+        Err(AdmissionDenied::NoPermits) => {
             tracing::debug!(
                 reason = "generation_saturated",
                 "Generation admission is saturated"

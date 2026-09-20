@@ -88,7 +88,9 @@ pub async fn health_handler(
 /// ```
 ///
 /// Draining (SIGTERM/SIGINT) returns `503` with `"draining": true` even when
-/// cached dependencies are still healthy. `/health` stays liveness-only.
+/// cached dependencies are still healthy. A check that started before drain
+/// still reports draining after its probes complete. `/health` stays
+/// liveness-only.
 ///
 /// # Usage
 ///

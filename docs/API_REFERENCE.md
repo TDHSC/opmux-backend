@@ -29,7 +29,9 @@ whose eligible targets are all circuit-open. Successful database and upstream pr
 for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures are never cached, so a restored
 dependency is rechecked on the next probe. SIGTERM and SIGINT mark the process draining: `/ready`
 returns `503` with `"status":"not_ready"` and `"draining": true` even when those probes are still
-cached healthy. `/health` stays liveness-only.
+cached healthy. A readiness check that started before drain still reports `"draining": true` and
+`"status":"not_ready"` after its probes complete, even when those dependencies are healthy.
+`/health` stays liveness-only.
 
 - Auth: none
 - Response:

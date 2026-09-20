@@ -53,6 +53,9 @@ pub struct AppState {
     pub auth_service: Arc<features::auth::AuthService>,
 
     /// Non-blocking concurrent generation admission limiter.
+    ///
+    /// Shared with [`Self::shutdown`]. Drain closes this limiter before
+    /// publishing the drain flag.
     pub admission: AdmissionLimiter,
 
     /// Process drain flag shared by readiness and generation admission.

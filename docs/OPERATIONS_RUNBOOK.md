@@ -172,8 +172,11 @@ kill -TERM "$GATEWAY_PID"
 
 ### Symptom: `/api/v1/route` returns `503 DRAINING`
 
-- The process is shutting down and is not admitting new generation.
-- In-flight work may still complete until `SERVER_SHUTDOWN_TIMEOUT`.
+- The process is shutting down and is not admitting new generation. Drain closes the generation
+  limiter before `/ready` reports draining, so later acquires are `503 DRAINING`, not
+  `429 OVERLOADED`.
+- In-flight work that already holds a permit may still complete until `SERVER_SHUTDOWN_TIMEOUT`.
+  Releasing those permits does not reopen admission.
 - Send new generation to a replacement process after it becomes ready.
 
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
