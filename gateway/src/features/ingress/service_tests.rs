@@ -40,6 +40,7 @@ mod tests {
         async fn execute(
             &self,
             model: &str,
+            _target_id: &str,
             _params: ExecutionParams,
         ) -> Result<ExecutionResult, ExecutorError> {
             Ok(ExecutionResult {
@@ -65,7 +66,7 @@ mod tests {
             &self,
             _prompt_tokens: i64,
             _completion_tokens: i64,
-            _model: &str,
+            _target_id: &str,
         ) -> Result<f64, ExecutorError> {
             Ok(0.001)
         }

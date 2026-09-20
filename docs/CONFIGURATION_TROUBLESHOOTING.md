@@ -7,12 +7,13 @@ catalog load, persistence tests, `opmux-admin`, and migration apply. `AUTH_DEVEL
 not bypass authentication.
 
 Example catalog prices and model names are illustrative samples. They are not current provider
-billing or model-availability facts. Successful-response `cost` is estimated from the selected
-target's configured `input_per_million` and `output_per_million` prices and the validated provider
-usage: `(prompt_tokens * input_per_million + completion_tokens * output_per_million) / 1_000_000`,
-rounded to 8 decimal places. Illustrative prices of `1.0` and `2.0` with 120 prompt and 30
-completion tokens yield `0.00018`. Missing prices fail rather than reporting zero. This estimate
-covers the successful response only; it is not a bill and does not total retries or abandoned work.
+billing or model-availability facts. Distinct target identifiers may request the same provider model
+and still keep their own prices. Successful-response `cost` is estimated from the selected target's
+configured `input_per_million` and `output_per_million` prices and the validated provider usage:
+`(prompt_tokens * input_per_million + completion_tokens * output_per_million) / 1_000_000`, rounded
+to 8 decimal places. Illustrative prices of `1.0` and `2.0` with 120 prompt and 30 completion tokens
+yield `0.00018`. Missing prices fail rather than reporting zero. This estimate covers the successful
+response only; it is not a bill and does not total retries or abandoned work.
 
 ## Canonical catalog schema
 

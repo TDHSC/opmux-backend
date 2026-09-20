@@ -43,6 +43,7 @@ impl IngressRepository {
         skip(self, payload),
         fields(
             vendor_id = %plan.vendor_id,
+            target_id = %plan.target_id,
             model_id = %plan.model_id,
         )
     )]
@@ -98,6 +99,7 @@ mod tests {
         async fn execute(
             &self,
             model: &str,
+            _target_id: &str,
             params: ExecutionParams,
         ) -> Result<ExecutionResult, ExecutorError> {
             Ok(ExecutionResult {
@@ -127,7 +129,7 @@ mod tests {
             &self,
             _prompt_tokens: i64,
             _completion_tokens: i64,
-            _model: &str,
+            _target_id: &str,
         ) -> Result<f64, ExecutorError> {
             Ok(0.0)
         }
@@ -167,6 +169,7 @@ mod tests {
         let repository = create_repository();
         let plan = RoutePlan {
             vendor_id: "openai".to_string(),
+            target_id: "primary".to_string(),
             model_id: "example-chat-model".to_string(),
             fallback_plans: Vec::new(),
         };

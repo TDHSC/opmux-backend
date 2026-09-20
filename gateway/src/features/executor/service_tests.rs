@@ -82,6 +82,7 @@ mod tests {
         async fn execute(
             &self,
             model: &str,
+            _target_id: &str,
             _params: ExecutionParams,
         ) -> Result<ExecutionResult, ExecutorError> {
             // Check if we should fail
@@ -117,7 +118,7 @@ mod tests {
             &self,
             _prompt_tokens: i64,
             _completion_tokens: i64,
-            _model: &str,
+            _target_id: &str,
         ) -> Result<f64, ExecutorError> {
             Ok(0.001)
         }
@@ -132,6 +133,15 @@ mod tests {
             }
             // Success case
             Ok(())
+        }
+    }
+
+    fn test_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
+        RoutePlan {
+            vendor_id: vendor_id.to_string(),
+            target_id: model_id.to_string(),
+            model_id: model_id.to_string(),
+            fallback_plans: vec![],
         }
     }
 
@@ -400,7 +410,9 @@ mod tests {
             stream: false,
         };
 
-        let result = service.execute_with_retry("mock", "model-1", &params).await;
+        let result = service
+            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .await;
 
         assert!(result.is_ok());
         let execution_result = result.unwrap();
@@ -433,7 +445,9 @@ mod tests {
 
         // Spawn task to advance time
         let handle = tokio::spawn(async move {
-            service.execute_with_retry("mock", "model-1", &params).await
+            service
+                .execute_with_retry(&test_plan("mock", "model-1"), &params)
+                .await
         });
 
         // Advance time for retries (1s + 2s = 3s total)
@@ -469,7 +483,9 @@ mod tests {
 
         // Spawn task to advance time
         let handle = tokio::spawn(async move {
-            service.execute_with_retry("mock", "model-1", &params).await
+            service
+                .execute_with_retry(&test_plan("mock", "model-1"), &params)
+                .await
         });
 
         // Advance time for all retries (1s + 2s + 4s = 7s total)
@@ -508,7 +524,9 @@ mod tests {
             stream: false,
         };
 
-        let result = service.execute_with_retry("mock", "model-1", &params).await;
+        let result = service
+            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .await;
 
         assert!(result.is_err());
 
@@ -543,7 +561,10 @@ mod tests {
             stream: false,
         };
 
-        match service.execute_with_retry("mock", "model-1", &params).await {
+        match service
+            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .await
+        {
             Err(ExecutorError::JsonError(_)) => {}
             other => panic!("expected JsonError, got {other:?}"),
         }
@@ -573,7 +594,10 @@ mod tests {
             stream: false,
         };
 
-        match service.execute_with_retry("mock", "model-1", &params).await {
+        match service
+            .execute_with_retry(&test_plan("mock", "model-1"), &params)
+            .await
+        {
             Err(ExecutorError::InvalidUpstreamResult) => {}
             other => panic!("expected InvalidUpstreamResult, got {other:?}"),
         }
@@ -593,6 +617,7 @@ mod tests {
             async fn execute(
                 &self,
                 _model: &str,
+                _target_id: &str,
                 _params: ExecutionParams,
             ) -> Result<ExecutionResult, ExecutorError> {
                 panic!("Mock panic in execute");
@@ -610,7 +635,7 @@ mod tests {
                 &self,
                 _prompt_tokens: i64,
                 _completion_tokens: i64,
-                _model: &str,
+                _target_id: &str,
             ) -> Result<f64, ExecutorError> {
                 Ok(0.0)
             }
@@ -672,6 +697,7 @@ mod tests {
             async fn execute(
                 &self,
                 _model: &str,
+                _target_id: &str,
                 _params: ExecutionParams,
             ) -> Result<ExecutionResult, ExecutorError> {
                 panic!("Mock panic in execute");
@@ -689,7 +715,7 @@ mod tests {
                 &self,
                 _prompt_tokens: i64,
                 _completion_tokens: i64,
-                _model: &str,
+                _target_id: &str,
             ) -> Result<f64, ExecutorError> {
                 Ok(0.0)
             }
@@ -765,6 +791,7 @@ mod tests {
         });
         let plan = RoutePlan {
             vendor_id: "openai".to_string(),
+            target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
             fallback_plans: vec![],
         };
@@ -813,9 +840,11 @@ mod tests {
         });
         let plan = RoutePlan {
             vendor_id: "openai".to_string(),
+            target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
             fallback_plans: vec![RoutePlan {
                 vendor_id: "backup".to_string(),
+                target_id: "gpt-4-turbo".to_string(),
                 model_id: "gpt-4-turbo".to_string(),
                 fallback_plans: vec![],
             }],
@@ -848,6 +877,7 @@ mod tests {
         });
         let plan = RoutePlan {
             vendor_id: "openai".to_string(),
+            target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
             fallback_plans: vec![],
         };

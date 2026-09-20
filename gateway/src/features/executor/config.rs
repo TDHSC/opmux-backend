@@ -39,7 +39,7 @@ pub struct OpenAIConfig {
     pub timeout_ms: u64,
     /// List of supported model IDs
     pub supported_models: Vec<String>,
-    /// Pricing information for each model
+    /// Pricing keyed by catalog target identity, not provider model string.
     pub pricing: HashMap<String, ModelPricing>,
     /// Maximum upstream success body size in bytes
     pub max_response_bytes: u64,
@@ -97,6 +97,8 @@ impl OpenAIConfig {
     /// Dummy local-only configuration for tests.
     pub fn for_tests() -> Self {
         let mut pricing = HashMap::new();
+        pricing.insert("primary".to_string(), ModelPricing::new(1.0, 2.0));
+        pricing.insert("secondary".to_string(), ModelPricing::new(0.25, 0.5));
         pricing.insert(
             "example-chat-model".to_string(),
             ModelPricing::new(1.0, 2.0),
@@ -169,12 +171,12 @@ impl ExecutorConfig {
     pub fn from_settings(settings: &Settings) -> Self {
         let mut pricing = HashMap::new();
         let mut supported_models = Vec::new();
-        for target in settings.catalog.targets.values() {
+        for (target_id, target) in &settings.catalog.targets {
             if !supported_models.contains(&target.model) {
                 supported_models.push(target.model.clone());
             }
             pricing.insert(
-                target.model.clone(),
+                target_id.clone(),
                 ModelPricing::new(
                     target.pricing.input_per_million,
                     target.pricing.output_per_million,
@@ -290,20 +292,73 @@ mod tests {
         assert_eq!(openai.api_key, "test-dummy-openai-key");
         let primary = openai
             .pricing
-            .get("example-chat-model")
-            .expect("primary model prices");
+            .get("primary")
+            .expect("primary target prices");
         assert_eq!(primary.input_per_million, 1.0);
         assert_eq!(primary.output_per_million, 2.0);
         let secondary = openai
             .pricing
-            .get("example-chat-model-mini")
-            .expect("secondary model prices");
+            .get("secondary")
+            .expect("secondary target prices");
         assert_eq!(secondary.input_per_million, 0.25);
         assert_eq!(secondary.output_per_million, 0.5);
+        assert!(!openai.pricing.contains_key("example-chat-model"));
         assert!(!openai.pricing.contains_key("gpt-4"));
         assert_eq!(
             openai.max_response_bytes,
             settings.limits.max_upstream_response_bytes
+        );
+    }
+
+    #[test]
+    fn from_settings_keeps_distinct_prices_for_same_requested_model() {
+        let mut settings = Settings::for_tests();
+        let shared_model = settings
+            .catalog
+            .targets
+            .get("primary")
+            .expect("primary target")
+            .model
+            .clone();
+        settings.catalog.targets.insert(
+            "same-model-alt".to_string(),
+            crate::core::config::Target {
+                vendor: crate::core::config::VendorKind::Openai,
+                model: shared_model.clone(),
+                max_output_tokens: 512,
+                pricing: crate::core::config::TargetPricing {
+                    input_per_million: 10.0,
+                    output_per_million: 20.0,
+                },
+            },
+        );
+
+        let openai = ExecutorConfig::from_settings(&settings)
+            .openai
+            .expect("openai config");
+        assert_eq!(
+            openai
+                .supported_models
+                .iter()
+                .filter(|model| *model == &shared_model)
+                .count(),
+            1
+        );
+        let primary = openai
+            .pricing
+            .get("primary")
+            .expect("primary target prices");
+        assert_eq!(primary.input_per_million, 1.0);
+        assert_eq!(primary.output_per_million, 2.0);
+        let alt = openai
+            .pricing
+            .get("same-model-alt")
+            .expect("same-model alt target prices");
+        assert_eq!(alt.input_per_million, 10.0);
+        assert_eq!(alt.output_per_million, 20.0);
+        assert_ne!(
+            (primary.input_per_million, primary.output_per_million),
+            (alt.input_per_million, alt.output_per_million)
         );
     }
 }

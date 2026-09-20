@@ -1,10 +1,8 @@
 // Service Layer - Business logic and orchestration
 
 use super::{
-    constants::{AI_RESPONSE_ROLE, SLOW_REQUEST_THRESHOLD_MS},
-    error::IngressError,
-    repository::IngressRepository,
-    routing::resolve_route,
+    constants::SLOW_REQUEST_THRESHOLD_MS, error::IngressError,
+    repository::IngressRepository, routing::resolve_route,
 };
 use crate::core::config::Settings;
 use crate::features::executor::service::ExecutorService;
@@ -47,7 +45,7 @@ pub struct IngressRequest {
 pub struct AIResponse {
     /// AI-generated response content.
     pub content: String,
-    /// Response role (always "assistant").
+    /// Response role. Successful Chat Completions results are exactly `assistant`.
     pub role: String,
     /// Reason for response completion ("stop", "length", etc.).
     pub finish_reason: Option<String>,
@@ -208,15 +206,10 @@ impl IngressService {
             "Request processing completed"
         );
 
-        let role = if llm_result.role.trim().is_empty() {
-            AI_RESPONSE_ROLE.to_string()
-        } else {
-            llm_result.role
-        };
         Ok(IngressResponse {
             response: AIResponse {
                 content: llm_result.content,
-                role,
+                role: llm_result.role,
                 finish_reason: Some(llm_result.finish_reason),
             },
             model_used: llm_result.model_used,

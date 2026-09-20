@@ -6,6 +6,7 @@ use super::{
     models::{ExecutionParams, ExecutionResult},
     vendors::{openai::OpenAIVendor, traits::LLMVendor},
 };
+use crate::core::contracts::RoutePlan;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -99,9 +100,8 @@ impl ExecutorRepository {
     /// should be handled by the Service layer.
     ///
     /// # Parameters
-    /// - `vendor_id` - Vendor identifier
-    /// - `model_id` - Model identifier
-    /// - `params` - Execution parameters
+    /// - `plan` - Selected hop, including catalog target identity and wire model
+    /// - `params` - Execution parameters shared across retries for this hop
     ///
     /// # Returns
     /// Execution result with AI response and metrics
@@ -114,33 +114,35 @@ impl ExecutorRepository {
     #[tracing::instrument(
         skip(self, params),
         fields(
-            vendor_id = %vendor_id,
-            model_id = %model_id,
+            vendor_id = %plan.vendor_id,
+            target_id = %plan.target_id,
+            model_id = %plan.model_id,
             max_tokens = params.max_tokens,
         )
     )]
     pub async fn call_llm(
         &self,
-        vendor_id: &str,
-        model_id: &str,
+        plan: &RoutePlan,
         params: &ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError> {
         tracing::debug!("Calling LLM API");
 
         // Get vendor
-        let vendor = self.get_vendor(vendor_id)?;
+        let vendor = self.get_vendor(&plan.vendor_id)?;
 
         // Validate model support
-        if !vendor.supports_model(model_id) {
+        if !vendor.supports_model(&plan.model_id) {
             tracing::warn!("Model not supported by vendor");
             return Err(ExecutorError::UnsupportedModel(
-                vendor_id.to_string(),
-                model_id.to_string(),
+                plan.vendor_id.clone(),
+                plan.model_id.clone(),
             ));
         }
 
         // Direct API call (no retry, no fallback)
-        let result = vendor.execute(model_id, params.clone()).await?;
+        let result = vendor
+            .execute(&plan.model_id, &plan.target_id, params.clone())
+            .await?;
 
         tracing::debug!(
             prompt_tokens = result.prompt_tokens,

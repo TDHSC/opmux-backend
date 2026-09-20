@@ -272,7 +272,9 @@ Response `200 OK`:
 ```
 
 - `response.content`, `response.role`, and `response.finish_reason` are copied from the provider
-  message.
+  message. Successful Chat Completions `message.role` must be exactly `assistant`. Values such as
+  `user`, `system`, or whitespace-padded roles are upstream protocol errors, not fabricated
+  successes.
 - `model_used` is the provider-reported model. It may differ from the selected catalog target alias
   that was sent as the request `model`.
 - `usage` matches the validated provider prompt and completion token counts.
@@ -282,17 +284,19 @@ Response `200 OK`:
   `cost = round((prompt_tokens * input_per_million + completion_tokens * output_per_million) / 1_000_000, 8)`
 
   Illustrative catalog prices of `1.0` and `2.0` per million tokens with 120 prompt and 30
-  completion tokens yield `0.00018`. A different named target uses its own configured prices even
-  when the provider reports the same model string. Missing prices fail the request; they do not
-  become `0`. Example catalog prices are samples, not current provider billing. `cost` is not a bill
-  and does not total retries or abandoned work.
+  completion tokens yield `0.00018`. Distinct catalog target IDs keep their own prices even when
+  they request the same provider model, and even when the provider reports the same snapshot model.
+  Fallback hops use the successful fallback target's prices, not the primary's. Missing prices fail
+  the request; they do not become `0`. Example catalog prices are samples, not current provider
+  billing. `cost` is not a bill and does not total retries or abandoned work.
 
 - `processing_time_ms` is a nonnegative elapsed-time measurement for the request.
 - Malformed successful Chat Completions JSON, empty `choices`, missing required `model` / message
-  `content` / `role` / `finish_reason` / `usage`, non-text content, negative or fractional token
-  counts, and inconsistent `total_tokens` fail as upstream protocol errors. The gateway does not
-  invent `model_used`, content, usage, or a zero `cost`. Raw upstream bytes are not copied into the
-  client error. These faults are not retried as transport failures.
+  `content` / `role` / `finish_reason` / `usage`, non-assistant `message.role`, non-text content,
+  negative or fractional token counts, and inconsistent `total_tokens` fail as upstream protocol
+  errors. The gateway does not invent `model_used`, content, usage, role, or a zero `cost`. Raw
+  upstream bytes are not copied into the client error. These faults are not retried as transport
+  failures.
 - Provider bodies are limited by `max_upstream_response_bytes` (default 1048576) while reading,
   including advertised `Content-Length` and chunked/no-length transfer. An oversized upstream body
   is an upstream-result error, not a client `413`.

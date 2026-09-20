@@ -17,7 +17,7 @@ pub struct ExecutionRequest {
 pub struct ExecutionResult {
     /// Generated AI response content
     pub content: String,
-    /// Provider-reported message role
+    /// Provider-reported message role. Successful Chat Completions results are exactly `assistant`.
     pub role: String,
     /// Provider-reported model identifier, which may differ from the requested alias
     pub model_used: String,

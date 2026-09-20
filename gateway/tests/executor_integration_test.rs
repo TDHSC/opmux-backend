@@ -30,6 +30,7 @@ fn require_live_opt_in() {
 fn create_test_route_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
     RoutePlan {
         vendor_id: vendor_id.to_string(),
+        target_id: model_id.to_string(),
         model_id: model_id.to_string(),
         fallback_plans: vec![],
     }

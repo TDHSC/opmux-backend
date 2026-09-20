@@ -5,7 +5,10 @@ use serde_json::json;
 use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+static TEMP_CATALOG_SEQ: AtomicU64 = AtomicU64::new(0);
 
 struct TempCatalog {
     path: PathBuf,
@@ -17,8 +20,11 @@ impl TempCatalog {
             .duration_since(UNIX_EPOCH)
             .expect("time")
             .as_nanos();
-        let path = std::env::temp_dir()
-            .join(format!("opmux-catalog-{}-{nanos}.json", std::process::id()));
+        let seq = TEMP_CATALOG_SEQ.fetch_add(1, Ordering::Relaxed);
+        let path = std::env::temp_dir().join(format!(
+            "opmux-catalog-{}-{nanos}-{seq}.json",
+            std::process::id()
+        ));
         fs::write(&path, contents).expect("write temp catalog");
         Self { path }
     }
@@ -146,6 +152,60 @@ fn example_catalog_loads_documented_defaults() {
         MAX_FALLBACK_TARGETS.default as u32
     );
     assert_eq!(settings.limits.backoff_cap_ms(), BACKOFF_CAP_MS.default);
+}
+
+#[test]
+fn catalog_allows_distinct_targets_with_the_same_requested_model() {
+    let settings = load_json(
+        &json!({
+            "version": 1,
+            "default_route": "default",
+            "targets": {
+                "primary": {
+                    "vendor": "openai",
+                    "model": "example-chat-model",
+                    "max_output_tokens": 512,
+                    "pricing": {
+                        "input_per_million": 1.0,
+                        "output_per_million": 2.0
+                    }
+                },
+                "same-model-alt": {
+                    "vendor": "openai",
+                    "model": "example-chat-model",
+                    "max_output_tokens": 512,
+                    "pricing": {
+                        "input_per_million": 10.0,
+                        "output_per_million": 20.0
+                    }
+                }
+            },
+            "routes": {
+                "default": {
+                    "primary": "primary",
+                    "fallbacks": ["same-model-alt"]
+                },
+                "alt": {
+                    "primary": "same-model-alt",
+                    "fallbacks": []
+                }
+            }
+        })
+        .to_string(),
+    )
+    .expect("same requested model on distinct targets is valid");
+    assert_eq!(
+        settings.catalog.targets["primary"].model,
+        settings.catalog.targets["same-model-alt"].model
+    );
+    assert_ne!(
+        settings.catalog.targets["primary"]
+            .pricing
+            .input_per_million,
+        settings.catalog.targets["same-model-alt"]
+            .pricing
+            .input_per_million
+    );
 }
 
 #[test]

@@ -60,7 +60,10 @@ pub(crate) fn resolve_route(
         route
             .fallbacks
             .iter()
-            .map(|id| target(catalog, id).map(plan_for_target))
+            .map(|id| {
+                target(catalog, id)
+                    .map(|fallback| plan_for_target(id, fallback, Vec::new()))
+            })
             .collect::<Result<Vec<_>, _>>()?
     } else {
         Vec::new()
@@ -70,11 +73,7 @@ pub(crate) fn resolve_route(
         route_id,
         target_id: route.primary.clone(),
         max_output_tokens: primary.max_output_tokens,
-        plan: RoutePlan {
-            vendor_id: primary.vendor.as_str().to_string(),
-            model_id: primary.model.clone(),
-            fallback_plans,
-        },
+        plan: plan_for_target(&route.primary, primary, fallback_plans),
     })
 }
 
@@ -89,11 +88,16 @@ fn target<'a>(catalog: &'a Catalog, id: &str) -> Result<&'a Target, IngressError
         .ok_or(IngressError::RequestOrchestrationFailed)
 }
 
-fn plan_for_target(target: &Target) -> RoutePlan {
+fn plan_for_target(
+    id: &str,
+    target: &Target,
+    fallback_plans: Vec<RoutePlan>,
+) -> RoutePlan {
     RoutePlan {
         vendor_id: target.vendor.as_str().to_string(),
+        target_id: id.to_string(),
         model_id: target.model.clone(),
-        fallback_plans: Vec::new(),
+        fallback_plans,
     }
 }
 
@@ -118,9 +122,11 @@ mod tests {
         assert_eq!(resolved.route_id, "default");
         assert_eq!(resolved.target_id, "primary");
         assert_eq!(resolved.plan.vendor_id, "openai");
+        assert_eq!(resolved.plan.target_id, "primary");
         assert_eq!(resolved.plan.model_id, "example-chat-model");
         assert_eq!(resolved.max_output_tokens, 512);
         assert_eq!(resolved.plan.fallback_plans.len(), 1);
+        assert_eq!(resolved.plan.fallback_plans[0].target_id, "secondary");
         assert_eq!(
             resolved.plan.fallback_plans[0].model_id,
             "example-chat-model-mini"
@@ -134,6 +140,7 @@ mod tests {
             resolve_route(&catalog(), Some("fast"), None).expect("named route");
         assert_eq!(resolved.route_id, "fast");
         assert_eq!(resolved.target_id, "secondary");
+        assert_eq!(resolved.plan.target_id, "secondary");
         assert_eq!(resolved.plan.model_id, "example-chat-model-mini");
         assert_eq!(resolved.max_output_tokens, 256);
         assert!(resolved.plan.fallback_plans.is_empty());
@@ -142,6 +149,7 @@ mod tests {
     #[test]
     fn allow_fallback_false_omits_configured_fallbacks() {
         let resolved = resolve_route(&catalog(), None, Some(false)).expect("opt-out");
+        assert_eq!(resolved.plan.target_id, "primary");
         assert_eq!(resolved.plan.model_id, "example-chat-model");
         assert!(resolved.plan.fallback_plans.is_empty());
     }
@@ -150,6 +158,48 @@ mod tests {
     fn allow_fallback_true_keeps_configured_fallbacks() {
         let resolved = resolve_route(&catalog(), None, Some(true)).expect("opt-in");
         assert_eq!(resolved.plan.fallback_plans.len(), 1);
+    }
+
+    #[test]
+    fn same_requested_model_targets_keep_distinct_plan_identity() {
+        let mut catalog = catalog();
+        let shared_model = catalog
+            .targets
+            .get("primary")
+            .expect("primary target")
+            .model
+            .clone();
+        catalog.targets.insert(
+            "same-model-alt".to_string(),
+            crate::core::config::Target {
+                vendor: crate::core::config::VendorKind::Openai,
+                model: shared_model.clone(),
+                max_output_tokens: 512,
+                pricing: crate::core::config::TargetPricing {
+                    input_per_million: 10.0,
+                    output_per_million: 20.0,
+                },
+            },
+        );
+        catalog.routes.insert(
+            "same-model-chain".to_string(),
+            crate::core::config::Route {
+                primary: "primary".to_string(),
+                fallbacks: vec!["same-model-alt".to_string()],
+            },
+        );
+
+        let resolved = resolve_route(&catalog, Some("same-model-chain"), None)
+            .expect("same-model chain");
+        assert_eq!(resolved.plan.target_id, "primary");
+        assert_eq!(resolved.plan.model_id, shared_model);
+        assert_eq!(resolved.plan.fallback_plans.len(), 1);
+        assert_eq!(resolved.plan.fallback_plans[0].target_id, "same-model-alt");
+        assert_eq!(resolved.plan.fallback_plans[0].model_id, shared_model);
+        assert_ne!(
+            resolved.plan.target_id,
+            resolved.plan.fallback_plans[0].target_id
+        );
     }
 
     #[test]

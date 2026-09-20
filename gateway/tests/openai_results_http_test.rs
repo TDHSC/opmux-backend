@@ -12,7 +12,10 @@ use axum::{
 };
 use gateway::{
     app::Application,
-    core::{config::Settings, metrics::MetricsConfig},
+    core::{
+        config::{Route, Settings, Target, TargetPricing, VendorKind},
+        metrics::MetricsConfig,
+    },
     features::auth::AuthService,
 };
 use serial_test::serial;
@@ -33,6 +36,10 @@ const ILLUSTRATIVE_PROMPT_TOKENS: i64 = 120;
 const ILLUSTRATIVE_COMPLETION_TOKENS: i64 = 30;
 const ILLUSTRATIVE_PRIMARY_COST: f64 = 0.00018;
 const ILLUSTRATIVE_SECONDARY_COST: f64 = 0.000045;
+const SAME_MODEL_ALT_TARGET: &str = "same-model-alt";
+const SAME_MODEL_ALT_ROUTE: &str = "same-model-alt";
+const SAME_MODEL_CHAIN_ROUTE: &str = "same-model-chain";
+const ILLUSTRATIVE_SAME_MODEL_ALT_COST: f64 = 0.0018;
 
 async fn body_json(response: axum::http::Response<Body>) -> serde_json::Value {
     let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
@@ -56,6 +63,56 @@ fn results_router(
         Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
     Application::from_settings(Arc::new(settings), auth_service)
         .expect("application should build from openai-results fixture settings")
+        .into_router(MetricsConfig::disabled())
+}
+
+fn settings_with_same_requested_model_targets(simulator: &OpenAiSimulator) -> Settings {
+    let mut settings =
+        Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
+    let shared_model = settings
+        .catalog
+        .targets
+        .get("primary")
+        .expect("primary target")
+        .model
+        .clone();
+    settings.catalog.targets.insert(
+        SAME_MODEL_ALT_TARGET.to_string(),
+        Target {
+            vendor: VendorKind::Openai,
+            model: shared_model,
+            max_output_tokens: 512,
+            pricing: TargetPricing {
+                input_per_million: 10.0,
+                output_per_million: 20.0,
+            },
+        },
+    );
+    settings.catalog.routes.insert(
+        SAME_MODEL_ALT_ROUTE.to_string(),
+        Route {
+            primary: SAME_MODEL_ALT_TARGET.to_string(),
+            fallbacks: Vec::new(),
+        },
+    );
+    settings.catalog.routes.insert(
+        SAME_MODEL_CHAIN_ROUTE.to_string(),
+        Route {
+            primary: "primary".to_string(),
+            fallbacks: vec![SAME_MODEL_ALT_TARGET.to_string()],
+        },
+    );
+    settings.limits.retries_per_target = 0;
+    settings
+}
+
+fn results_router_with_same_requested_model_targets(
+    simulator: &OpenAiSimulator,
+    auth_service: Arc<AuthService>,
+) -> axum::Router {
+    let settings = settings_with_same_requested_model_targets(simulator);
+    Application::from_settings(Arc::new(settings), auth_service)
+        .expect("application should build from same-model fixture settings")
         .into_router(MetricsConfig::disabled())
 }
 
@@ -235,6 +292,129 @@ async fn named_targets_use_own_prices_when_provider_reports_the_same_model() {
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
 
+#[tokio::test]
+#[serial]
+async fn same_requested_model_targets_keep_configured_prices_and_reported_model() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    enqueue_reported(&simulator, "stop");
+    enqueue_reported(&simulator, "stop");
+    let app = results_router_with_same_requested_model_targets(
+        &simulator,
+        auth_service_from_pool(pool.clone()),
+    );
+
+    let default_response = post_route(
+        app.clone(),
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {}
+        }),
+    )
+    .await;
+    assert_eq!(default_response.status(), StatusCode::OK);
+    let default_body = body_json(default_response).await;
+    assert_eq!(default_body["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(default_body["response"]["role"], "assistant");
+    assert_eq!(default_body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_ne!(default_body["model_used"], DEFAULT_MODEL);
+    assert_cost_eq(
+        default_body["cost"]
+            .as_f64()
+            .expect("primary same-model cost"),
+        ILLUSTRATIVE_PRIMARY_COST,
+    );
+
+    let alt_response = post_route(
+        app,
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {},
+            "route": SAME_MODEL_ALT_ROUTE
+        }),
+    )
+    .await;
+    assert_eq!(alt_response.status(), StatusCode::OK);
+    let alt_body = body_json(alt_response).await;
+    assert_eq!(alt_body["response"]["role"], "assistant");
+    assert_eq!(alt_body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_cost_eq(
+        alt_body["cost"].as_f64().expect("alt same-model cost"),
+        ILLUSTRATIVE_SAME_MODEL_ALT_COST,
+    );
+    assert_ne!(
+        alt_body["cost"].as_f64().expect("alt same-model cost"),
+        default_body["cost"]
+            .as_f64()
+            .expect("primary same-model cost")
+    );
+
+    let captures: Vec<_> = simulator
+        .captured()
+        .into_iter()
+        .filter(|capture| capture.is_generation())
+        .collect();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(generation_body(&captures[0])["model"], DEFAULT_MODEL);
+    assert_eq!(generation_body(&captures[1])["model"], DEFAULT_MODEL);
+    assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn fallback_target_owns_successful_response_cost_for_shared_requested_model() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::json_status(
+        500,
+        serde_json::json!({"error":{"message":"simulated primary fault"}}),
+    ));
+    enqueue_reported(&simulator, "stop");
+    let app = results_router_with_same_requested_model_targets(
+        &simulator,
+        auth_service_from_pool(pool.clone()),
+    );
+
+    let response = post_route(
+        app,
+        &issued.credential,
+        serde_json::json!({
+            "prompt": WIRE_PROMPT,
+            "metadata": {},
+            "route": SAME_MODEL_CHAIN_ROUTE
+        }),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(body["response"]["role"], "assistant");
+    assert_eq!(body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_cost_eq(
+        body["cost"].as_f64().expect("fallback same-model cost"),
+        ILLUSTRATIVE_SAME_MODEL_ALT_COST,
+    );
+
+    let captures: Vec<_> = simulator
+        .captured()
+        .into_iter()
+        .filter(|capture| capture.is_generation())
+        .collect();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(generation_body(&captures[0])["model"], DEFAULT_MODEL);
+    assert_eq!(generation_body(&captures[1])["model"], DEFAULT_MODEL);
+    assert_eq!(simulator.generation_count(), 2);
+    assert_eq!(simulator.models_probe_count(), 0);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
 const RAW_UPSTREAM_SENTINEL: &str = "RAW_UPSTREAM_SENTINEL";
 
 fn results_router_with_limit(
@@ -325,6 +505,49 @@ async fn production_router_rejects_malformed_success_payloads_without_retry() {
     assert_eq!(ok_status, StatusCode::OK);
     assert_eq!(ok_body["response"]["content"], SIMULATED_CONTENT);
     assert_eq!(simulator.generation_count(), 3);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn production_router_rejects_non_assistant_success_roles() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    for role in ["user", "system", " assistant "] {
+        let body = serde_json::json!({
+            "id": "chatcmpl-local-fixture",
+            "object": "chat.completion",
+            "created": 0,
+            "model": REPORTED_SNAPSHOT_MODEL,
+            "choices": [{
+                "index": 0,
+                "message": {"role": role, "content": SIMULATED_CONTENT},
+                "finish_reason": "stop"
+            }],
+            "usage": {
+                "prompt_tokens": ILLUSTRATIVE_PROMPT_TOKENS,
+                "completion_tokens": ILLUSTRATIVE_COMPLETION_TOKENS,
+                "total_tokens": ILLUSTRATIVE_PROMPT_TOKENS + ILLUSTRATIVE_COMPLETION_TOKENS
+            }
+        });
+        simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+            body.to_string().into_bytes(),
+        ));
+    }
+    enqueue_reported(&simulator, "stop");
+    let app = results_router(&simulator, auth_service_from_pool(pool.clone()));
+
+    for _ in 0..3 {
+        let (status, body) = route_json(app.clone(), &issued.credential).await;
+        assert_protocol_http_error(status, &body, SIMULATED_CONTENT);
+    }
+    let (ok_status, ok_body) = route_json(app, &issued.credential).await;
+    assert_eq!(ok_status, StatusCode::OK);
+    assert_eq!(ok_body["response"]["role"], "assistant");
+    assert_eq!(ok_body["model_used"], REPORTED_SNAPSHOT_MODEL);
+    assert_eq!(simulator.generation_count(), 4);
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
 

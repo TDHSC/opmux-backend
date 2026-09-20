@@ -49,7 +49,7 @@ async fn real_adapter_posts_chat_completions_to_owned_simulator() {
         .expect("adapter should construct with dummy local config");
 
     let result = vendor
-        .execute("gpt-4", user_params("adapter success"))
+        .execute("gpt-4", "gpt-4", user_params("adapter success"))
         .await
         .expect("simulator success should parse");
 
@@ -91,7 +91,7 @@ async fn real_adapter_uses_provider_reported_model_and_selected_target_prices() 
         .expect("adapter should construct with dummy local config");
 
     let result = vendor
-        .execute("gpt-4", user_params("reported model"))
+        .execute("gpt-4", "gpt-4", user_params("reported model"))
         .await
         .expect("simulator success should parse");
 
@@ -121,7 +121,11 @@ async fn missing_selected_target_pricing_does_not_silently_yield_zero() {
         .expect("adapter should construct with dummy local config");
 
     let error = vendor
-        .execute("unpriced-target-model", user_params("unpriced"))
+        .execute(
+            "unpriced-target-model",
+            "unpriced-target-model",
+            user_params("unpriced"),
+        )
         .await
         .expect_err("missing pricing must not become a successful zero cost");
 
@@ -148,7 +152,7 @@ async fn real_adapter_surfaces_scripted_provider_failure() {
         .expect("adapter should construct with dummy local config");
 
     let error = vendor
-        .execute("gpt-4", user_params("adapter failure"))
+        .execute("gpt-4", "gpt-4", user_params("adapter failure"))
         .await
         .expect_err("scripted 500 should fail");
 
@@ -172,7 +176,7 @@ async fn inherited_provider_env_cannot_redirect_adapter_to_external_url() {
     let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
         .expect("adapter should construct with dummy local config");
     vendor
-        .execute("gpt-4", user_params("ignore inherited env"))
+        .execute("gpt-4", "gpt-4", user_params("ignore inherited env"))
         .await
         .expect("request must hit the owned loopback simulator");
 
@@ -303,6 +307,33 @@ async fn real_adapter_rejects_malformed_success_payloads_without_fabricating_res
             inconsistent.to_string().into_bytes(),
             false,
         ),
+        (
+            "user_role",
+            {
+                let mut body = valid_chat_json();
+                body["choices"][0]["message"]["role"] = serde_json::json!("user");
+                body.to_string().into_bytes()
+            },
+            false,
+        ),
+        (
+            "system_role",
+            {
+                let mut body = valid_chat_json();
+                body["choices"][0]["message"]["role"] = serde_json::json!("system");
+                body.to_string().into_bytes()
+            },
+            false,
+        ),
+        (
+            "whitespace_role",
+            {
+                let mut body = valid_chat_json();
+                body["choices"][0]["message"]["role"] = serde_json::json!(" assistant ");
+                body.to_string().into_bytes()
+            },
+            false,
+        ),
     ];
 
     for (name, body, expect_json) in cases {
@@ -311,12 +342,117 @@ async fn real_adapter_rejects_malformed_success_payloads_without_fabricating_res
         let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
             .expect("adapter should construct with dummy local config");
         let error = vendor
-            .execute("gpt-4", user_params(name))
+            .execute("gpt-4", "gpt-4", user_params(name))
             .await
             .expect_err(name);
         assert_protocol_error(error, expect_json);
         assert_eq!(simulator.generation_count(), 1, "{name} must not retry");
     }
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_rejects_non_assistant_roles_then_parses_valid_control() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    for role in ["user", "system", " ", " assistant "] {
+        let mut body = valid_chat_json();
+        body["choices"][0]["message"]["role"] = serde_json::json!(role);
+        simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+            body.to_string().into_bytes(),
+        ));
+    }
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+        .expect("adapter should construct with dummy local config");
+
+    for name in ["user", "system", "whitespace", "padded-assistant"] {
+        let error = vendor
+            .execute("gpt-4", "gpt-4", user_params(name))
+            .await
+            .expect_err(name);
+        assert_protocol_error(error, false);
+    }
+
+    let result = vendor
+        .execute("gpt-4", "gpt-4", user_params("valid assistant control"))
+        .await
+        .expect("exact assistant role must still parse");
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert_eq!(result.role, "assistant");
+    assert_eq!(result.model_used, "gpt-4");
+    assert_eq!(simulator.generation_count(), 5);
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_uses_target_prices_when_requested_model_is_shared() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::chat_reported(
+        REPORTED_SNAPSHOT_MODEL,
+        ILLUSTRATIVE_PROMPT_TOKENS,
+        ILLUSTRATIVE_COMPLETION_TOKENS,
+        "stop",
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_reported(
+        REPORTED_SNAPSHOT_MODEL,
+        ILLUSTRATIVE_PROMPT_TOKENS,
+        ILLUSTRATIVE_COMPLETION_TOKENS,
+        "stop",
+    ));
+    let mut config = openai_config_for_simulator(&simulator);
+    config
+        .supported_models
+        .push("example-chat-model".to_string());
+    config.pricing.insert(
+        "same-model-primary".to_string(),
+        gateway::features::executor::config::ModelPricing::new(1.0, 2.0),
+    );
+    config.pricing.insert(
+        "same-model-alt".to_string(),
+        gateway::features::executor::config::ModelPricing::new(10.0, 20.0),
+    );
+    let vendor = OpenAIVendor::new(config)
+        .expect("adapter should construct with dummy local config");
+
+    let primary = vendor
+        .execute(
+            "example-chat-model",
+            "same-model-primary",
+            user_params("same-model primary"),
+        )
+        .await
+        .expect("primary same-model target should parse");
+    let alt = vendor
+        .execute(
+            "example-chat-model",
+            "same-model-alt",
+            user_params("same-model alt"),
+        )
+        .await
+        .expect("alt same-model target should parse");
+
+    assert_eq!(primary.model_used, REPORTED_SNAPSHOT_MODEL);
+    assert_eq!(alt.model_used, REPORTED_SNAPSHOT_MODEL);
+    assert_cost_eq(primary.total_cost, ILLUSTRATIVE_PRIMARY_COST);
+    assert_cost_eq(alt.total_cost, 0.0018);
+    assert_ne!(primary.total_cost, alt.total_cost);
+
+    let captures: Vec<_> = simulator
+        .captured()
+        .into_iter()
+        .filter(|capture| capture.is_generation())
+        .collect();
+    assert_eq!(captures.len(), 2);
+    assert_eq!(
+        captures[0].body.as_ref().expect("primary wire")["model"],
+        "example-chat-model"
+    );
+    assert_eq!(
+        captures[1].body.as_ref().expect("alt wire")["model"],
+        "example-chat-model"
+    );
 }
 
 #[tokio::test]
@@ -332,13 +468,13 @@ async fn real_adapter_parses_a_valid_response_after_a_protocol_error() {
         .expect("adapter should construct with dummy local config");
 
     let error = vendor
-        .execute("gpt-4", user_params("first malformed"))
+        .execute("gpt-4", "gpt-4", user_params("first malformed"))
         .await
         .expect_err("malformed payload must fail");
     assert_protocol_error(error, true);
 
     let result = vendor
-        .execute("gpt-4", user_params("second valid"))
+        .execute("gpt-4", "gpt-4", user_params("second valid"))
         .await
         .expect("later valid payload must parse");
     assert_eq!(result.content, SIMULATED_CONTENT);
@@ -372,7 +508,7 @@ async fn real_adapter_enforces_response_size_while_reading() {
         .expect("adapter should construct with dummy local config");
 
     let ok = vendor
-        .execute("gpt-4", user_params("exact bound"))
+        .execute("gpt-4", "gpt-4", user_params("exact bound"))
         .await
         .expect("exact-bound JSON must succeed");
     assert_eq!(ok.content, SIMULATED_CONTENT);
@@ -381,7 +517,7 @@ async fn real_adapter_enforces_response_size_while_reading() {
 
     for name in ["one over", "advertised length", "chunked"] {
         let error = vendor
-            .execute("gpt-4", user_params(name))
+            .execute("gpt-4", "gpt-4", user_params(name))
             .await
             .expect_err(name);
         match &error {

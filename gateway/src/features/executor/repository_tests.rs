@@ -2,6 +2,7 @@
 
 #[cfg(test)]
 mod tests {
+    use crate::core::contracts::RoutePlan;
     use crate::features::executor::{
         config::{ExecutorConfig, OpenAIConfig},
         error::ExecutorError,
@@ -34,6 +35,7 @@ mod tests {
         async fn execute(
             &self,
             model: &str,
+            _target_id: &str,
             _params: ExecutionParams,
         ) -> Result<ExecutionResult, ExecutorError> {
             Ok(ExecutionResult {
@@ -59,7 +61,7 @@ mod tests {
             &self,
             _prompt_tokens: i64,
             _completion_tokens: i64,
-            _model: &str,
+            _target_id: &str,
         ) -> Result<f64, ExecutorError> {
             Ok(0.001)
         }
@@ -67,6 +69,15 @@ mod tests {
         async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {
             // Mock vendor always returns healthy
             Ok(())
+        }
+    }
+
+    fn test_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
+        RoutePlan {
+            vendor_id: vendor_id.to_string(),
+            target_id: model_id.to_string(),
+            model_id: model_id.to_string(),
+            fallback_plans: vec![],
         }
     }
 
@@ -198,7 +209,9 @@ mod tests {
             stream: false,
         };
 
-        let result = repo.call_llm("mock_vendor", "gpt-4", &params).await;
+        let result = repo
+            .call_llm(&test_plan("mock_vendor", "gpt-4"), &params)
+            .await;
         assert!(result.is_ok());
 
         let execution_result = result.unwrap();
@@ -221,7 +234,9 @@ mod tests {
             stream: false,
         };
 
-        let result = repo.call_llm("unknown_vendor", "gpt-4", &params).await;
+        let result = repo
+            .call_llm(&test_plan("unknown_vendor", "gpt-4"), &params)
+            .await;
         assert!(result.is_err());
 
         match result {
@@ -252,7 +267,7 @@ mod tests {
         };
 
         let result = repo
-            .call_llm("mock_vendor", "unsupported-model", &params)
+            .call_llm(&test_plan("mock_vendor", "unsupported-model"), &params)
             .await;
         assert!(result.is_err());
 

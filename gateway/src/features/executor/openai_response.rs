@@ -11,8 +11,10 @@ const MALFORMED_JSON: &str = "malformed upstream JSON";
 /// Parses a successful Chat Completions body into a validated result.
 ///
 /// Malformed JSON is a protocol parse error. Empty choices, missing required
-/// fields, non-text content, and impossible usage are invalid upstream results.
-/// Neither case fabricates model, content, usage, or cost.
+/// fields, non-assistant `message.role`, non-text content, and impossible usage
+/// are invalid upstream results. Neither case fabricates model, content, usage,
+/// or cost. Successful Chat Completions messages must use exact role
+/// `assistant`; user, system, and whitespace roles are protocol faults.
 pub(crate) fn parse_successful_chat_completion(
     body: &[u8],
     pricing: Option<&ModelPricing>,
@@ -37,7 +39,7 @@ pub(crate) fn parse_successful_chat_completion(
         .and_then(Value::as_object)
         .ok_or(ExecutorError::InvalidUpstreamResult)?;
     let content = required_string(message.get("content"))?;
-    let role = required_nonempty_string(message.get("role"))?;
+    let role = required_assistant_role(message.get("role"))?;
     let finish_reason = required_nonempty_string(choice.get("finish_reason"))?;
     let usage = object
         .get("usage")
@@ -80,6 +82,14 @@ fn required_nonempty_string(value: Option<&Value>) -> Result<String, ExecutorErr
         return Err(ExecutorError::InvalidUpstreamResult);
     }
     Ok(text)
+}
+
+fn required_assistant_role(value: Option<&Value>) -> Result<String, ExecutorError> {
+    let role = required_string(value)?;
+    if role != "assistant" {
+        return Err(ExecutorError::InvalidUpstreamResult);
+    }
+    Ok(role)
 }
 
 fn required_token_count(value: Option<&Value>) -> Result<i64, ExecutorError> {
@@ -211,6 +221,15 @@ mod tests {
         let mut body = valid_body();
         body["model"] = json!("");
         assert_invalid(parse_value(body));
+    }
+
+    #[test]
+    fn non_assistant_roles_cannot_become_success() {
+        for role in ["user", "system", " ", " assistant ", "\t", "Assistant"] {
+            let mut body = valid_body();
+            body["choices"][0]["message"]["role"] = json!(role);
+            assert_invalid(parse_value(body));
+        }
     }
 
     #[test]

@@ -14,7 +14,8 @@ pub trait LLMVendor: Send + Sync {
     /// Executes LLM API call with given parameters.
     ///
     /// # Parameters
-    /// - `model` - Model identifier (e.g., "gpt-4", "claude-3-opus")
+    /// - `model` - Requested provider model sent on the wire
+    /// - `target_id` - Catalog target identity used for configured pricing
     /// - `params` - Execution parameters (messages, temperature, etc.)
     ///
     /// # Returns
@@ -22,6 +23,7 @@ pub trait LLMVendor: Send + Sync {
     async fn execute(
         &self,
         model: &str,
+        target_id: &str,
         params: ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError>;
 
@@ -33,13 +35,13 @@ pub trait LLMVendor: Send + Sync {
 
     /// Estimates successful-response cost from configured target prices.
     ///
-    /// Look up prices by the selected target model that was requested, not by
-    /// the provider-reported model string.
+    /// Look up prices by catalog target identity, not by the requested or
+    /// provider-reported model string. Distinct targets may share a model.
     ///
     /// # Parameters
     /// - `prompt_tokens` - Number of tokens in the prompt
     /// - `completion_tokens` - Number of tokens in the completion
-    /// - `model` - Selected target model identifier
+    /// - `target_id` - Selected catalog target identifier
     ///
     /// # Returns
     /// Nonnegative USD estimate for the successful response
@@ -50,7 +52,7 @@ pub trait LLMVendor: Send + Sync {
         &self,
         prompt_tokens: i64,
         completion_tokens: i64,
-        model: &str,
+        target_id: &str,
     ) -> Result<f64, ExecutorError>;
 
     /// Performs a health check to verify vendor connectivity and credentials.

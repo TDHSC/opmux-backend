@@ -245,9 +245,8 @@ impl ExecutorService {
     /// 3. Apply exponential backoff between retries (1s, 2s, 4s, 8s...)
     ///
     /// # Parameters
-    /// - `vendor_id` - Vendor identifier
-    /// - `model_id` - Model identifier
-    /// - `params` - Execution parameters
+    /// - `plan` - Selected hop, including catalog target identity and wire model
+    /// - `params` - Execution parameters shared across retries for this hop
     ///
     /// # Returns
     /// Execution result with AI response and metrics
@@ -261,15 +260,15 @@ impl ExecutorService {
     #[tracing::instrument(
         skip(self, params),
         fields(
-            vendor_id = %vendor_id,
-            model_id = %model_id,
+            vendor_id = %plan.vendor_id,
+            target_id = %plan.target_id,
+            model_id = %plan.model_id,
             max_retries = self.config.max_retries,
         )
     )]
     pub(crate) async fn execute_with_retry(
         &self,
-        vendor_id: &str,
-        model_id: &str,
+        plan: &RoutePlan,
         params: &ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError> {
         let max_retries = self.config.max_retries;
@@ -286,25 +285,27 @@ impl ExecutorService {
                     .map(|ms| ms.max(backoff_ms))
                     .unwrap_or(backoff_ms);
                 tracing::info!(
-                    "Retrying execution: attempt {}/{}, vendor={}, model={}, backoff={}ms",
+                    "Retrying execution: attempt {}/{}, vendor={}, target={}, model={}, backoff={}ms",
                     attempt,
                     max_retries,
-                    vendor_id,
-                    model_id,
+                    plan.vendor_id,
+                    plan.target_id,
+                    plan.model_id,
                     delay_ms
                 );
                 tokio::time::sleep(tokio::time::Duration::from_millis(delay_ms)).await;
             }
 
             // Attempt execution via repository
-            match self.repository.call_llm(vendor_id, model_id, params).await {
+            match self.repository.call_llm(plan, params).await {
                 Ok(result) => {
                     if attempt > 0 {
                         tracing::info!(
-                            "Execution succeeded after {} retries: vendor={}, model={}",
+                            "Execution succeeded after {} retries: vendor={}, target={}, model={}",
                             attempt,
-                            vendor_id,
-                            model_id
+                            plan.vendor_id,
+                            plan.target_id,
+                            plan.model_id
                         );
                     }
                     return Ok(result);
@@ -321,11 +322,12 @@ impl ExecutorService {
                         };
                         retry_after_ms = rate_limit_retry_after;
                         tracing::warn!(
-                            "Retryable error on attempt {}/{}: vendor={}, model={}, error={:?}",
+                            "Retryable error on attempt {}/{}: vendor={}, target={}, model={}, error={:?}",
                             attempt,
                             max_retries,
-                            vendor_id,
-                            model_id,
+                            plan.vendor_id,
+                            plan.target_id,
+                            plan.model_id,
                             e
                         );
                         last_error = Some(e);
@@ -333,9 +335,10 @@ impl ExecutorService {
                     } else {
                         // Non-retryable error, fail immediately
                         tracing::error!(
-                            "Non-retryable error: vendor={}, model={}, error={:?}",
-                            vendor_id,
-                            model_id,
+                            "Non-retryable error: vendor={}, target={}, model={}, error={:?}",
+                            plan.vendor_id,
+                            plan.target_id,
+                            plan.model_id,
                             e
                         );
                         return Err(e);
@@ -346,9 +349,10 @@ impl ExecutorService {
 
         // All retries exhausted
         tracing::error!(
-            "Max retries exceeded: vendor={}, model={}, attempts={}",
-            vendor_id,
-            model_id,
+            "Max retries exceeded: vendor={}, target={}, model={}, attempts={}",
+            plan.vendor_id,
+            plan.target_id,
+            plan.model_id,
             max_retries + 1
         );
         Err(last_error.unwrap_or_else(|| {
@@ -450,25 +454,24 @@ impl ExecutorService {
             }
 
             tracing::info!(
-                "Attempting fallback {}/{}: vendor={}, model={}",
+                "Attempting fallback {}/{}: vendor={}, target={}, model={}",
                 index + 1,
                 fallback_plans.len(),
                 fallback.vendor_id,
+                fallback.target_id,
                 fallback.model_id
             );
 
-            // Each fallback gets full retry logic
-            match self
-                .execute_with_retry(&fallback.vendor_id, &fallback.model_id, params)
-                .await
-            {
+            // Each fallback gets full retry logic and its own target pricing.
+            match self.execute_with_retry(fallback, params).await {
                 Ok(result) => {
                     self.record_vendor_success(&fallback.vendor_id).await;
                     tracing::info!(
-                        "Fallback {}/{} succeeded: vendor={}, model={}",
+                        "Fallback {}/{} succeeded: vendor={}, target={}, model={}",
                         index + 1,
                         fallback_plans.len(),
                         fallback.vendor_id,
+                        fallback.target_id,
                         fallback.model_id
                     );
                     return Ok(result);
@@ -478,10 +481,11 @@ impl ExecutorService {
                         self.record_vendor_failure(&fallback.vendor_id).await;
                     }
                     tracing::warn!(
-                        "Fallback {}/{} failed: vendor={}, model={}, error={:?}",
+                        "Fallback {}/{} failed: vendor={}, target={}, model={}, error={:?}",
                         index + 1,
                         fallback_plans.len(),
                         fallback.vendor_id,
+                        fallback.target_id,
                         fallback.model_id,
                         e
                     );
@@ -567,6 +571,7 @@ impl ExecutorService {
         skip(self, payload),
         fields(
             vendor_id = %plan.vendor_id,
+            target_id = %plan.target_id,
             model_id = %plan.model_id,
         )
     )]
@@ -598,21 +603,20 @@ impl ExecutorService {
         let params = Self::extract_params(payload)?;
 
         tracing::info!(
-            "Executing LLM call: vendor={}, model={}",
+            "Executing LLM call: vendor={}, target={}, model={}",
             plan.vendor_id,
+            plan.target_id,
             plan.model_id
         );
 
         // Try primary plan with retry logic
-        match self
-            .execute_with_retry(&plan.vendor_id, &plan.model_id, &params)
-            .await
-        {
+        match self.execute_with_retry(plan, &params).await {
             Ok(result) => {
                 self.record_vendor_success(&plan.vendor_id).await;
                 tracing::info!(
-                    "Primary execution succeeded: vendor={}, model={}, tokens={}, cost=${}",
+                    "Primary execution succeeded: vendor={}, target={}, model={}, tokens={}, cost=${}",
                     plan.vendor_id,
+                    plan.target_id,
                     plan.model_id,
                     result.prompt_tokens + result.completion_tokens,
                     result.total_cost
@@ -624,8 +628,9 @@ impl ExecutorService {
                     self.record_vendor_failure(&plan.vendor_id).await;
                 }
                 tracing::warn!(
-                    "Primary execution failed: vendor={}, model={}, error={:?}",
+                    "Primary execution failed: vendor={}, target={}, model={}, error={:?}",
                     plan.vendor_id,
+                    plan.target_id,
                     plan.model_id,
                     primary_error
                 );

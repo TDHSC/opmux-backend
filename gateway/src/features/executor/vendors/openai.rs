@@ -1,9 +1,11 @@
 //! OpenAI Chat Completions adapter.
 //!
-//! Sends one `POST {base_url}/chat/completions` request per call. `model_used`
-//! is the provider-reported model. Cost uses the selected target's configured
-//! prices, not a hardcoded model-price table. Success bodies are accumulated
-//! up to `max_response_bytes` before deserialization.
+//! Sends one `POST {base_url}/chat/completions` request per call. `model` on
+//! the wire is the requested catalog model. `model_used` is the
+//! provider-reported model. Cost uses the selected target's configured prices
+//! keyed by catalog target identity, not a hardcoded model-price table.
+//! Success bodies are accumulated up to `max_response_bytes` before
+//! deserialization.
 
 use crate::features::executor::{
     bounded_body::read_bounded_response_body,
@@ -77,18 +79,19 @@ impl LLMVendor for OpenAIVendor {
         &self,
         prompt_tokens: i64,
         completion_tokens: i64,
-        model: &str,
+        target_id: &str,
     ) -> Result<f64, ExecutorError> {
         estimate_successful_response_cost(
             prompt_tokens,
             completion_tokens,
-            self.config.pricing.get(model),
+            self.config.pricing.get(target_id),
         )
     }
 
     async fn execute(
         &self,
         model: &str,
+        target_id: &str,
         params: ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError> {
         if !self.supports_model(model) {
@@ -154,7 +157,7 @@ impl LLMVendor for OpenAIVendor {
 
         let body =
             read_bounded_response_body(response, self.config.max_response_bytes).await?;
-        parse_successful_chat_completion(&body, self.config.pricing.get(model))
+        parse_successful_chat_completion(&body, self.config.pricing.get(target_id))
     }
 
     async fn health_check(&self, timeout_secs: u64) -> Result<(), ExecutorError> {
