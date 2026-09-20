@@ -1246,3 +1246,105 @@ async fn retry_after_that_cannot_fit_does_not_call_configured_fallback() {
     );
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
+
+#[tokio::test]
+#[serial]
+async fn near_attempt_cutoff_429_headers_preserve_retry_after() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(
+        rate_limited("1").delay(Duration::from_millis(80), Duration::from_secs(2)),
+    );
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let service = executor_for_simulator_with(
+        &simulator,
+        1,
+        Duration::from_millis(150),
+        |settings| {
+            settings.limits.protected_request_deadline = Duration::from_secs(5);
+            settings.limits.backoff_cap = Duration::from_millis(1);
+        },
+    );
+    let started = Instant::now();
+    let result = service
+        .execute(
+            &generation_plan(),
+            &generation_payload(),
+            RequestDeadline::from_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("header-classified 429 near attempt cutoff must keep Retry-After");
+    let elapsed = started.elapsed();
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert_eq!(simulator.generation_count(), 2);
+    assert_same_generation_bodies(&simulator, 2);
+    assert!(
+        elapsed >= Duration::from_millis(900),
+        "near-cutoff 429 headers must honor Retry-After instead of an attempt-timeout retry, elapsed {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(2_000),
+        "near-cutoff Retry-After wait took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn malformed_and_oversized_429_bodies_keep_throttling() {
+    isolate_provider_environment();
+    let bound = 1_024_u64;
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::malformed_429(
+        br#"{"error": not-json"#,
+        Some("1"),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let service =
+        executor_for_simulator_with(&simulator, 1, Duration::from_secs(2), |settings| {
+            settings.limits.max_upstream_response_bytes = bound;
+            settings.limits.protected_request_deadline = Duration::from_secs(5);
+            settings.limits.backoff_cap = Duration::from_millis(1);
+        });
+    let started = Instant::now();
+    let result = service
+        .execute(
+            &generation_plan(),
+            &generation_payload(),
+            RequestDeadline::from_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("malformed 429 body must keep Retry-After throttling");
+    let elapsed = started.elapsed();
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert_eq!(simulator.generation_count(), 2);
+    assert!(
+        elapsed >= Duration::from_millis(900),
+        "malformed 429 must honor Retry-After, elapsed {elapsed:?}"
+    );
+    assert!(elapsed < Duration::from_millis(1_800));
+
+    simulator.enqueue_chat(ScriptedResponse::chunked_429(
+        br#"{"error":{"code":"insufficient_quota"}}"#,
+        (bound as usize) + 32,
+        Some("1"),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let oversized =
+        executor_for_simulator_with(&simulator, 1, Duration::from_secs(2), |settings| {
+            settings.limits.max_upstream_response_bytes = bound;
+            settings.limits.protected_request_deadline = Duration::from_secs(5);
+            settings.limits.backoff_cap = Duration::from_millis(1);
+        });
+    let started = Instant::now();
+    let result = oversized
+        .execute(
+            &generation_plan(),
+            &generation_payload(),
+            RequestDeadline::from_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect("oversized 429 body must keep throttling, not fabricate quota");
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert!(started.elapsed() >= Duration::from_millis(900));
+    assert!(started.elapsed() < Duration::from_millis(1_800));
+}

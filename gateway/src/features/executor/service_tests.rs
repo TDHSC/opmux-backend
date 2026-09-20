@@ -230,6 +230,7 @@ mod tests {
             retry_after_ms: None,
         };
         assert!(ExecutorService::is_retryable_error(&error));
+        assert!(!ExecutorService::is_circuit_failure(&error));
     }
 
     #[test]
@@ -291,6 +292,35 @@ mod tests {
     fn test_is_not_retryable_error_quota_exceeded() {
         let error = ExecutorError::QuotaExceeded;
         assert!(!ExecutorService::is_retryable_error(&error));
+        assert!(!ExecutorService::is_circuit_failure(&error));
+    }
+
+    #[test]
+    fn transient_failures_count_for_circuits_permanent_ones_do_not() {
+        assert!(ExecutorService::is_circuit_failure(
+            &ExecutorError::NetworkError("transient".into())
+        ));
+        assert!(ExecutorService::is_circuit_failure(
+            &ExecutorError::TimeoutError(50)
+        ));
+        assert!(ExecutorService::is_circuit_failure(
+            &ExecutorError::ApiCallFailed("upstream http error".into())
+        ));
+        assert!(!ExecutorService::is_circuit_failure(
+            &ExecutorError::AuthenticationFailed("openai".into())
+        ));
+        assert!(!ExecutorService::is_circuit_failure(
+            &ExecutorError::JsonError("malformed upstream JSON".into())
+        ));
+        assert!(!ExecutorService::is_circuit_failure(
+            &ExecutorError::InvalidUpstreamResult
+        ));
+        assert!(!ExecutorService::is_circuit_failure(
+            &ExecutorError::UpstreamRejected
+        ));
+        assert!(!ExecutorService::is_circuit_failure(
+            &ExecutorError::DeadlineExceeded
+        ));
     }
 
     #[tokio::test]

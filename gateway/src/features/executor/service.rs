@@ -1,6 +1,7 @@
 // Service Layer - Business logic for LLM execution (retry, fallback, parameter extraction)
 
 use super::{
+    attempt::AttemptContext,
     budget::{
         evaluate_retry_delay, plan_retry_delay, provider_minimum_cannot_fit,
         AttemptBudget, DelayError, SystemJitter,
@@ -261,7 +262,7 @@ impl ExecutorService {
                     Err(ExecutorError::DeadlineExceeded) => {
                         Err(ExecutorError::DeadlineExceeded)
                     }
-                    Err(error) if Self::is_retryable_error(&error) => {
+                    Err(error) if Self::is_circuit_failure(&error) => {
                         guard.transient_failure();
                         Err(error)
                     }
@@ -290,7 +291,7 @@ impl ExecutorService {
                         Err(ExecutorError::DeadlineExceeded)
                     }
                     Err(error) => {
-                        if Self::is_retryable_error(&error) {
+                        if Self::is_circuit_failure(&error) {
                             self.circuits.record_failure(&plan.target_id);
                         }
                         Err(error)
@@ -399,9 +400,11 @@ impl ExecutorService {
             let Some(attempt_timeout) = deadline.cap(max_attempt) else {
                 return Err(ExecutorError::DeadlineExceeded);
             };
-            match tokio::time::timeout(
-                attempt_timeout,
-                self.repository.call_llm(plan, params),
+            let cutoff = tokio::time::Instant::now() + attempt_timeout;
+            let attempt_ctx = AttemptContext::new(cutoff);
+            let error = match tokio::time::timeout_at(
+                cutoff,
+                self.repository.call_llm(plan, params, &attempt_ctx),
             )
             .await
             {
@@ -417,60 +420,50 @@ impl ExecutorService {
                     }
                     return Ok(result);
                 }
-                Ok(Err(e)) => {
-                    if Self::is_retryable_error(&e) {
-                        retry_after_ms = match &e {
-                            ExecutorError::RateLimitExceeded {
-                                retry_after_ms: Some(ms),
-                                ..
-                            } => Some(*ms),
-                            _ => None,
-                        };
-                        if let Some(terminal) =
-                            Self::terminate_for_provider_minimum(&e, deadline)
-                        {
-                            tracing::info!(
-                                vendor_id = %plan.vendor_id,
-                                target_id = %plan.target_id,
-                                model_id = %plan.model_id,
-                                retry_after_ms = retry_after_ms.unwrap_or(0),
-                                remaining_ms = deadline.remaining().as_millis() as u64,
-                                "Provider retry delay cannot fit remaining deadline"
-                            );
-                            return Err(terminal);
-                        }
-                        tracing::warn!(
-                            attempt,
-                            max_retries,
-                            vendor_id = %plan.vendor_id,
-                            target_id = %plan.target_id,
-                            model_id = %plan.model_id,
-                            "Retryable error"
-                        );
-                        last_error = Some(e);
-                        continue;
-                    } else {
-                        return Err(e);
-                    }
-                }
-                Err(_elapsed) => {
-                    if deadline.is_expired() {
+                Ok(Err(error)) => error,
+                Err(_elapsed) => match attempt_ctx.observed() {
+                    Some(observed) => observed,
+                    None if deadline.is_expired() => {
                         return Err(ExecutorError::DeadlineExceeded);
                     }
-                    let e =
-                        ExecutorError::TimeoutError(attempt_timeout.as_millis() as u64);
-                    tracing::warn!(
-                        attempt,
-                        max_retries,
+                    None => {
+                        ExecutorError::TimeoutError(attempt_timeout.as_millis() as u64)
+                    }
+                },
+            };
+            if Self::is_retryable_error(&error) {
+                retry_after_ms = match &error {
+                    ExecutorError::RateLimitExceeded {
+                        retry_after_ms: Some(ms),
+                        ..
+                    } => Some(*ms),
+                    _ => None,
+                };
+                if let Some(terminal) =
+                    Self::terminate_for_provider_minimum(&error, deadline)
+                {
+                    tracing::info!(
                         vendor_id = %plan.vendor_id,
                         target_id = %plan.target_id,
                         model_id = %plan.model_id,
-                        "Retryable error"
+                        retry_after_ms = retry_after_ms.unwrap_or(0),
+                        remaining_ms = deadline.remaining().as_millis() as u64,
+                        "Provider retry delay cannot fit remaining deadline"
                     );
-                    last_error = Some(e);
-                    continue;
+                    return Err(terminal);
                 }
+                tracing::warn!(
+                    attempt,
+                    max_retries,
+                    vendor_id = %plan.vendor_id,
+                    target_id = %plan.target_id,
+                    model_id = %plan.model_id,
+                    "Retryable error"
+                );
+                last_error = Some(error);
+                continue;
             }
+            return Err(error);
         }
 
         Err(last_error.unwrap_or_else(|| {
@@ -480,9 +473,11 @@ impl ExecutorService {
 
     /// Terminates the whole request when a valid Retry-After cannot fit.
     ///
-    /// Actual deadline expiry is `DeadlineExceeded` (504). A provider minimum
-    /// that cannot finish in remaining time is `RateLimitExceeded` (429) and
-    /// must not start later retries or configured fallbacks.
+    /// A provider minimum that cannot finish in remaining time is
+    /// `RateLimitExceeded` (429), including when body refinement later
+    /// exhausts the budget. Actual deadline expiry without a cannot-fit
+    /// provider minimum is `DeadlineExceeded` (504). This must not start
+    /// later retries or configured fallbacks.
     fn terminate_for_provider_minimum(
         error: &ExecutorError,
         deadline: RequestDeadline,
@@ -494,14 +489,14 @@ impl ExecutorService {
         else {
             return None;
         };
-        if deadline.is_expired() {
-            return Some(ExecutorError::DeadlineExceeded);
-        }
         if provider_minimum_cannot_fit(
             Some(Duration::from_millis(*ms)),
             deadline.remaining(),
         ) {
-            Some(error.clone())
+            return Some(error.clone());
+        }
+        if deadline.is_expired() {
+            Some(ExecutorError::DeadlineExceeded)
         } else {
             None
         }
@@ -531,6 +526,20 @@ impl ExecutorService {
             ExecutorError::NetworkError(_)
                 | ExecutorError::TimeoutError(_)
                 | ExecutorError::RateLimitExceeded { .. }
+                | ExecutorError::ApiCallFailed(_)
+        )
+    }
+
+    /// True when a hop failure may open or reopen a transient-failure circuit.
+    ///
+    /// Transport, attempt-timeout, and transient provider failures count.
+    /// Throttling, quota, credentials, and protocol errors do not, for both
+    /// normal hops and half-open probes.
+    pub(crate) fn is_circuit_failure(error: &ExecutorError) -> bool {
+        matches!(
+            error,
+            ExecutorError::NetworkError(_)
+                | ExecutorError::TimeoutError(_)
                 | ExecutorError::ApiCallFailed(_)
         )
     }

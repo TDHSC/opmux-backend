@@ -327,9 +327,10 @@ Response `200 OK`:
   - `403 Forbidden` authenticated management key (generation requires inference) (`FORBIDDEN`)
   - `415 Unsupported Media Type` non-JSON Content-Type (`UNSUPPORTED_MEDIA_TYPE`)
   - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`)
-  - `502 Bad Gateway` upstream credential, protocol, oversized, or other provider failure
+  - `502 Bad Gateway` upstream credential, protocol, oversized, quota, or other provider failure
     (`UPSTREAM_AUTHENTICATION`, `UPSTREAM_PROTOCOL`, `UPSTREAM_ERROR`). Provider 401/403 is never a
-    gateway `401`.
+    gateway `401`. A complete bounded HTTP 429 JSON body with `error.code` or `error.type`
+    `insufficient_quota` is exhausted quota (`UPSTREAM_ERROR`), not throttling.
   - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`)
   - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
   - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)

@@ -18,6 +18,7 @@
 //! let result = service.execute(&plan, &payload, deadline).await?;
 //! ```
 
+pub mod attempt;
 pub mod bounded_body;
 pub(crate) mod budget;
 pub(crate) mod circuit;
@@ -31,6 +32,7 @@ pub mod service;
 pub mod vendors;
 
 // Re-export commonly used types
+pub use attempt::AttemptContext;
 pub use config::ExecutorConfig;
 pub use error::ExecutorError;
 pub use models::{ExecutionParams, ExecutionResult, Message};

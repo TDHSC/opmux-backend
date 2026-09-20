@@ -4,6 +4,7 @@
 mod tests {
     use crate::core::contracts::RoutePlan;
     use crate::features::executor::{
+        attempt::AttemptContext,
         config::{ExecutorConfig, OpenAIConfig},
         error::ExecutorError,
         models::{ExecutionParams, ExecutionResult, Message},
@@ -13,6 +14,7 @@ mod tests {
     use async_trait::async_trait;
     use std::collections::HashMap;
     use std::sync::Arc;
+    use std::time::Duration;
 
     /// Mock vendor for testing repository layer.
     #[derive(Clone)]
@@ -70,6 +72,10 @@ mod tests {
             // Mock vendor always returns healthy
             Ok(())
         }
+    }
+
+    fn generous_attempt() -> AttemptContext {
+        AttemptContext::from_timeout(Duration::from_secs(30))
     }
 
     fn test_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
@@ -202,7 +208,11 @@ mod tests {
         };
 
         let result = repo
-            .call_llm(&test_plan("mock_vendor", "gpt-4"), &params)
+            .call_llm(
+                &test_plan("mock_vendor", "gpt-4"),
+                &params,
+                &generous_attempt(),
+            )
             .await;
         assert!(result.is_ok());
 
@@ -227,7 +237,11 @@ mod tests {
         };
 
         let result = repo
-            .call_llm(&test_plan("unknown_vendor", "gpt-4"), &params)
+            .call_llm(
+                &test_plan("unknown_vendor", "gpt-4"),
+                &params,
+                &generous_attempt(),
+            )
             .await;
         assert!(result.is_err());
 
@@ -259,7 +273,11 @@ mod tests {
         };
 
         let result = repo
-            .call_llm(&test_plan("mock_vendor", "unsupported-model"), &params)
+            .call_llm(
+                &test_plan("mock_vendor", "unsupported-model"),
+                &params,
+                &generous_attempt(),
+            )
             .await;
         assert!(result.is_err());
 

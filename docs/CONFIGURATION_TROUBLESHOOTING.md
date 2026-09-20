@@ -71,17 +71,20 @@ default cap 2000ms. Sleeps consume the overall deadline. A valid provider `Retry
 (delta-seconds or HTTP-date) is the minimum wait and is not shortened by the backoff cap; if that
 wait cannot finish in the remaining time, the gateway returns `429 UPSTREAM_RATE_LIMIT` without a
 later attempt or configured fallback call and without claiming deadline expiry. Provider 429
-responses are classified from headers without waiting for an unused error body. Malformed
+responses save header throttling and parsed `Retry-After` before a bounded body refinement. Complete
+JSON whose `error.code` or `error.type` is `insufficient_quota` is terminal quota with no retry or
+fallback. Stalled, failed, malformed, or oversized 429 bodies keep the saved throttling. Malformed
 `Retry-After` values use the capped jitter, not an unbounded sleep. Eligible configured fallback
 switching is enforced in catalog order under that shared budget: transient transport, attempt
 timeout, and provider 5xx may continue to a later target; client, protocol, shared-credential,
-quota, and same-account throttling errors do not switch models. A fallback whose output-token cap
-cannot satisfy the already-validated request is skipped without rewriting parameters. Target-scoped
-circuits open after `circuit_failure_threshold` consecutive eligible hop failures and skip that
-target for `circuit_cooldown_ms` without consuming an attempt. A healthy same-provider fallback
-remains usable. After cooldown, at most one half-open probe is admitted per target; success closes
-the circuit and failure reopens it. Permanent credential, quota, protocol, and rejection errors do
-not open circuits. Concurrency admission and inbound raw-body enforcement are later milestones.
+quota, and same-account throttling errors do not switch models. Throttling may retry the current hop
+but does not open or reopen circuits. A fallback whose output-token cap cannot satisfy the
+already-validated request is skipped without rewriting parameters. Target-scoped circuits open after
+`circuit_failure_threshold` consecutive eligible hop failures and skip that target for
+`circuit_cooldown_ms` without consuming an attempt. A healthy same-provider fallback remains usable.
+After cooldown, at most one half-open probe is admitted per target; success closes the circuit and
+failure reopens it. Permanent credential, quota, protocol, rejection, and throttling errors do not
+open circuits. Concurrency admission and inbound raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |
@@ -227,4 +230,4 @@ Cause: every eligible target on the route is circuit-open after consecutive tran
 
 Action: wait `circuit_cooldown_ms`, then retry. A single half-open probe recovers a healthy target.
 Another same-provider model can remain usable while one target is open. Permanent credential or
-quota failures do not open circuits.
+quota, or throttling failures do not open circuits.

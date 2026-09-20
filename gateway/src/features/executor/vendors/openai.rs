@@ -5,10 +5,13 @@
 //! provider-reported model. Cost uses the selected target's configured prices
 //! keyed by catalog target identity, not a hardcoded model-price table.
 //! Success bodies are accumulated up to `max_response_bytes` before
-//! deserialization. Provider 429 responses are classified from headers;
-//! the unused error body is dropped rather than drained in a detached task.
+//! deserialization. Provider 429 responses save header throttling and
+//! Retry-After before a bounded body refinement. Complete quota JSON becomes
+//! terminal quota; stalled, failed, malformed, or oversized bodies keep the
+//! saved throttling. There is no detached body drain.
 
 use crate::features::executor::{
+    attempt::AttemptContext,
     bounded_body::read_bounded_response_body,
     budget::retry_after_header_ms,
     config::OpenAIConfig,
@@ -64,6 +67,65 @@ impl OpenAIVendor {
         .map_err(|_| ExecutorError::InvalidConfiguration)?;
         Ok(Self { config, client })
     }
+
+    async fn execute_classified(
+        &self,
+        model: &str,
+        target_id: &str,
+        params: ExecutionParams,
+        attempt: &AttemptContext,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        if !self.supports_model(model) {
+            return Err(ExecutorError::UnsupportedModel(
+                model.to_string(),
+                self.vendor_id().to_string(),
+            ));
+        }
+        if params.stream {
+            return Err(ExecutorError::InvalidPayload(
+                "Streaming is not supported for OpenAI requests".to_string(),
+            ));
+        }
+
+        let request = ChatCompletionRequest {
+            messages: params.messages,
+            temperature: params.temperature,
+            max_tokens: params.max_tokens,
+            top_p: params.top_p,
+            model: model.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(format!("{}/chat/completions", self.config.base_url))
+            .header("Authorization", format!("Bearer {}", self.config.api_key))
+            .header("Content-Type", "application/json")
+            .json(&request)
+            .send()
+            .await?;
+
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            return Err(classify_too_many_requests(
+                response,
+                self.config.max_response_bytes,
+                attempt,
+            )
+            .await);
+        }
+
+        if !response.status().is_success() {
+            let status = response.status();
+            let body =
+                read_bounded_response_body(response, self.config.max_response_bytes)
+                    .await
+                    .unwrap_or_default();
+            return Err(classify_unsuccessful_status(status, &body));
+        }
+
+        let body =
+            read_bounded_response_body(response, self.config.max_response_bytes).await?;
+        parse_successful_chat_completion(&body, self.config.pricing.get(target_id))
+    }
 }
 
 #[async_trait]
@@ -96,61 +158,21 @@ impl LLMVendor for OpenAIVendor {
         target_id: &str,
         params: ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError> {
-        if !self.supports_model(model) {
-            return Err(ExecutorError::UnsupportedModel(
-                model.to_string(),
-                self.vendor_id().to_string(),
-            ));
-        }
-        if params.stream {
-            return Err(ExecutorError::InvalidPayload(
-                "Streaming is not supported for OpenAI requests".to_string(),
-            ));
-        }
+        let attempt =
+            AttemptContext::from_timeout(Duration::from_millis(self.config.timeout_ms));
+        self.execute_classified(model, target_id, params, &attempt)
+            .await
+    }
 
-        let request = ChatCompletionRequest {
-            messages: params.messages,
-            temperature: params.temperature,
-            max_tokens: params.max_tokens,
-            top_p: params.top_p,
-            model: model.to_string(),
-        };
-
-        let response = self
-            .client
-            .post(format!("{}/chat/completions", self.config.base_url))
-            .header("Authorization", format!("Bearer {}", self.config.api_key))
-            .header("Content-Type", "application/json")
-            .json(&request)
-            .send()
-            .await?;
-
-        // Preserve typed throttling from 429 headers. Do not await an unused
-        // error body; a stall would erase Retry-After or look like a timeout.
-        if response.status() == StatusCode::TOO_MANY_REQUESTS {
-            let retry_after_ms = response
-                .headers()
-                .get(header::RETRY_AFTER)
-                .and_then(|value| value.to_str().ok())
-                .and_then(|value| retry_after_header_ms(value, SystemTime::now()));
-            return Err(ExecutorError::RateLimitExceeded {
-                vendor: "openai".to_string(),
-                retry_after_ms,
-            });
-        }
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body =
-                read_bounded_response_body(response, self.config.max_response_bytes)
-                    .await
-                    .unwrap_or_default();
-            return Err(classify_unsuccessful_status(status, &body));
-        }
-
-        let body =
-            read_bounded_response_body(response, self.config.max_response_bytes).await?;
-        parse_successful_chat_completion(&body, self.config.pricing.get(target_id))
+    async fn execute_attempt(
+        &self,
+        model: &str,
+        target_id: &str,
+        params: ExecutionParams,
+        attempt: &AttemptContext,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        self.execute_classified(model, target_id, params, attempt)
+            .await
     }
 
     async fn health_check(&self, timeout_secs: u64) -> Result<(), ExecutorError> {
@@ -203,6 +225,45 @@ impl LLMVendor for OpenAIVendor {
     }
 }
 
+async fn classify_too_many_requests(
+    response: reqwest::Response,
+    max_bytes: u64,
+    attempt: &AttemptContext,
+) -> ExecutorError {
+    let retry_after_ms = response
+        .headers()
+        .get(header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| retry_after_header_ms(value, SystemTime::now()));
+    let throttling = ExecutorError::RateLimitExceeded {
+        vendor: "openai".to_string(),
+        retry_after_ms,
+    };
+    attempt.observe(throttling.clone());
+
+    if attempt.remaining().is_zero() {
+        return throttling;
+    }
+
+    let body = match tokio::time::timeout_at(
+        attempt.cutoff(),
+        read_bounded_response_body(response, max_bytes),
+    )
+    .await
+    {
+        Ok(Ok(body)) => body,
+        Ok(Err(_)) | Err(_) => return throttling,
+    };
+
+    if quota_exhausted(&body) {
+        let quota = ExecutorError::QuotaExceeded;
+        attempt.observe(quota.clone());
+        quota
+    } else {
+        throttling
+    }
+}
+
 fn classify_unsuccessful_status(status: StatusCode, body: &[u8]) -> ExecutorError {
     if quota_exhausted(body) {
         return ExecutorError::QuotaExceeded;
@@ -241,6 +302,14 @@ mod tests {
         let body =
             br#"{"error":{"code":"insufficient_quota","type":"insufficient_quota"}}"#;
         assert!(quota_exhausted(body));
+        assert!(quota_exhausted(
+            br#"{"error":{"code":"insufficient_quota"}}"#
+        ));
+        assert!(quota_exhausted(
+            br#"{"error":{"type":"insufficient_quota"}}"#
+        ));
+        assert!(!quota_exhausted(br#"{"error":{"message":"rate"}}"#));
+        assert!(!quota_exhausted(br#"{"error":{"code":"not-json"#));
         assert!(matches!(
             classify_unsuccessful_status(StatusCode::FORBIDDEN, body),
             ExecutorError::QuotaExceeded

@@ -1,7 +1,8 @@
 //! Common traits for LLM vendor implementations.
 
 use crate::features::executor::{
-    error::ExecutorError, models::ExecutionParams, models::ExecutionResult,
+    attempt::AttemptContext, error::ExecutorError, models::ExecutionParams,
+    models::ExecutionResult,
 };
 use async_trait::async_trait;
 
@@ -26,6 +27,27 @@ pub trait LLMVendor: Send + Sync {
         target_id: &str,
         params: ExecutionParams,
     ) -> Result<ExecutionResult, ExecutorError>;
+
+    /// Executes one provider call against a shared per-attempt cutoff.
+    ///
+    /// Default implementations ignore the cutoff and call [`execute`]. OpenAI
+    /// uses it to save 429 header classification before bounded body
+    /// refinement.
+    ///
+    /// # Parameters
+    /// - `model` - Requested provider model sent on the wire
+    /// - `target_id` - Catalog target identity used for configured pricing
+    /// - `params` - Execution parameters (messages, temperature, etc.)
+    /// - `attempt` - Absolute cutoff and observed classification slot
+    async fn execute_attempt(
+        &self,
+        model: &str,
+        target_id: &str,
+        params: ExecutionParams,
+        _attempt: &AttemptContext,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        self.execute(model, target_id, params).await
+    }
 
     /// Returns the vendor identifier.
     fn vendor_id(&self) -> &str;

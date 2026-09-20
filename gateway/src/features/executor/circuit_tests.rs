@@ -429,3 +429,59 @@ async fn failed_probe_reopens_and_healthy_probe_closes() {
         2
     );
 }
+
+fn throttle() -> ExecutorError {
+    ExecutorError::RateLimitExceeded {
+        vendor: "openai".into(),
+        retry_after_ms: Some(1),
+    }
+}
+
+#[tokio::test]
+async fn throttled_probe_does_not_reopen_as_transient() {
+    let clock = Arc::new(ManualClock::new());
+    let cooldown = Duration::from_millis(25);
+    let opener = ScriptedVendor::new(HashMap::from([
+        (MODEL_A.to_string(), vec![Err(network())]),
+        (MODEL_B.to_string(), vec![Ok(success(MODEL_B, "b-open"))]),
+    ]));
+    let service = service_from(opener, clock.clone(), cooldown);
+    service
+        .execute(&chain_ab(), &payload(), generous_deadline())
+        .await
+        .expect("B remains usable while A opens");
+    clock.advance(cooldown + Duration::from_millis(1));
+
+    let probe_vendor = ScriptedVendor::new(HashMap::from([
+        (
+            MODEL_A.to_string(),
+            vec![Err(throttle()), Ok(success(MODEL_A, "closed"))],
+        ),
+        (
+            MODEL_B.to_string(),
+            vec![Ok(success(MODEL_B, "should-not-run"))],
+        ),
+    ]));
+    let calls = probe_vendor.calls.clone();
+    let mut probing = service_from(probe_vendor, clock, cooldown);
+    probing.circuits = service.circuits.clone();
+
+    let probe = probing
+        .execute(&chain_ab(), &payload(), generous_deadline())
+        .await
+        .expect_err("throttled probe must not fall back");
+    assert!(matches!(probe, ExecutorError::RateLimitExceeded { .. }));
+
+    let restored = probing
+        .execute(&chain_ab(), &payload(), generous_deadline())
+        .await
+        .expect("throttled probe must not reopen A as transient");
+    assert_eq!(restored.content, "closed");
+    assert_eq!(
+        calls
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone(),
+        vec![MODEL_A.to_string(), MODEL_A.to_string()]
+    );
+}

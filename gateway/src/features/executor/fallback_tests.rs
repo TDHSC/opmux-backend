@@ -669,3 +669,41 @@ async fn permanent_failures_do_not_open_target_circuit() {
     ));
     assert_eq!(observed_models(&calls), vec![MODEL_A, MODEL_A]);
 }
+
+fn throttle() -> ExecutorError {
+    ExecutorError::RateLimitExceeded {
+        vendor: "openai".into(),
+        retry_after_ms: Some(1),
+    }
+}
+
+#[tokio::test]
+async fn repeated_throttling_does_not_open_circuit_or_switch_models() {
+    let (vendor, calls, _params) = SharedProviderVendor::new(HashMap::from([
+        (MODEL_A.to_string(), vec![Err(throttle()), Err(throttle())]),
+        (
+            MODEL_B.to_string(),
+            vec![
+                Ok(success(MODEL_B, "should-not-run")),
+                Ok(success(MODEL_B, "should-not-run")),
+            ],
+        ),
+    ]));
+    let service = service_with_circuit(vendor, 0, 8, 1, Duration::from_secs(60));
+    let plan = chain(hop("alpha", MODEL_A, 512), vec![hop("beta", MODEL_B, 512)]);
+    let payload = payload_with_tokens(32);
+    let deadline = RequestDeadline::from_timeout(Duration::from_secs(30));
+
+    let first = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect_err("first throttle must stay on A");
+    assert!(matches!(first, ExecutorError::RateLimitExceeded { .. }));
+
+    let second = service
+        .execute(&plan, &payload, deadline)
+        .await
+        .expect_err("second throttle must not fall back after an opened circuit");
+    assert!(matches!(second, ExecutorError::RateLimitExceeded { .. }));
+    assert_eq!(observed_models(&calls), vec![MODEL_A, MODEL_A]);
+}

@@ -546,7 +546,9 @@ async fn real_adapter_preserves_429_retry_after_without_waiting_for_stalled_body
         }
         .delay_body(Duration::from_secs(2)),
     );
-    let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+    let mut config = openai_config_for_simulator(&simulator);
+    config.timeout_ms = 200;
+    let vendor = OpenAIVendor::new(config)
         .expect("adapter should construct with dummy local config");
 
     let started = Instant::now();
@@ -570,4 +572,84 @@ async fn real_adapter_preserves_429_retry_after_without_waiting_for_stalled_body
         "stalled 429 body must not delay typed throttling, took {elapsed:?}"
     );
     assert_eq!(simulator.generation_count(), 1);
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_classifies_complete_429_quota_from_code_or_type() {
+    isolate_provider_environment();
+    let cases = [("code-only", true, false), ("type-only", false, true)];
+    for (label, code, error_type) in cases {
+        let simulator = OpenAiSimulator::start().await;
+        simulator.enqueue_chat(ScriptedResponse::quota_429(code, error_type));
+        simulator.enqueue_chat(ScriptedResponse::chat_ok());
+        let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+            .expect("adapter should construct with dummy local config");
+        let error = vendor
+            .execute("gpt-4", "gpt-4", user_params(label))
+            .await
+            .expect_err(label);
+        match error {
+            ExecutorError::QuotaExceeded => {}
+            other => panic!("{label} expected QuotaExceeded, got {other:?}"),
+        }
+        assert_eq!(
+            simulator.generation_count(),
+            1,
+            "{label} must not retry a complete quota 429"
+        );
+    }
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_keeps_throttling_for_malformed_and_oversized_429_bodies() {
+    isolate_provider_environment();
+    let bound = 64_u64;
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(ScriptedResponse::malformed_429(
+        br#"{"error":{"code":"not-json"#,
+        Some("12"),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::advertised_429(
+        br#"{"error":{"code":"insufficient_quota","type":"insufficient_quota"}}"#,
+        bound + 1,
+        Some("15"),
+    ));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let mut config = openai_config_for_simulator(&simulator);
+    config.max_response_bytes = bound;
+    let vendor = OpenAIVendor::new(config)
+        .expect("adapter should construct with dummy local config");
+
+    let malformed = vendor
+        .execute("gpt-4", "gpt-4", user_params("malformed 429"))
+        .await
+        .expect_err("malformed 429 must stay throttling");
+    match malformed {
+        ExecutorError::RateLimitExceeded {
+            vendor,
+            retry_after_ms,
+        } => {
+            assert_eq!(vendor, "openai");
+            assert_eq!(retry_after_ms, Some(12_000));
+        }
+        other => panic!("expected RateLimitExceeded for malformed 429, got {other:?}"),
+    }
+
+    let oversized = vendor
+        .execute("gpt-4", "gpt-4", user_params("oversized 429"))
+        .await
+        .expect_err("oversized 429 must stay throttling");
+    match oversized {
+        ExecutorError::RateLimitExceeded {
+            vendor,
+            retry_after_ms,
+        } => {
+            assert_eq!(vendor, "openai");
+            assert_eq!(retry_after_ms, Some(15_000));
+        }
+        other => panic!("expected RateLimitExceeded for oversized 429, got {other:?}"),
+    }
+    assert_eq!(simulator.generation_count(), 2);
 }

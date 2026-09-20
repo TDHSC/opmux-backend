@@ -845,3 +845,124 @@ async fn failed_probe_reopens_target_circuit() {
     );
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
+
+fn rate_limited() -> ScriptedResponse {
+    ScriptedResponse::rate_limited("0")
+}
+
+#[tokio::test]
+#[serial]
+async fn http_429_quota_code_and_type_are_terminal_with_queued_success() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = router(
+        chain_settings(&simulator, |settings| {
+            settings.limits.retries_per_target = 1;
+            settings.limits.max_total_attempts = 8;
+        }),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    for (label, code, error_type) in
+        [("code-only", true, false), ("type-only", false, true)]
+    {
+        let before = simulator.generation_count();
+        simulator.enqueue_chat(ScriptedResponse::quota_429(code, error_type));
+        simulator.enqueue_chat(chat_reported(REPORTED_A_OK, CONTENT_A_OK));
+        simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+        simulator.enqueue_chat(chat_reported(REPORTED_C, CONTENT_C));
+        let response =
+            post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+        let status = response.status();
+        let body = body_json(response).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY, "{label}");
+        assert_envelope(status, &body, "UPSTREAM_ERROR");
+        assert_eq!(
+            body["error"]["message"], "Upstream provider quota was exhausted",
+            "{label}"
+        );
+        assert_ne!(body["error"]["code"], "UPSTREAM_RATE_LIMIT", "{label}");
+        assert!(!body.to_string().contains("insufficient_quota"));
+        assert_models(&generation_models(&simulator)[before..], &[MODEL_A]);
+        simulator.clear_chat_script();
+    }
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn repeated_same_account_throttling_does_not_open_circuit_or_fallback() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = router(
+        circuit_settings(&simulator, Duration::from_secs(30), |_| {}),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(rate_limited());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let first =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    let first_status = first.status();
+    let first_body = body_json(first).await;
+    assert_eq!(first_status, StatusCode::TOO_MANY_REQUESTS);
+    assert_envelope(first_status, &first_body, "UPSTREAM_RATE_LIMIT");
+    assert_models(&generation_models(&simulator), &[MODEL_A]);
+    simulator.clear_chat_script();
+
+    simulator.enqueue_chat(rate_limited());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let second = post_route(app, &issued.credential, route_body("chain", None)).await;
+    let second_status = second.status();
+    let second_body = body_json(second).await;
+    assert_eq!(second_status, StatusCode::TOO_MANY_REQUESTS);
+    assert_envelope(second_status, &second_body, "UPSTREAM_RATE_LIMIT");
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_A]);
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn throttled_probe_does_not_reopen_as_transient() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let cooldown = Duration::from_millis(80);
+    let app = router(
+        circuit_settings(&simulator, cooldown, |_| {}),
+        auth_service_from_pool(pool.clone()),
+    );
+
+    simulator.enqueue_chat(upstream_500());
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let opened =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    assert_eq!(opened.status(), StatusCode::OK);
+    sleep(cooldown + Duration::from_millis(40)).await;
+
+    simulator.enqueue_chat(rate_limited());
+    let probe =
+        post_route(app.clone(), &issued.credential, route_body("chain", None)).await;
+    let probe_status = probe.status();
+    let probe_body = body_json(probe).await;
+    assert_eq!(probe_status, StatusCode::TOO_MANY_REQUESTS);
+    assert_envelope(probe_status, &probe_body, "UPSTREAM_RATE_LIMIT");
+    assert_models(&generation_models(&simulator), &[MODEL_A, MODEL_B, MODEL_A]);
+
+    simulator.enqueue_chat(chat_reported(REPORTED_A_OK, CONTENT_A_OK));
+    simulator.enqueue_chat(chat_reported(REPORTED_B, CONTENT_B));
+    let restored = post_route(app, &issued.credential, route_body("chain", None)).await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    let restored_body = body_json(restored).await;
+    assert_eq!(restored_body["response"]["content"], CONTENT_A_OK);
+    assert_models(
+        &generation_models(&simulator),
+        &[MODEL_A, MODEL_B, MODEL_A, MODEL_A],
+    );
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}

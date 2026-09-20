@@ -468,5 +468,9 @@ mod tests {
             Some(Duration::from_secs(30)),
             Duration::from_millis(400)
         ));
+        assert!(provider_minimum_cannot_fit(
+            Some(Duration::from_secs(30)),
+            Duration::ZERO
+        ));
     }
 }

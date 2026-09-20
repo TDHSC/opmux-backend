@@ -1,6 +1,7 @@
 // Repository Layer - LLM vendor management and direct API calls
 
 use super::{
+    attempt::AttemptContext,
     config::ExecutorConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult},
@@ -102,6 +103,7 @@ impl ExecutorRepository {
     /// # Parameters
     /// - `plan` - Selected hop, including catalog target identity and wire model
     /// - `params` - Execution parameters shared across retries for this hop
+    /// - `attempt` - Per-attempt cutoff and observed classification slot
     ///
     /// # Returns
     /// Execution result with AI response and metrics
@@ -112,7 +114,7 @@ impl ExecutorRepository {
     /// - Model not supported
     /// - API call fails
     #[tracing::instrument(
-        skip(self, params),
+        skip(self, params, attempt),
         fields(
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
@@ -124,6 +126,7 @@ impl ExecutorRepository {
         &self,
         plan: &RoutePlan,
         params: &ExecutionParams,
+        attempt: &AttemptContext,
     ) -> Result<ExecutionResult, ExecutorError> {
         tracing::debug!("Calling LLM API");
 
@@ -141,7 +144,7 @@ impl ExecutorRepository {
 
         // Direct API call (no retry, no fallback)
         let result = vendor
-            .execute(&plan.model_id, &plan.target_id, params.clone())
+            .execute_attempt(&plan.model_id, &plan.target_id, params.clone(), attempt)
             .await?;
 
         tracing::debug!(

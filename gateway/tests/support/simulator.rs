@@ -92,6 +92,8 @@ pub enum ScriptedResponse {
         body: Vec<u8>,
         /// Content-Type value.
         content_type: &'static str,
+        /// Optional Retry-After header value.
+        retry_after: Option<String>,
     },
     /// Raw body with explicit length or chunked transfer.
     Raw {
@@ -107,6 +109,8 @@ pub enum ScriptedResponse {
         chunked: bool,
         /// Extra bytes the stream can still yield if the client keeps reading.
         extra_unread_bytes: usize,
+        /// Optional Retry-After header value.
+        retry_after: Option<String>,
     },
     /// Delay headers and/or the first body bytes of an inner script.
     Delayed {
@@ -187,6 +191,75 @@ impl ScriptedResponse {
         }
     }
 
+    /// Provider 429 with a Retry-After header and a non-quota JSON body.
+    pub fn rate_limited(retry_after: &str) -> Self {
+        Self::Json {
+            status: 429,
+            body: json!({"error":{"message":"rate"}}),
+            retry_after: Some(retry_after.to_string()),
+        }
+    }
+
+    /// HTTP 429 JSON whose `error.code` and/or `error.type` is `insufficient_quota`.
+    pub fn quota_429(code: bool, error_type: bool) -> Self {
+        let mut error = json!({"message": "quota"});
+        if code {
+            error["code"] = json!("insufficient_quota");
+        }
+        if error_type {
+            error["type"] = json!("insufficient_quota");
+        }
+        Self::Json {
+            status: 429,
+            body: json!({ "error": error }),
+            retry_after: None,
+        }
+    }
+
+    /// Malformed 429 bytes with an optional Retry-After header.
+    pub fn malformed_429(body: impl Into<Vec<u8>>, retry_after: Option<&str>) -> Self {
+        Self::Bytes {
+            status: 429,
+            body: body.into(),
+            content_type: "application/json",
+            retry_after: retry_after.map(ToOwned::to_owned),
+        }
+    }
+
+    /// 429 with an advertised Content-Length that may exceed the readable body.
+    pub fn advertised_429(
+        body: impl Into<Vec<u8>>,
+        content_length: u64,
+        retry_after: Option<&str>,
+    ) -> Self {
+        Self::Raw {
+            status: 429,
+            body: body.into(),
+            content_type: "application/json",
+            advertised_content_length: Some(content_length),
+            chunked: false,
+            extra_unread_bytes: 0,
+            retry_after: retry_after.map(ToOwned::to_owned),
+        }
+    }
+
+    /// Chunked 429 whose unread tail exceeds the configured byte cap.
+    pub fn chunked_429(
+        body: impl Into<Vec<u8>>,
+        extra_unread_bytes: usize,
+        retry_after: Option<&str>,
+    ) -> Self {
+        Self::Raw {
+            status: 429,
+            body: body.into(),
+            content_type: "application/json",
+            advertised_content_length: None,
+            chunked: true,
+            extra_unread_bytes,
+            retry_after: retry_after.map(ToOwned::to_owned),
+        }
+    }
+
     /// Models list success used by readiness probes.
     pub fn models_ok() -> Self {
         Self::Json {
@@ -211,6 +284,7 @@ impl ScriptedResponse {
             status: 200,
             body: body.into(),
             content_type: "application/json",
+            retry_after: None,
         }
     }
 
@@ -223,6 +297,7 @@ impl ScriptedResponse {
             advertised_content_length: None,
             chunked: true,
             extra_unread_bytes,
+            retry_after: None,
         }
     }
 
@@ -235,23 +310,25 @@ impl ScriptedResponse {
             advertised_content_length: Some(content_length),
             chunked: false,
             extra_unread_bytes: 0,
+            retry_after: None,
         }
     }
 
     /// Stalls sending status/headers, then yields `self`.
     pub fn delay_headers(self, delay: Duration) -> Self {
-        Self::Delayed {
-            before_headers: delay,
-            before_body: Duration::ZERO,
-            inner: Box::new(self),
-        }
+        self.delay(delay, Duration::ZERO)
     }
 
     /// Sends headers, then stalls before the first body chunk.
     pub fn delay_body(self, delay: Duration) -> Self {
+        self.delay(Duration::ZERO, delay)
+    }
+
+    /// Stalls headers and/or the first body chunk, then yields `self`.
+    pub fn delay(self, before_headers: Duration, before_body: Duration) -> Self {
         Self::Delayed {
-            before_headers: Duration::ZERO,
-            before_body: delay,
+            before_headers,
+            before_body,
             inner: Box::new(self),
         }
     }
@@ -400,6 +477,11 @@ impl OpenAiSimulator {
         lock_vec(&self.inner.chat_script).push_back(response);
     }
 
+    /// Drops unused scripted Chat Completions replies.
+    pub fn clear_chat_script(&self) {
+        lock_vec(&self.inner.chat_script).clear();
+    }
+
     /// Queues the next `/models` response.
     pub fn enqueue_models(&self, response: ScriptedResponse) {
         lock_vec(&self.inner.models_script).push_back(response);
@@ -470,6 +552,15 @@ fn capture_from_headers(
     }
 }
 
+fn insert_retry_after(response: &mut Response, retry_after: Option<&str>) {
+    let Some(retry_after) = retry_after else {
+        return;
+    };
+    if let Ok(value) = retry_after.parse() {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
+}
+
 fn unauthorized() -> Response {
     (
         StatusCode::UNAUTHORIZED,
@@ -529,22 +620,22 @@ fn render(
                 .chat_bytes_yielded
                 .store(encoded.len(), Ordering::SeqCst);
             let mut response = (status, axum::Json(body)).into_response();
-            if let Some(retry_after) = retry_after {
-                if let Ok(value) = retry_after.parse() {
-                    response.headers_mut().insert(header::RETRY_AFTER, value);
-                }
-            }
+            insert_retry_after(&mut response, retry_after.as_deref());
             response
         }
         ScriptedResponse::Bytes {
             status,
             body,
             content_type,
+            retry_after,
         } => {
             let status =
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
             state.chat_bytes_yielded.store(body.len(), Ordering::SeqCst);
-            (status, [(header::CONTENT_TYPE, content_type)], body).into_response()
+            let mut response =
+                (status, [(header::CONTENT_TYPE, content_type)], body).into_response();
+            insert_retry_after(&mut response, retry_after.as_deref());
+            response
         }
         ScriptedResponse::Raw {
             status,
@@ -553,6 +644,7 @@ fn render(
             advertised_content_length,
             chunked,
             extra_unread_bytes,
+            retry_after,
         } => {
             let status =
                 StatusCode::from_u16(status).unwrap_or(StatusCode::INTERNAL_SERVER_ERROR);
@@ -570,6 +662,7 @@ fn render(
             } else if chunked {
                 response.headers_mut().remove(header::CONTENT_LENGTH);
             }
+            insert_retry_after(&mut response, retry_after.as_deref());
             response
         }
         ScriptedResponse::Delayed { .. } | ScriptedResponse::Held { .. } => {
