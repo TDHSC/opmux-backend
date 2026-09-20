@@ -2,14 +2,14 @@
 //!
 //! Provides API key authentication functionality following 3-layer architecture:
 //! - Handler Layer: HTTP endpoints for API key management (future)
-//! - Service Layer: mock request authentication plus shared provisioning
-//! - Repository Layer: mock request authentication plus a fallible Postgres store
+//! - Service Layer: persisted request authentication plus shared provisioning
+//! - Repository Layer: fallible Postgres store (`persist`)
 //!
-//! Request authentication still uses the mock repository. Tenant and key
-//! provisioning use [`ProvisioningService`] and `opmux-admin`. Fail-closed HTTP
-//! wiring of persisted credentials is a later feature.
+//! HTTP authentication hashes presented credentials, looks them up in
+//! `opmux_private`, and derives tenant/key/kind from the stored row. Mock key
+//! acceptance and development bypass are test-only leftovers, not runtime
+//! behavior.
 
-// Export public interfaces
 pub use config::{get_auth_config, AuthConfig};
 pub use credentials::{
     generate_credential, hash_credential, parse_credential_payload, EntropyError,
@@ -20,24 +20,26 @@ pub use error::AuthError;
 pub use models::*;
 pub use persist::{
     ApiKeyKind, ApiKeyRecord, AuthStore, AuthStoreError, ClientRecord, KeyDigest,
-    NewApiKey, NewClient, PostgresAuthStore, RevokeOutcome, AUTH_MIGRATION_VERSION,
-    KEY_DIGEST_LEN, MAX_KEY_LIST_LIMIT,
+    NewApiKey, NewClient, PostgresAuthStore, RevokeOutcome, UnavailableAuthStore,
+    AUTH_MIGRATION_VERSION, KEY_DIGEST_LEN, MAX_KEY_LIST_LIMIT,
 };
 pub use provision::{
     CreatedTenant, IssuedKey, KeyIdentity, ProvisionError, ProvisioningService,
 };
-pub use service::AuthService;
+pub use service::{AuthService, AuthenticateError};
 
-// Internal modules
 pub mod config;
 pub mod credentials;
 pub mod error;
-mod mockdata;
 mod models;
 pub mod persist;
 pub mod provision;
-mod repository;
 mod service;
+
+#[cfg(test)]
+mod mockdata;
+#[cfg(test)]
+mod repository;
 
 // Future: handler module for API key management endpoints
 // pub mod handler;

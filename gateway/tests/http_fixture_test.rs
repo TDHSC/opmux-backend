@@ -8,10 +8,12 @@ use axum::{
 };
 use gateway::core::metrics::MetricsConfig;
 use serial_test::serial;
+use std::sync::Arc;
 use std::time::Duration;
 use support::{
-    isolate_provider_environment, production_router_for_simulator, OpenAiSimulator,
-    MOCK_GATEWAY_API_KEY, SIMULATED_CONTENT,
+    auth_service_from_pool, cleanup_clients, isolate_provider_environment,
+    production_router_with_auth, provision_inference_key, test_pool, OpenAiSimulator,
+    SIMULATED_CONTENT,
 };
 use tower::ServiceExt;
 
@@ -24,11 +26,17 @@ async fn body_string(response: axum::http::Response<Body>) -> String {
 
 async fn run_health_and_generation_fixture() {
     isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
     let simulator = OpenAiSimulator::start().await;
     assert!(simulator.addr().ip().is_loopback());
     assert!(!simulator.addr().ip().is_unspecified());
 
-    let app = production_router_for_simulator(&simulator, MetricsConfig::disabled());
+    let app = production_router_with_auth(
+        &simulator,
+        auth_service_from_pool(pool.clone()),
+        MetricsConfig::disabled(),
+    );
 
     let health = app
         .clone()
@@ -70,7 +78,7 @@ async fn run_health_and_generation_fixture() {
                 .method("POST")
                 .uri("/api/v1/route")
                 .header("content-type", "application/json")
-                .header("x-api-key", MOCK_GATEWAY_API_KEY)
+                .header("x-api-key", &issued.credential)
                 .header("X-Correlation-ID", "fixture-generate")
                 .body(Body::from(
                     r#"{"prompt":"fixture generation","metadata":{}}"#,
@@ -107,6 +115,7 @@ async fn run_health_and_generation_fixture() {
         .and_then(|body| body.get("model"))
         .and_then(|value| value.as_str());
     assert_eq!(model, Some("gpt-4"));
+    cleanup_clients(&pool, &[issued.client_id]).await;
 }
 
 #[tokio::test]
@@ -126,7 +135,13 @@ async fn production_router_fixture_repeats_without_shared_process_state() {
 async fn production_router_metrics_and_correlation_use_shared_builder() {
     isolate_provider_environment();
     let simulator = OpenAiSimulator::start().await;
-    let app = production_router_for_simulator(&simulator, MetricsConfig::production());
+    let app = production_router_with_auth(
+        &simulator,
+        Arc::new(gateway::features::auth::AuthService::new(Arc::new(
+            gateway::features::auth::UnavailableAuthStore,
+        ))),
+        MetricsConfig::production(),
+    );
 
     let _ = app
         .clone()
@@ -195,7 +210,7 @@ fn binary_and_http_harness_share_production_router_builder() {
     assert!(!main.contains("Router::new()"));
     let support = include_str!("support/mod.rs");
     assert!(observability.contains("build_production_router"));
-    assert!(fixture.contains("production_router_for_simulator"));
+    assert!(fixture.contains("production_router_with_auth"));
     assert!(support.contains("Application::from_settings"));
     assert!(support.contains("into_router"));
 }

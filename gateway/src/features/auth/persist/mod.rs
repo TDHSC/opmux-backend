@@ -8,6 +8,7 @@ mod error;
 mod models;
 mod postgres;
 mod store;
+mod unavailable;
 
 pub use error::AuthStoreError;
 pub use models::{
@@ -16,6 +17,7 @@ pub use models::{
 };
 pub use postgres::PostgresAuthStore;
 pub use store::AuthStore;
+pub use unavailable::UnavailableAuthStore;
 
 const _: fn() = || {
     fn assert_send_sync<T: Send + Sync>() {}

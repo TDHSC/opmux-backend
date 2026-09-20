@@ -2,9 +2,11 @@ use gateway::{
     app::Application,
     core::{
         config::Settings,
+        db::{runtime_role_from_env, DatabasePoolConfig},
         metrics::MetricsConfig,
         tracing::{init_tracing, TracingConfig},
     },
+    features::auth::{AuthService, PostgresAuthStore},
 };
 use std::sync::Arc;
 
@@ -24,6 +26,32 @@ async fn main() {
     settings.log_safe_summary();
     let settings = Arc::new(settings);
 
+    let database = match DatabasePoolConfig::from_env() {
+        Ok(config) => config,
+        Err(error) => {
+            tracing::error!(category = error.as_str(), "{error}");
+            std::process::exit(1);
+        }
+    };
+    let runtime_role = match runtime_role_from_env() {
+        Ok(role) => role,
+        Err(error) => {
+            tracing::error!(category = error.as_str(), "{error}");
+            std::process::exit(1);
+        }
+    };
+    let pool = match database.connect_lazy_with_role(&runtime_role) {
+        Ok(pool) => pool,
+        Err(_) => {
+            tracing::error!(
+                category = "database_unavailable",
+                "failed to configure the authentication database pool"
+            );
+            std::process::exit(1);
+        }
+    };
+    let auth_service = Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(pool))));
+
     let metrics_config = MetricsConfig::from_env();
     if metrics_config.enabled {
         tracing::info!(
@@ -35,7 +63,7 @@ async fn main() {
     }
 
     tracing::info!("Initializing application services...");
-    let application = match Application::from_settings(settings) {
+    let application = match Application::from_settings(settings, auth_service) {
         Ok(application) => application,
         Err(error) => {
             tracing::error!("Fatal: Failed to initialize application: {error}");
@@ -48,9 +76,9 @@ async fn main() {
     );
     tracing::info!("HealthService initialized");
     tracing::info!("IngressService initialized");
+    tracing::info!("AuthService initialized");
 
     let bind_address = application.state.settings.server.bind_address;
-    let development_mode = application.state.settings.auth.development_mode;
     let metrics_enabled = metrics_config.enabled;
     let metrics_path = metrics_config.endpoint_path.clone();
     let app = application.into_router(metrics_config);
@@ -69,13 +97,7 @@ async fn main() {
     }
 
     tracing::info!("");
-
-    if development_mode {
-        tracing::info!("🚨 Development mode: Authentication is BYPASSED");
-        tracing::info!("🚨 No API key required for testing");
-    } else {
-        tracing::info!("🔒 Authentication required: X-API-Key header");
-    }
+    tracing::info!("Authentication required: X-API-Key header");
 
     axum::serve(listener, app).await.unwrap();
 }

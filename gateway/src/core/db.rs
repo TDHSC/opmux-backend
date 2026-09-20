@@ -21,6 +21,9 @@ pub const DEFAULT_ACQUIRE_TIMEOUT: Duration = Duration::from_millis(3_000);
 /// Default per-session statement timeout applied after connect.
 pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_millis(5_000);
 
+/// Default Postgres role assumed by the gateway runtime.
+pub const DEFAULT_RUNTIME_ROLE: &str = "opmux_runtime";
+
 /// Sanitized database configuration failures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DatabaseConfigError {
@@ -30,6 +33,8 @@ pub enum DatabaseConfigError {
     InvalidUrl,
     /// A numeric pool bound is missing, zero, or out of range.
     InvalidPoolBound,
+    /// `OPMUX_RUNTIME_DB_ROLE` is not a trusted identifier.
+    InvalidRole,
 }
 
 impl DatabaseConfigError {
@@ -39,6 +44,7 @@ impl DatabaseConfigError {
             Self::MissingUrl => "missing_database_url",
             Self::InvalidUrl => "invalid_database_url",
             Self::InvalidPoolBound => "invalid_database_pool_bound",
+            Self::InvalidRole => "invalid_database_role",
         }
     }
 }
@@ -53,6 +59,9 @@ impl fmt::Display for DatabaseConfigError {
                 f.write_str("DATABASE_URL must be a PostgreSQL URL without being logged")
             }
             Self::InvalidPoolBound => f.write_str("database pool bounds are invalid"),
+            Self::InvalidRole => {
+                f.write_str("OPMUX_RUNTIME_DB_ROLE must be a lowercase identifier")
+            }
         }
     }
 }
@@ -108,7 +117,7 @@ impl DatabasePoolConfig {
     ///
     /// Reads `DATABASE_URL` and optional `OPMUX_DB_MAX_CONNECTIONS`,
     /// `OPMUX_DB_ACQUIRE_TIMEOUT_MS`, and `OPMUX_DB_STATEMENT_TIMEOUT_MS`.
-    /// Gateway startup does not yet require this; persistence tests do.
+    /// Gateway startup requires this after catalog load. Persistence tests do too.
     ///
     /// # Errors
     /// Returns a sanitized error when the URL or numeric bounds are invalid.
@@ -165,6 +174,27 @@ impl DatabasePoolConfig {
         Ok(self)
     }
 
+    /// Returns a lazy Tokio Postgres pool. Connections are acquired on first use.
+    ///
+    /// Startup can bind with valid configuration even if the database is
+    /// temporarily unreachable; protected requests then fail closed.
+    ///
+    /// # Errors
+    /// Returns `sqlx::Error` when connect options cannot be built.
+    pub fn connect_lazy(&self) -> Result<PgPool, sqlx::Error> {
+        self.connect_lazy_with_startup_sql(None)
+    }
+
+    /// Returns a lazy pool that runs `SET ROLE` on each session.
+    ///
+    /// # Parameters
+    /// - `role` - Existing Postgres role to assume after connect
+    pub fn connect_lazy_with_role(&self, role: &str) -> Result<PgPool, sqlx::Error> {
+        validate_role_name(role)?;
+        let sql = format!("SET ROLE {role}");
+        self.connect_lazy_with_startup_sql(Some(sql))
+    }
+
     /// Connects a Tokio Postgres pool with bounded acquire and statement timeouts.
     ///
     /// Hosted deployments should use a direct or session-pooler URL with
@@ -198,6 +228,22 @@ impl DatabasePoolConfig {
         &self,
         extra: Option<String>,
     ) -> Result<PgPool, sqlx::Error> {
+        let (pool_options, options) = self.pool_options(extra)?;
+        pool_options.connect_with(options).await
+    }
+
+    fn connect_lazy_with_startup_sql(
+        &self,
+        extra: Option<String>,
+    ) -> Result<PgPool, sqlx::Error> {
+        let (pool_options, options) = self.pool_options(extra)?;
+        Ok(pool_options.connect_lazy_with(options))
+    }
+
+    fn pool_options(
+        &self,
+        extra: Option<String>,
+    ) -> Result<(PgPoolOptions, PgConnectOptions), sqlx::Error> {
         let statement_timeout_ms = self.statement_timeout.as_millis().to_string();
         let options = PgConnectOptions::from_str(self.url.expose())?
             .application_name("opmux-gateway")
@@ -216,7 +262,30 @@ impl DatabasePoolConfig {
                 })
             });
         }
-        pool_options.connect_with(options).await
+        Ok((pool_options, options))
+    }
+}
+
+/// Reads the gateway runtime database role from the process environment.
+///
+/// Defaults to `opmux_runtime`. The value is a trusted identifier, not request
+/// input.
+///
+/// # Errors
+/// Returns `InvalidRole` when the override is empty or contains characters
+/// other than lowercase ASCII letters and underscore.
+pub fn runtime_role_from_env() -> Result<String, DatabaseConfigError> {
+    match std::env::var("OPMUX_RUNTIME_DB_ROLE") {
+        Ok(value) => {
+            let value = value.trim();
+            if value.is_empty()
+                || !value.chars().all(|ch| ch.is_ascii_lowercase() || ch == '_')
+            {
+                return Err(DatabaseConfigError::InvalidRole);
+            }
+            Ok(value.to_string())
+        }
+        Err(_) => Ok(DEFAULT_RUNTIME_ROLE.to_string()),
     }
 }
 
@@ -302,5 +371,16 @@ mod tests {
             DatabaseConfigError::InvalidUrl.as_str(),
             "invalid_database_url"
         );
+        assert_eq!(
+            DatabaseConfigError::InvalidRole.as_str(),
+            "invalid_database_role"
+        );
+    }
+
+    #[test]
+    fn runtime_role_defaults_and_rejects_unsafe_names() {
+        assert_eq!(DEFAULT_RUNTIME_ROLE, "opmux_runtime");
+        let err = DatabaseConfigError::InvalidRole;
+        assert!(!err.to_string().contains("OPMUX_RUNTIME_DB_ROLE="));
     }
 }

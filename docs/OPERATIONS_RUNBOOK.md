@@ -22,7 +22,8 @@ Local privileges are separate:
   `opmux-admin` via `SET ROLE` after connecting with `DATABASE_URL`. Override the role with
   `OPMUX_DB_ROLE` only when the connecting user is a member of that role.
 - **Runtime (`opmux_runtime`):** `SELECT` clients; `SELECT`/`INSERT`/`UPDATE` keys. Cannot create
-  tenants. Intended for the gateway process after persisted authentication is wired.
+  tenants. Used by the gateway via `SET ROLE` after connecting with `DATABASE_URL`. Override with
+  `OPMUX_RUNTIME_DB_ROLE` only when the connecting user is a member of that role.
 
 ## Operator provisioning
 
@@ -44,13 +45,15 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
 ```
 
 Do not seed public mock keys (`test-api-key-123`, `dev-api-key-456`) into the database. HTTP request
-authentication is still mock-backed until the next persistence wiring step.
+authentication hashes the presented credential and looks up the digest in `opmux_private`. Last
+successful authentication updates `last_used_at` before the request is admitted, including when
+later inference fails. There is no authentication cache.
 
 ## Startup checks
 
-1. Confirm required env vars are set (`OPMUX_CONFIG_FILE`, `OPENAI_API_KEY`, `SERVER_PORT`, auth
-   settings). Copying `.env` is not process configuration. `DATABASE_URL` is required for
-   persistence tests, not yet for gateway bind.
+1. Confirm required env vars are set (`OPMUX_CONFIG_FILE`, `OPENAI_API_KEY`, `DATABASE_URL`,
+   `SERVER_PORT`). Copying `.env` is not process configuration. `AUTH_DEVELOPMENT_MODE` does not
+   bypass authentication.
 2. Start service and verify startup logs show initialized Executor/Health/Ingress services.
 3. Validate endpoints:
 

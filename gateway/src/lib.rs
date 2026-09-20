@@ -45,4 +45,7 @@ pub struct AppState {
 
     /// Shared HealthService for health and readiness checks
     pub health_service: Arc<features::health::HealthService>,
+
+    /// Shared AuthService for persisted API-key authentication
+    pub auth_service: Arc<features::auth::AuthService>,
 }

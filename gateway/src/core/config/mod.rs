@@ -5,7 +5,7 @@
 //! Copying `.env` is not process configuration. Example catalog prices and
 //! model names are illustrative, not current billing or availability facts.
 //!
-//! Database URLs are not required in this milestone.
+//! Database URLs are required by the gateway binary after catalog load.
 
 mod catalog;
 mod env;

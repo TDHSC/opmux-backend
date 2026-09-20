@@ -12,30 +12,25 @@ use serde_json::json;
 /// Each variant corresponds to a failed business operation.
 #[derive(Debug, thiserror::Error)]
 pub enum AuthError {
+    /// Presented credential is missing, malformed, unknown, revoked, or ambiguous.
     #[error("API key validation failed")]
-    ApiKeyValidationFailed,
+    InvalidCredentials,
 
-    #[error("API key is inactive")]
-    ApiKeyInactive,
-
-    #[error("Repository operation failed: {0}")]
-    RepositoryOperationFailed(String),
+    /// The authentication datastore is unreachable or timed out.
+    #[error("Authentication dependency unavailable")]
+    StoreUnavailable,
 }
 
 impl IntoResponse for AuthError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            // Client errors are mapped to 4xx status codes.
-            Self::ApiKeyValidationFailed | Self::ApiKeyInactive => (
+            Self::InvalidCredentials => (
                 StatusCode::UNAUTHORIZED,
                 "Authentication failed".to_string(),
             ),
-
-            // Server-side business logic failures are mapped to 5xx status codes.
-            // Return a generic message to the user for security.
-            Self::RepositoryOperationFailed(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "An internal error occurred".to_string(),
+            Self::StoreUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Authentication dependency unavailable".to_string(),
             ),
         };
 
@@ -50,32 +45,26 @@ mod tests {
     use axum::{body, response::IntoResponse};
 
     #[tokio::test]
-    async fn api_key_validation_failed_maps_to_401() {
-        let err = AuthError::ApiKeyValidationFailed;
+    async fn invalid_credentials_map_to_401() {
+        let err = AuthError::InvalidCredentials;
         let resp = err.into_response();
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let s = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(s.contains("Authentication failed"));
+        assert!(!s.contains("digest"));
+        assert!(!s.contains("postgres"));
     }
 
     #[tokio::test]
-    async fn api_key_inactive_maps_to_401() {
-        let err = AuthError::ApiKeyInactive;
+    async fn store_unavailable_maps_to_503() {
+        let err = AuthError::StoreUnavailable;
         let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
         let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
         let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("Authentication failed"));
-    }
-
-    #[tokio::test]
-    async fn repository_operation_failed_maps_to_500_generic_message() {
-        let err = AuthError::RepositoryOperationFailed("db timeout".into());
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("internal error"));
+        assert!(s.contains("unavailable"));
+        assert!(!s.contains("401"));
+        assert!(!s.contains("invalid"));
     }
 }

@@ -10,7 +10,7 @@ This guide verifies correlation IDs, health/readiness, and Prometheus metrics.
 ```bash
 export OPENAI_API_KEY=dummy-key
 export OPENAI_BASE_URL=http://127.0.0.1:9/v1
-cargo run -p gateway
+bash scripts/with-owned-database.sh cargo run -p gateway
 ```
 
 ## 1) Correlation ID propagation
@@ -64,15 +64,17 @@ Expected:
 ```bash
 curl -i -X POST "http://127.0.0.1:3000/api/v1/route" \
   -H "Content-Type: application/json" \
-  -H "X-API-Key: test-api-key-123" \
+  -H "X-API-Key: $INFERENCE_KEY" \
   -H "X-Correlation-ID: manual-corr-002" \
   -d '{"prompt":"hello","metadata":{}}'
 ```
 
-Expected with dummy upstream config:
+Expected with dummy upstream config and an operator-provisioned inference key:
 
 - `HTTP/1.1 500 Internal Server Error`
 - `X-Correlation-ID: manual-corr-002` preserved in response
+
+Former public mock keys such as `test-api-key-123` return `401` and do not reach the executor.
 
 ## 6) Startup logging configuration
 
@@ -84,7 +86,7 @@ For the automated local-only smoke check, build the binary and run:
 
 ```bash
 cargo build -p gateway
-bash scripts/check-startup.sh "$PWD/target/debug/gateway"
+bash scripts/with-owned-database.sh bash scripts/check-startup.sh "$PWD/target/debug/gateway"
 ```
 
 This starts and stops its own gateway; stop any instance already using port 3000 or set

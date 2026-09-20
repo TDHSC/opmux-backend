@@ -1,7 +1,9 @@
 #[cfg(test)]
 mod tests {
     use crate::core::correlation::RequestContext;
-    use crate::features::auth::AuthContext;
+    use crate::features::auth::{
+        ApiKeyKind, AuthContext, AuthService, UnavailableAuthStore,
+    };
     use crate::features::executor::{
         config::ExecutorConfig,
         error::ExecutorError,
@@ -113,6 +115,7 @@ mod tests {
             ),
             executor_service,
             health_service: Arc::new(HealthService::new()),
+            auth_service: Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
         };
 
         Router::new()
@@ -121,7 +124,9 @@ mod tests {
                 post(crate::features::ingress::ingress_handler),
             )
             .layer(Extension(AuthContext {
-                client_id: "test-client".to_string(),
+                client_id: uuid::Uuid::nil(),
+                key_id: uuid::Uuid::nil(),
+                kind: ApiKeyKind::Inference,
             }))
             .layer(Extension(RequestContext::new(
                 "req-handler-1".to_string(),

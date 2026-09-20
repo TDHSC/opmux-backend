@@ -9,7 +9,11 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 BASE_URL="${GATEWAY_BASE_URL:-http://127.0.0.1:3000}"
-API_KEY="${GATEWAY_API_KEY:-test-api-key-123}"
+if [ -z "${GATEWAY_API_KEY:-}" ]; then
+  echo -e "${RED}GATEWAY_API_KEY must be an operator-provisioned inference key${NC}"
+  exit 1
+fi
+API_KEY="${GATEWAY_API_KEY}"
 TOTAL_REQUESTS="${TOTAL_REQUESTS:-100}"
 CONCURRENCY="${CONCURRENCY:-10}"
 

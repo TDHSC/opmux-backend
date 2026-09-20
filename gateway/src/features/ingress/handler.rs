@@ -84,8 +84,8 @@ pub async fn ingress_handler(
 
     tracing::debug!("Request validation passed");
 
-    // Use client_id from authentication context
-    let user_id = auth_context.client_id;
+    // Use client_id from authentication context. Metadata cannot replace it.
+    let user_id = auth_context.client_id.to_string();
 
     // Process the request through service layer
     // Pass request_context for gRPC metadata construction

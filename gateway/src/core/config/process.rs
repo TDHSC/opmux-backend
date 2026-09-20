@@ -38,10 +38,10 @@ pub struct ServerConfig {
 /// Authentication configuration
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
-    /// Enable development mode bypass (NEVER enable in production)
+    /// Legacy flag. Ignored: persisted authentication is always required.
     pub development_mode: bool,
 
-    /// Mock client ID for development mode
+    /// Legacy mock client ID. Ignored by request authentication.
     pub dev_client_id: String,
 
     /// Slow operation threshold in milliseconds
@@ -155,13 +155,11 @@ impl Config {
         tracing::info!("Shutdown timeout: {}s", self.server.shutdown_timeout_secs);
 
         if self.auth.development_mode {
-            tracing::warn!("🚨 AUTH_DEVELOPMENT_MODE is ENABLED");
-            tracing::warn!("🚨 Authentication is BYPASSED for development");
-            tracing::warn!("🚨 This should NEVER be enabled in production");
-            tracing::warn!("🚨 Mock client ID: {}", self.auth.dev_client_id);
-        } else {
-            tracing::info!("✅ Authentication is ENABLED (production mode)");
+            tracing::info!(
+                "AUTH_DEVELOPMENT_MODE has no effect; persisted authentication is required"
+            );
         }
+        tracing::info!("Persisted authentication is required");
 
         tracing::info!("Log level: {}", self.logging.level);
         tracing::info!("JSON format: {}", self.logging.json_format);

@@ -2,25 +2,21 @@
 //!
 //! Contains all data structures used in the authentication system
 
-use serde::{Deserialize, Serialize};
+use super::persist::ApiKeyKind;
+use uuid::Uuid;
 
-/// Authentication context injected into requests after successful authentication
-/// This is moved from middleware/auth.rs to follow 3-layer architecture
-#[derive(Debug, Clone)]
+/// Authentication context injected into requests after successful authentication.
+///
+/// Tenant, key, and kind come from the persisted credential. Request metadata
+/// cannot replace these fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AuthContext {
-    pub client_id: String,
-}
-
-/// API Key information stored in the system
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ApiKeyInfo {
-    pub id: String,
-    pub client_id: String,
-    pub key_hash: String, // SHA-256 hash of the actual API key
-    pub name: Option<String>,
-    pub created_at: String,
-    pub last_used_at: Option<String>,
-    pub is_active: bool,
+    /// Owning tenant identifier from the authenticated key.
+    pub client_id: Uuid,
+    /// Persisted key identifier.
+    pub key_id: Uuid,
+    /// Immutable management or inference kind.
+    pub kind: ApiKeyKind,
 }
 
 /// Axum extractor for AuthContext

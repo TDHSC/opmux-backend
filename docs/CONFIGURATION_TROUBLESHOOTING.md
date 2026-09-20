@@ -2,9 +2,9 @@
 
 The gateway reads **process environment** plus a non-secret JSON catalog selected by
 `OPMUX_CONFIG_FILE`. Copying `.env` is not configuration. Credentials and database URLs stay in the
-environment; the catalog is not a secret store. `DATABASE_URL` is required for persistence tests and
-migration apply. Gateway startup still uses mock authentication and does not yet require a database
-URL.
+environment; the catalog is not a secret store. `DATABASE_URL` is required for gateway bind after
+catalog load, persistence tests, `opmux-admin`, and migration apply. `AUTH_DEVELOPMENT_MODE` does
+not bypass authentication.
 
 Example catalog prices and model names are illustrative samples. They are not current provider
 billing or model-availability facts. Estimated cost for a successful response is calculated later
@@ -80,8 +80,8 @@ Server:
 
 Auth:
 
-- `AUTH_DEVELOPMENT_MODE` (default `false`)
-- `AUTH_DEV_CLIENT_ID` (default `dev-client-123`)
+- `AUTH_DEVELOPMENT_MODE` (ignored; persisted authentication is always required)
+- `AUTH_DEV_CLIENT_ID` (ignored; identity comes from the authenticated key)
 
 Provider (environment-only):
 
@@ -111,9 +111,12 @@ Observability/performance:
 
 TLS certificate and hostname verification stay enabled. There is no insecure-TLS setting.
 
-Persistence (SQLx 0.8.6, not required at gateway bind yet):
+Persistence (SQLx 0.8.6, required at gateway bind):
 
-- `DATABASE_URL` (PostgreSQL URL; required for `opmux-admin`, migrations, and persistence tests)
+- `DATABASE_URL` (PostgreSQL URL; required for the gateway, `opmux-admin`, migrations, and
+  persistence tests)
+- `OPMUX_RUNTIME_DB_ROLE` (optional, default `opmux_runtime` for the gateway; connecting user must
+  be a member of that role)
 - `OPMUX_DB_ROLE` (optional, default `opmux_operator` for `opmux-admin`; connecting user must be a
   member of that role)
 - `OPMUX_DB_MAX_CONNECTIONS` (optional, default 10, max 32)
@@ -130,9 +133,10 @@ database from this repository.
 ### Startup fails before the process listens
 
 Cause: missing `OPMUX_CONFIG_FILE`, unreadable or invalid catalog, blank `OPENAI_API_KEY`, invalid
-`OPENAI_BASE_URL`, out-of-range limits, or HTTP client construction failure. Diagnostics include a
-stable category such as `catalog_duplicate_target` or `missing_credential` and omit keys, URLs with
-userinfo, query, or fragment, and full configuration dumps.
+`OPENAI_BASE_URL`, missing/invalid `DATABASE_URL`, out-of-range limits, or HTTP client construction
+failure. Diagnostics include a stable category such as `catalog_duplicate_target`,
+`missing_credential`, or `missing_database_url` and omit keys, URLs with userinfo, query, or
+fragment, connection strings, and full configuration dumps.
 
 Action: point `OPMUX_CONFIG_FILE` at a valid version-1 catalog, export a nonempty provider key, and
 use a loopback URL for local checks. The binary does not automatically load `.env`.
@@ -158,9 +162,19 @@ keys. Live-provider tests are ignored and unrun unless explicitly opted in.
 
 ### `/api/v1/route` returns `401`
 
-Cause: missing or invalid `X-API-Key` in production mode.
+Cause: missing, empty, duplicate, comma-joined, unknown, or revoked `X-API-Key`. Former public mock
+keys are also rejected. `AUTH_DEVELOPMENT_MODE` does not grant access.
 
-Action: send `X-API-Key: test-api-key-123` for local default flow.
+Action: provision a tenant and inference key with `opmux-admin` and send that one-time credential in
+`X-API-Key`.
+
+### `/api/v1/route` returns `503` without a circuit-open body
+
+Cause: authentication datastore timeout or unavailability. The process can stay live; protected
+requests fail closed and do not call the provider.
+
+Action: confirm `DATABASE_URL`, schema (`scripts/db-migrate.sh`), and that the runtime role can
+select `opmux_private.api_keys`.
 
 ### `/api/v1/route` returns `500 execution_failed`
 

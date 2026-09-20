@@ -24,6 +24,11 @@ trap cleanup EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
+if [ -z "${DATABASE_URL:-}" ]; then
+  echo "DATABASE_URL is required for startup checks; wrap with scripts/with-owned-database.sh" >&2
+  exit 1
+fi
+
 env -u ANTHROPIC_API_KEY -u LOG_LEVEL -u LOG_JSON \
   -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
   AUTH_DEVELOPMENT_MODE=false SERVER_HOST=127.0.0.1 SERVER_PORT="$PORT" \
@@ -72,8 +77,8 @@ check_response /api/v1/route 401 -X POST -H "Content-Type: application/json" \
   -d '{"prompt":"startup check","metadata":{}}'
 check_response /api/v1/route 401 -X POST -H "Content-Type: application/json" \
   -H "X-API-Key: invalid-key" -d '{"prompt":"startup check","metadata":{}}'
-check_response /api/v1/route 400 -X POST -H "Content-Type: application/json" \
-  -H "X-API-Key: test-api-key-123" -d '{"prompt":"","metadata":{}}'
+check_response /api/v1/route 401 -X POST -H "Content-Type: application/json" \
+  -H "X-API-Key: test-api-key-123" -d '{"prompt":"startup check","metadata":{}}'
 check_response /metrics 200
 grep -q 'gateway_http_requests_total' "$TMP_DIR/body"
 

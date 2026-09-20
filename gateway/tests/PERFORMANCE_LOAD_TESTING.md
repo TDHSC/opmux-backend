@@ -9,7 +9,7 @@ This guide provides repeatable load checks for the gateway HTTP pipeline.
 ```bash
 export OPENAI_API_KEY=dummy-key
 export OPENAI_BASE_URL=http://127.0.0.1:9/v1
-cargo run -p gateway
+bash scripts/with-owned-database.sh cargo run -p gateway
 ```
 
 2. In another terminal, run the load script.
@@ -23,7 +23,7 @@ cargo run -p gateway
 Defaults:
 
 - `GATEWAY_BASE_URL=http://127.0.0.1:3000`
-- `GATEWAY_API_KEY=test-api-key-123`
+- `GATEWAY_API_KEY` (operator-provisioned inference key; do not reuse former public mock keys)
 - `TOTAL_REQUESTS=100`
 - `CONCURRENCY=10`
 
@@ -31,7 +31,7 @@ Defaults:
 
 ```bash
 GATEWAY_BASE_URL=http://127.0.0.1:3000 \
-GATEWAY_API_KEY=test-api-key-123 \
+GATEWAY_API_KEY="$INFERENCE_KEY" \
 TOTAL_REQUESTS=200 \
 CONCURRENCY=20 \
 ./scripts/run-load-tests.sh

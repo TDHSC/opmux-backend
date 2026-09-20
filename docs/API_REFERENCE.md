@@ -54,9 +54,10 @@ Prometheus metrics endpoint.
 
 Protected AI routing endpoint.
 
-- Auth: required (`X-API-Key` header)
+- Auth: required (`X-API-Key` header with an operator-provisioned credential)
 - Headers:
-  - `X-API-Key`: required in production mode
+  - `X-API-Key`: required; missing, empty, duplicate, comma-joined, unknown, revoked, and former
+    public mock keys (`test-api-key-123`, `dev-api-key-456`) return `401`
   - `X-Correlation-ID`: optional, echoed in response when provided
 - Request body:
 
@@ -74,9 +75,9 @@ Protected AI routing endpoint.
 - Response codes:
   - `200 OK` success
   - `400 Bad Request` invalid request
-  - `401 Unauthorized` invalid/missing API key
+  - `401 Unauthorized` invalid/missing/ambiguous API key
   - `500 Internal Server Error` execution failed
-  - `503 Service Unavailable` circuit breaker open
+  - `503 Service Unavailable` authentication datastore unavailable or circuit breaker open
 
 Error payload format:
 

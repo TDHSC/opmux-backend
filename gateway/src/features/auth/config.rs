@@ -11,11 +11,10 @@ use std::env;
 /// Authentication configuration
 #[derive(Debug, Clone)]
 pub struct AuthConfig {
-    /// Enable development mode bypass
-    /// When true, allows requests without API keys and injects mock context
+    /// Legacy flag. Ignored: persisted authentication is always required.
     pub development_mode: bool,
 
-    /// Mock client ID to use in development mode
+    /// Legacy mock client ID. Ignored by request authentication.
     pub dev_client_id: String,
 
     /// Slow operation threshold in milliseconds
@@ -74,12 +73,9 @@ impl AuthConfig {
     /// Log configuration warnings
     pub fn log_warnings(&self) {
         if self.development_mode {
-            tracing::warn!("🚨 AUTH_DEVELOPMENT_MODE is ENABLED");
-            tracing::warn!("🚨 Authentication is BYPASSED for development");
-            tracing::warn!("🚨 This should NEVER be enabled in production");
-            tracing::warn!("🚨 Mock client ID: {}", self.dev_client_id);
-        } else {
-            tracing::info!("✅ Authentication is ENABLED (production mode)");
+            tracing::info!(
+                "AUTH_DEVELOPMENT_MODE has no effect; persisted authentication is required"
+            );
         }
     }
 }

@@ -8,6 +8,7 @@ use gateway::{
     app::build_production_router,
     core::{config::Settings, metrics::MetricsConfig},
     features::{
+        auth::{AuthService, UnavailableAuthStore},
         executor::{config::ExecutorConfig, service::ExecutorService},
         health, ingress,
     },
@@ -16,7 +17,10 @@ use gateway::{
 use serde_json::json;
 use serial_test::serial;
 use std::sync::Arc;
-use support::isolate_provider_environment;
+use support::{
+    auth_service_from_pool, cleanup_clients, isolate_provider_environment,
+    provision_inference_key, test_pool,
+};
 use tower::ServiceExt;
 
 fn create_executor_service() -> Arc<ExecutorService> {
@@ -47,6 +51,7 @@ fn build_test_app(
         ingress_service,
         executor_service,
         health_service,
+        auth_service: Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
     };
 
     let metrics = if include_metrics {
@@ -193,7 +198,25 @@ async fn test_ready_endpoint_with_unhealthy_dependencies() {
 #[tokio::test]
 #[serial]
 async fn test_repeated_ingress_calls_transition_to_circuit_open() {
-    let app = build_test_app(Arc::new(health::HealthService::new()), false);
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let settings = Arc::new(Settings::for_tests());
+    let executor_service = Arc::new(
+        ExecutorService::from_config(ExecutorConfig::from_settings(&settings))
+            .expect("executor should initialize with dummy vendor config"),
+    );
+    let ingress_service = Arc::new(ingress::service::IngressService::new(
+        executor_service.clone(),
+    ));
+    let app_state = AppState {
+        settings,
+        ingress_service,
+        executor_service,
+        health_service: Arc::new(health::HealthService::new()),
+        auth_service: auth_service_from_pool(pool.clone()),
+    };
+    let app = build_production_router(app_state, MetricsConfig::disabled());
 
     let request_body = json!({ "prompt": "load", "metadata": {} }).to_string();
 
@@ -202,7 +225,7 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
             .method("POST")
             .uri("/api/v1/route")
             .header("content-type", "application/json")
-            .header("x-api-key", "test-api-key-123")
+            .header("x-api-key", &issued.credential)
             .body(Body::from(request_body.clone()))
             .unwrap();
 
@@ -214,7 +237,7 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
         .method("POST")
         .uri("/api/v1/route")
         .header("content-type", "application/json")
-        .header("x-api-key", "test-api-key-123")
+        .header("x-api-key", &issued.credential)
         .body(Body::from(request_body))
         .unwrap();
 
@@ -226,4 +249,5 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
     assert!(body_str.contains("\"code\":\"circuit_open\""));
+    cleanup_clients(&pool, &[issued.client_id]).await;
 }

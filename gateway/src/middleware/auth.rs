@@ -1,10 +1,10 @@
-// Authentication middleware - protects endpoints with API key validation
-// Now uses the 3-layer architecture from features/auth
+//! Authentication middleware - protects endpoints with persisted API key validation.
 
-use crate::features::auth::{get_auth_config, AuthContext, AuthService};
+use crate::features::auth::{AuthError, AuthenticateError};
+use crate::AppState;
 use axum::{
-    extract::Request,
-    http::{HeaderMap, StatusCode},
+    extract::{Request, State},
+    http::HeaderMap,
     middleware::Next,
     response::Response,
 };
@@ -14,219 +14,136 @@ use axum::{
 /// This is a CHILD SPAN. It automatically inherits `request_id` and
 /// `client_correlation_id` from the correlation_id_middleware (root span).
 ///
-/// Validates X-API-Key header and injects AuthContext into request.
-/// Supports development mode bypass via AUTH_DEVELOPMENT_MODE environment variable.
+/// Validates a single `X-API-Key` header through [`crate::features::auth::AuthService`]
+/// and injects [`AuthContext`]. Legacy development bypass settings are ignored.
 #[tracing::instrument(
     level = "debug",
-    skip(request, next),
-    fields(
-        auth_method = tracing::field::Empty,
-        user_id = tracing::field::Empty,
-    )
+    skip(state, request, next),
+    fields(auth_method = "api_key")
 )]
 pub async fn auth_middleware(
+    State(state): State<AppState>,
     mut request: Request,
     next: Next,
-) -> Result<Response, StatusCode> {
-    let start = std::time::Instant::now();
-    let config = get_auth_config();
-
-    // Check if development mode is enabled
-    if config.is_development_mode() {
-        tracing::Span::current().record("auth_method", "development_mode");
-
-        // Development mode: bypass authentication and inject mock context
-        let auth_service = AuthService::new();
-        let dev_context = auth_service.create_dev_context();
-
-        tracing::Span::current().record("user_id", dev_context.client_id.as_str());
-        request.extensions_mut().insert(dev_context);
-
-        let response = next.run(request).await;
-
-        // Log performance metrics for development mode
-        let duration = start.elapsed();
-        tracing::info!(
-            duration_ms = duration.as_millis(),
-            success = true,
-            "Authentication completed (development mode bypass)"
-        );
-
-        return Ok(response);
-    }
-
-    tracing::Span::current().record("auth_method", "api_key");
-
-    // Production mode: require API key authentication
-    let headers = request.headers();
-
-    // Get API key from X-API-Key header
-    let api_key = match extract_api_key(headers) {
-        Some(key) => key,
-        None => {
-            tracing::warn!("Authentication failed: Missing X-API-Key header");
-            return Err(StatusCode::UNAUTHORIZED);
-        }
-    };
-
-    // Validate API key using auth service
-    let auth_context = match validate_api_key(&api_key).await {
-        Some(context) => context,
-        None => {
-            let duration = start.elapsed();
-            tracing::warn!(
-                duration_ms = duration.as_millis(),
+) -> Result<Response, AuthError> {
+    let presented = match presented_api_key(request.headers()) {
+        PresentedKey::Value(value) => value,
+        PresentedKey::Missing | PresentedKey::Invalid => {
+            tracing::debug!(
                 success = false,
-                "Authentication failed: Invalid API key"
+                reason = "invalid_header",
+                "Authentication failed"
             );
-            return Err(StatusCode::UNAUTHORIZED);
+            return Err(AuthError::InvalidCredentials);
         }
     };
 
-    // Record user_id in span
-    tracing::Span::current().record("user_id", auth_context.client_id.as_str());
+    let auth_context = match state.auth_service.authenticate(&presented).await {
+        Ok(context) => context,
+        Err(AuthenticateError::InvalidCredentials) => {
+            tracing::debug!(
+                success = false,
+                reason = "invalid_credentials",
+                "Authentication failed"
+            );
+            return Err(AuthError::InvalidCredentials);
+        }
+        Err(AuthenticateError::StoreUnavailable) => {
+            tracing::debug!(
+                success = false,
+                reason = "store_unavailable",
+                "Authentication failed"
+            );
+            return Err(AuthError::StoreUnavailable);
+        }
+    };
 
-    // Inject AuthContext into request extensions
     request.extensions_mut().insert(auth_context);
+    Ok(next.run(request).await)
+}
 
-    // Continue to next handler
-    let response = next.run(request).await;
+pub(crate) enum PresentedKey {
+    Missing,
+    Invalid,
+    Value(String),
+}
 
-    // Log performance metrics for successful authentication
-    let duration = start.elapsed();
-    let is_slow = duration.as_millis() > config.get_slow_threshold_ms() as u128;
-
-    if is_slow {
-        tracing::warn!(
-            duration_ms = duration.as_millis(),
-            success = true,
-            threshold_ms = config.get_slow_threshold_ms(),
-            "Slow authentication detected"
-        );
-    } else {
-        tracing::info!(
-            duration_ms = duration.as_millis(),
-            success = true,
-            "Authentication completed"
-        );
+/// Extracts a single unambiguous API key from `X-API-Key`.
+///
+/// Missing, empty, non-UTF8, whitespace-padded, comma-joined, and duplicate
+/// headers are rejected. The raw value is never logged.
+pub(crate) fn presented_api_key(headers: &HeaderMap) -> PresentedKey {
+    let mut values = headers.get_all("x-api-key").iter();
+    let Some(first) = values.next() else {
+        return PresentedKey::Missing;
+    };
+    if values.next().is_some() {
+        return PresentedKey::Invalid;
     }
-
-    Ok(response)
+    let Ok(text) = first.to_str() else {
+        return PresentedKey::Invalid;
+    };
+    if text.is_empty()
+        || text.trim() != text
+        || text.trim().is_empty()
+        || text.contains(',')
+    {
+        return PresentedKey::Invalid;
+    }
+    PresentedKey::Value(text.to_string())
 }
 
-/// Extract API key from X-API-Key header
-fn extract_api_key(headers: &HeaderMap) -> Option<String> {
-    headers
-        .get("X-API-Key")
-        .and_then(|value| value.to_str().ok())
-        .map(|s| s.to_string())
-}
-
-/// Validate API key using the auth service
-/// This replaces the hardcoded validation logic
-async fn validate_api_key(api_key: &str) -> Option<AuthContext> {
-    let auth_service = AuthService::new();
-    auth_service.validate_api_key(api_key).await
+impl std::fmt::Debug for PresentedKey {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Missing => f.write_str("Missing"),
+            Self::Invalid => f.write_str("Invalid"),
+            Self::Value(_) => f.write_str("Value([redacted])"),
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::Body;
-    use axum::http::{HeaderMap, Request as HttpRequest};
+    use axum::http::HeaderValue;
 
     #[test]
-    fn extract_api_key_none_when_missing() {
+    fn extract_api_key_missing_when_absent() {
         let headers = HeaderMap::new();
-        assert!(extract_api_key(&headers).is_none());
+        assert!(matches!(presented_api_key(&headers), PresentedKey::Missing));
     }
 
     #[test]
-    fn extract_api_key_some_when_present() {
+    fn extract_api_key_invalid_for_empty_duplicate_and_comma() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-API-Key", "abc123".parse().unwrap());
-        let key = extract_api_key(&headers);
-        assert_eq!(key.as_deref(), Some("abc123"));
+        headers.insert("x-api-key", HeaderValue::from_static(" "));
+        assert!(matches!(presented_api_key(&headers), PresentedKey::Invalid));
+
+        let mut headers = HeaderMap::new();
+        headers.append("x-api-key", HeaderValue::from_static("abc"));
+        headers.append("x-api-key", HeaderValue::from_static("abc"));
+        assert!(matches!(presented_api_key(&headers), PresentedKey::Invalid));
+
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("one,two"));
+        assert!(matches!(presented_api_key(&headers), PresentedKey::Invalid));
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "x-api-key",
+            HeaderValue::from_bytes(&[0xff]).expect("opaque"),
+        );
+        assert!(matches!(presented_api_key(&headers), PresentedKey::Invalid));
     }
 
-    #[tokio::test]
-    async fn validate_api_key_none_when_invalid() {
-        let ctx = super::validate_api_key("not-a-real-key").await;
-        assert!(ctx.is_none());
-    }
-
-    #[tokio::test]
-    async fn validate_api_key_some_when_valid() {
-        let ctx = super::validate_api_key("test-api-key-123").await;
-        assert!(ctx.is_some());
-
-        // Also verify that building a typical request compiles cleanly
-        let _req: HttpRequest<Body> = HttpRequest::builder()
-            .uri("/api/v1/route")
-            .header("X-API-Key", "test-api-key-123")
-            .body(Body::empty())
-            .unwrap();
-    }
-    // --- E2E tests using Router::oneshot (requires dev-dep tower) ---
-    use axum::{routing::get, Router};
-    use tower::ServiceExt; // for `oneshot`
-
-    async fn test_handler(req: Request) -> Response {
-        let has_ctx = req.extensions().get::<AuthContext>().is_some();
-        if has_ctx {
-            axum::http::Response::builder()
-                .status(StatusCode::OK)
-                .body(Body::empty())
-                .unwrap()
-        } else {
-            axum::http::Response::builder()
-                .status(StatusCode::INTERNAL_SERVER_ERROR)
-                .body(Body::empty())
-                .unwrap()
+    #[test]
+    fn extract_api_key_value_when_single_token() {
+        let mut headers = HeaderMap::new();
+        headers.insert("x-api-key", HeaderValue::from_static("opmx_v1_token"));
+        match presented_api_key(&headers) {
+            PresentedKey::Value(value) => assert_eq!(value, "opmx_v1_token"),
+            other => panic!("expected value, got header class {other:?}"),
         }
-    }
-
-    fn build_app() -> Router {
-        Router::new()
-            .route("/ping", get(test_handler))
-            .layer(axum::middleware::from_fn(auth_middleware))
-    }
-
-    #[tokio::test]
-    async fn e2e_missing_api_key_returns_401() {
-        let app = build_app();
-        let req = HttpRequest::builder()
-            .method("GET")
-            .uri("/ping")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn e2e_invalid_api_key_returns_401() {
-        let app = build_app();
-        let req = HttpRequest::builder()
-            .method("GET")
-            .uri("/ping")
-            .header("X-API-Key", "invalid-key")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-    }
-
-    #[tokio::test]
-    async fn e2e_valid_api_key_returns_200_and_context_present() {
-        let app = build_app();
-        let req = HttpRequest::builder()
-            .method("GET")
-            .uri("/ping")
-            .header("X-API-Key", "test-api-key-123")
-            .body(Body::empty())
-            .unwrap();
-        let resp = app.oneshot(req).await.unwrap();
-        assert_eq!(resp.status(), StatusCode::OK);
     }
 }

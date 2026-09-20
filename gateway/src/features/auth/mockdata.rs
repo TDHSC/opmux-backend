@@ -1,58 +1,62 @@
-//! Mock Data Provider for Authentication
+//! Test-only mock API keys.
 //!
-//! Provides hardcoded API keys for development and testing
-//! Following the same pattern as ingress/mockdata.rs
+//! These plaintext keys are never accepted by runtime authentication. They
+//! exist so tests can prove the former public fixtures are rejected.
 
-use super::models::ApiKeyInfo;
 use std::collections::HashMap;
 
-/// Mock data provider for authentication system
+/// Test-only key metadata. Not a public DTO and not used at runtime.
+#[derive(Debug, Clone)]
+pub struct MockApiKeyInfo {
+    pub id: String,
+    pub client_id: String,
+    pub is_active: bool,
+}
+
+/// Mock data provider retained only for tests.
 pub struct MockAuthDataProvider;
 
 impl MockAuthDataProvider {
-    /// Get mock API key information by key hash
-    /// In real implementation, this would be a database lookup
-    pub fn get_api_key_by_hash(key_hash: &str) -> Option<ApiKeyInfo> {
-        let mock_keys = Self::get_mock_api_keys();
-        mock_keys.get(key_hash).cloned()
+    /// Looks up a historical plaintext mock key.
+    pub fn get_api_key_by_hash(key_hash: &str) -> Option<MockApiKeyInfo> {
+        Self::get_mock_api_keys().get(key_hash).cloned()
     }
 
-    /// Get all mock API keys as a HashMap for quick lookup
-    /// Key: SHA-256 hash of the API key
-    /// Value: ApiKeyInfo struct
-    fn get_mock_api_keys() -> HashMap<String, ApiKeyInfo> {
+    fn get_mock_api_keys() -> HashMap<String, MockApiKeyInfo> {
         let mut keys = HashMap::new();
-
-        // Mock API key: "test-api-key-123"
-        // In real implementation, we would store SHA-256 hash
-        // For now, we use the plain key as hash for simplicity
         keys.insert(
             "test-api-key-123".to_string(),
-            ApiKeyInfo {
+            MockApiKeyInfo {
                 id: "key_001".to_string(),
                 client_id: "test-client-456".to_string(),
-                key_hash: "test-api-key-123".to_string(), // In real: SHA-256 hash
-                name: Some("Test API Key".to_string()),
-                created_at: "2025-09-04T00:00:00Z".to_string(),
-                last_used_at: Some("2025-09-04T04:00:00Z".to_string()),
                 is_active: true,
             },
         );
-
-        // Additional mock API key for testing
         keys.insert(
             "dev-api-key-456".to_string(),
-            ApiKeyInfo {
+            MockApiKeyInfo {
                 id: "key_002".to_string(),
                 client_id: "dev-client-789".to_string(),
-                key_hash: "dev-api-key-456".to_string(),
-                name: Some("Development API Key".to_string()),
-                created_at: "2025-09-04T01:00:00Z".to_string(),
-                last_used_at: None,
                 is_active: true,
             },
         );
-
         keys
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mock_keys_exist_only_as_test_fixtures() {
+        assert!(MockAuthDataProvider::get_api_key_by_hash("test-api-key-123").is_some());
+        assert!(MockAuthDataProvider::get_api_key_by_hash("dev-api-key-456").is_some());
+        let service = include_str!("service.rs");
+        let middleware = include_str!("../../middleware/auth.rs");
+        assert!(!service.contains("test-api-key-123"));
+        assert!(!service.contains("MockAuthDataProvider"));
+        assert!(!middleware.contains("test-api-key-123"));
+        assert!(!middleware.contains("create_dev_context"));
     }
 }

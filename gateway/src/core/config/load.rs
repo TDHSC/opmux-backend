@@ -184,12 +184,11 @@ impl Settings {
             "Policy limits are validated at startup; request deadline, fallback, circuit, and admission enforcement land in later milestones"
         );
         if self.auth.development_mode {
-            tracing::warn!("🚨 AUTH_DEVELOPMENT_MODE is ENABLED");
-            tracing::warn!("🚨 Authentication is BYPASSED for development");
-            tracing::warn!("🚨 This should NEVER be enabled in production");
-        } else {
-            tracing::info!("Authentication is ENABLED (production mode)");
+            tracing::info!(
+                "AUTH_DEVELOPMENT_MODE has no effect; persisted authentication is required"
+            );
         }
+        tracing::info!("Persisted authentication is required");
     }
 }
 

@@ -501,6 +501,9 @@ mod tests {
             ),
             executor_service: executor,
             health_service: Arc::new(health_service),
+            auth_service: Arc::new(crate::features::auth::AuthService::new(Arc::new(
+                crate::features::auth::UnavailableAuthStore,
+            ))),
         };
 
         Router::new()
@@ -567,6 +570,9 @@ mod tests {
             ),
             executor_service: executor,
             health_service: Arc::new(service),
+            auth_service: Arc::new(crate::features::auth::AuthService::new(Arc::new(
+                crate::features::auth::UnavailableAuthStore,
+            ))),
         };
 
         let app = Router::new()

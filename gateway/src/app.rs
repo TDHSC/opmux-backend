@@ -9,6 +9,7 @@ use crate::{
         metrics::{create_metrics, MetricsConfig},
     },
     features::{
+        auth::AuthService,
         executor::{
             config::ExecutorConfig, error::ExecutorError, service::ExecutorService,
         },
@@ -33,17 +34,21 @@ pub struct Application {
 }
 
 impl Application {
-    /// Builds executor, health, and ingress services from injected settings.
+    /// Builds executor, health, ingress, and auth services from injected settings.
     ///
     /// # Parameters
     /// - `settings` - Validated operator configuration
+    /// - `auth_service` - Persisted API-key authenticator
     ///
     /// # Returns
     /// Application holding shared `AppState`
     ///
     /// # Errors
     /// Returns `ExecutorError` when the vendor client cannot be constructed.
-    pub fn from_settings(settings: Arc<Settings>) -> Result<Self, ExecutorError> {
+    pub fn from_settings(
+        settings: Arc<Settings>,
+        auth_service: Arc<AuthService>,
+    ) -> Result<Self, ExecutorError> {
         let executor_config = ExecutorConfig::from_settings(&settings);
         let executor_service = Arc::new(ExecutorService::from_config(executor_config)?);
         let health_service = Arc::new(health::HealthService::with_executor(
@@ -59,6 +64,7 @@ impl Application {
                 executor_service,
                 ingress_service,
                 health_service,
+                auth_service,
             },
         })
     }
@@ -91,7 +97,10 @@ impl Application {
 pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Router {
     let protected_routes = Router::new()
         .route("/api/v1/route", post(ingress::ingress_handler))
-        .layer(middleware::from_fn(auth::auth_middleware))
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            auth::auth_middleware,
+        ))
         .with_state(state.clone());
 
     let public_routes = Router::new()

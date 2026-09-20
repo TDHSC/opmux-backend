@@ -12,10 +12,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
   configurable metrics endpoint (`/metrics` by default).
 
-**Implementation boundary:** Request authentication still uses a mock repository. A private Supabase
-schema, SQLx store, shared provisioning service, and `opmux-admin` CLI exist for tenants and API-key
-digests, but persisted keys are not yet wired into HTTP authentication. Conversation context and
-routing optimization also use mock data. Real upstream LLM execution does not make the entire
+**Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
+Provision tenants with `opmux-admin`; former public mock keys are rejected. Conversation context and
+routing optimization still use mock data. Real upstream LLM execution does not make the entire
 pipeline production-ready. Planned Memory/Router/Rewrite/Validation microservices and additional
 vendors should not be treated as implemented capabilities.
 
@@ -36,15 +35,17 @@ npm ci
 
 ### Local Startup Check (No Real LLM Calls)
 
-The gateway requires `OPMUX_CONFIG_FILE` (non-secret JSON catalog) and `OPENAI_API_KEY`. Invalid
-catalogs, blank credentials, out-of-range limits, or HTTP client construction failures exit before
-the process binds. Copying `.env` is not process configuration; export variables or load them with
-your local tooling.
+The gateway requires `OPMUX_CONFIG_FILE` (non-secret JSON catalog), `OPENAI_API_KEY`, and
+`DATABASE_URL`. Invalid catalogs, blank credentials, missing/invalid database configuration,
+out-of-range limits, or HTTP client construction failures exit before the process binds. Copying
+`.env` is not process configuration; export variables or load them with your local tooling.
+`AUTH_DEVELOPMENT_MODE` does not bypass authentication.
 
-Use a dummy key, the example catalog, and an intentionally unavailable local upstream to check
-startup and failure handling:
+Use a dummy provider key, the example catalog, owned local Supabase, and an intentionally
+unavailable local upstream to check startup and failure handling:
 
 ```bash
+bash scripts/with-owned-database.sh env \
 SERVER_HOST=127.0.0.1 SERVER_PORT=3000 \
 OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 AUTH_DEVELOPMENT_MODE=false METRICS_ENABLED=true METRICS_PATH=/metrics \
@@ -66,9 +67,11 @@ A healthy process does not imply healthy upstream dependencies.
 
 ### Real Upstream Access
 
-Replace the placeholder with a valid provider key in your local environment:
+Replace the placeholder with a valid provider key in your local environment, and keep `DATABASE_URL`
+pointed at local Supabase:
 
 ```bash
+bash scripts/with-owned-database.sh env \
 SERVER_HOST=127.0.0.1 SERVER_PORT=3000 AUTH_DEVELOPMENT_MODE=false \
 OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 OPENAI_API_KEY='<your-provider-key>' OPENAI_BASE_URL=https://api.openai.com/v1 \
@@ -79,8 +82,8 @@ cargo run -p gateway
 http or https path-prefix endpoint. Userinfo, query strings, and fragments (including empty `?` or
 `#`) are rejected before the process binds; a trailing slash is stripped. Keep real keys out of
 version control. The provider key is separate from the gateway's `X-API-Key` request header; see the
-[API reference](docs/API_REFERENCE.md) for request examples. Authentication remains mock-backed even
-when using a real upstream.
+[API reference](docs/API_REFERENCE.md) for request examples. Gateway `X-API-Key` values must be
+operator-provisioned credentials, not the former public mock keys.
 
 The example catalog at [config/opmux.example.json](config/opmux.example.json) defines a default
 route, targets, illustrative per-million prices, and a flat fallback list. Those model names and
@@ -114,10 +117,13 @@ The script uses `DATABASE_URL` when set, otherwise the mission-owned loopback da
 stack). Do not use hosted project linking. Persistence tests fail if the owned database is missing;
 they do not skip.
 
-Gateway startup still does not require `DATABASE_URL`. Persistence tests, `opmux-admin`, and later
-auth wiring do. Use a direct or session-mode pooler URL for hosted Postgres (`sslmode=verify-full`
-plus a CA). Transaction-mode poolers are incompatible with SQLx prepared statements. Platform `anon`
-/ `service_role` keys are not Opmux API keys and cannot read `opmux_private` digests.
+Gateway startup requires `DATABASE_URL` after catalog load. Missing or invalid URLs fail before the
+process serves protected work. Use a direct or session-mode pooler URL for hosted Postgres
+(`sslmode=verify-full` plus a CA). Transaction-mode poolers are incompatible with SQLx prepared
+statements. Platform `anon` / `service_role` keys are not Opmux API keys and cannot read
+`opmux_private` digests. The gateway assumes `SET ROLE opmux_runtime` (override
+`OPMUX_RUNTIME_DB_ROLE`). Transient database outages keep `/health` live and fail closed with 503 on
+protected routes.
 
 `opmux-admin` is the operator CLI, not an HTTP bootstrap. It uses `DATABASE_URL` and
 `SET ROLE opmux_operator` (override with `OPMUX_DB_ROLE`). Schema migrations stay with the database
@@ -133,8 +139,8 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
   key issue --client-id "$CLIENT_ID" --kind inference --name route > /tmp/acme-inference.json
 ```
 
-HTTP generation still accepts the mock repository keys until persisted authentication is wired. Do
-not seed `test-api-key-123` or `dev-api-key-456` into `opmux_private`.
+HTTP generation authenticates persisted inference keys. Do not seed `test-api-key-123` or
+`dev-api-key-456` into `opmux_private`; those former public keys return 401.
 
 Wrap workspace tests so they receive the owned database URL:
 
@@ -155,9 +161,11 @@ docker compose up --build
 ```
 
 The gateway is available at `http://127.0.0.1:3000`. Without overrides,
-[docker-compose.yml](docker-compose.yml) mounts the example catalog, uses a dummy key, and uses
-`http://host.docker.internal:9/v1` as the upstream. Expect readiness failure unless that endpoint
-actually serves a compatible API; starting a container is not proof of LLM availability.
+[docker-compose.yml](docker-compose.yml) mounts the example catalog, uses a dummy provider key, and
+uses `http://host.docker.internal:9/v1` as the upstream. Set `DATABASE_URL` for persisted
+authentication; an empty URL fails closed before protected work. Expect readiness failure unless
+that endpoint actually serves a compatible API; starting a container is not proof of LLM
+availability.
 
 For real upstream access, set **both** values so the Compose dummy URL is not retained:
 
@@ -198,7 +206,7 @@ To run the same local-only binary smoke check used by the security workflow:
 
 ```bash
 cargo build -p gateway
-bash scripts/check-startup.sh "$PWD/target/debug/gateway"
+bash scripts/with-owned-database.sh bash scripts/check-startup.sh "$PWD/target/debug/gateway"
 ```
 
 The check binds to `127.0.0.1:3000` (override with `STARTUP_CHECK_PORT`), uses dummy credentials and
