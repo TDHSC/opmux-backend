@@ -238,24 +238,52 @@ fn blank_credential_exits_before_listen() {
     assert_no_secrets(&output);
 }
 
-#[test]
-fn credential_bearing_url_is_omitted_from_diagnostics() {
+fn assert_invalid_provider_url_exits_before_listen(url: &str) {
     let catalog = TempCatalog::write(&valid_catalog());
     let port = unused_loopback_port();
-    let url = format!("https://user:{SENTINEL_URL_SECRET}@example.invalid/v1");
+    let port_text = port.to_string();
+    let catalog_path = catalog.path.to_str().unwrap().to_string();
     let (code, output) = run_to_exit(
         &[
-            ("SERVER_PORT", &port.to_string()),
-            ("OPMUX_CONFIG_FILE", catalog.path.to_str().unwrap()),
+            ("SERVER_PORT", &port_text),
+            ("OPMUX_CONFIG_FILE", &catalog_path),
             ("OPENAI_API_KEY", SENTINEL_KEY),
-            ("OPENAI_BASE_URL", &url),
+            ("OPENAI_BASE_URL", url),
         ],
         Duration::from_secs(5),
     );
-    assert_ne!(code, Some(0));
-    assert!(output.contains("invalid_provider_url"));
+    assert_ne!(code, Some(0), "url={url}");
+    assert!(
+        output.contains("invalid_provider_url"),
+        "url={url} output={output}"
+    );
     assert_no_listener(port);
     assert_no_secrets(&output);
+    assert!(!output.contains("Settings {"));
+    assert!(!format!("{output:?}").contains(SENTINEL_URL_SECRET));
+}
+
+#[test]
+fn credential_bearing_url_is_omitted_from_diagnostics() {
+    let url = format!("https://user:{SENTINEL_URL_SECRET}@example.invalid/v1");
+    assert_invalid_provider_url_exits_before_listen(&url);
+}
+
+#[test]
+fn query_and_fragment_provider_urls_exit_before_listen() {
+    let cases = [
+        format!("https://example.invalid/v1?api_key={SENTINEL_URL_SECRET}"),
+        format!("https://example.invalid/v1#{SENTINEL_URL_SECRET}"),
+        format!(
+            "https://example.invalid/v1?api_key={SENTINEL_URL_SECRET}#{SENTINEL_URL_SECRET}"
+        ),
+        "http://127.0.0.1:9/v1?".to_string(),
+        "http://127.0.0.1:9/v1#".to_string(),
+        "http://127.0.0.1:9/v1?#".to_string(),
+    ];
+    for url in cases {
+        assert_invalid_provider_url_exits_before_listen(&url);
+    }
 }
 
 #[test]

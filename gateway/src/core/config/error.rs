@@ -46,7 +46,8 @@ pub enum ConfigCategory {
     InvalidLimit,
     /// Required provider credential is missing or blank.
     MissingCredential,
-    /// Provider base URL is missing, unusable, or credential-bearing.
+    /// Provider base URL is missing, unusable, credential-bearing, or has a
+    /// query or fragment.
     InvalidProviderUrl,
     /// Bounded HTTP client construction failed.
     HttpClientConstruction,
@@ -141,7 +142,7 @@ impl ConfigError {
     pub(crate) fn invalid_provider_url() -> Self {
         Self::new(
             ConfigCategory::InvalidProviderUrl,
-            "OPENAI_BASE_URL must be an http or https URL without embedded credentials",
+            "OPENAI_BASE_URL must be an http or https URL without credentials, query, or fragment",
         )
     }
 

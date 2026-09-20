@@ -74,9 +74,11 @@ cargo run -p gateway
 ```
 
 `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1` when unset; override it for a compatible
-endpoint. Keep real keys out of version control. The provider key is separate from the gateway's
-`X-API-Key` request header; see the [API reference](docs/API_REFERENCE.md) for request examples.
-Authentication remains mock-backed even when using a real upstream.
+http or https path-prefix endpoint. Userinfo, query strings, and fragments (including empty `?` or
+`#`) are rejected before the process binds; a trailing slash is stripped. Keep real keys out of
+version control. The provider key is separate from the gateway's `X-API-Key` request header; see the
+[API reference](docs/API_REFERENCE.md) for request examples. Authentication remains mock-backed even
+when using a real upstream.
 
 The example catalog at [config/opmux.example.json](config/opmux.example.json) defines a default
 route, targets, illustrative per-million prices, and a flat fallback list. Those model names and

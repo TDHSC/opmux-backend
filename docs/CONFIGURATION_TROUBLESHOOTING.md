@@ -84,7 +84,8 @@ Auth:
 Provider (environment-only):
 
 - `OPENAI_API_KEY` (required, nonempty)
-- `OPENAI_BASE_URL` (default `https://api.openai.com/v1`; http or https, no embedded credentials)
+- `OPENAI_BASE_URL` (default `https://api.openai.com/v1`; http or https path-prefix URL with no
+  userinfo, query, or fragment, including empty `?`/`#`; trailing slashes are stripped)
 - `OPENAI_TIMEOUT_MS` (optional override of `max_attempt_timeout_ms`)
 
 Compatible executor overrides:
@@ -115,7 +116,7 @@ TLS certificate and hostname verification stay enabled. There is no insecure-TLS
 Cause: missing `OPMUX_CONFIG_FILE`, unreadable or invalid catalog, blank `OPENAI_API_KEY`, invalid
 `OPENAI_BASE_URL`, out-of-range limits, or HTTP client construction failure. Diagnostics include a
 stable category such as `catalog_duplicate_target` or `missing_credential` and omit keys, URLs with
-userinfo, and full configuration dumps.
+userinfo, query, or fragment, and full configuration dumps.
 
 Action: point `OPMUX_CONFIG_FILE` at a valid version-1 catalog, export a nonempty provider key, and
 use a loopback URL for local checks. The binary does not automatically load `.env`.

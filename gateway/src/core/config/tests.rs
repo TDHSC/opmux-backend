@@ -470,22 +470,88 @@ fn missing_and_blank_credentials_fail() {
     assert!(!error.to_string().contains("   "));
 }
 
+const PROVIDER_URL_SENTINEL: &str = "sentinel-url-secret";
+
+fn assert_invalid_provider_url_is_sanitized(error: &ConfigError) {
+    assert_eq!(error.category(), "invalid_provider_url");
+    let display = error.to_string();
+    let debug = format!("{error:?}");
+    for text in [&display, &debug] {
+        assert!(!text.contains(PROVIDER_URL_SENTINEL), "{text}");
+        assert!(!text.contains("user:"));
+        assert!(!text.contains("127.0.0.1"));
+        assert!(!text.contains("example.invalid"));
+        assert!(!text.contains("api_key="));
+    }
+}
+
 #[test]
 fn invalid_provider_url_is_sanitized() {
     let mut env = dummy_env();
     env.insert(
         "OPENAI_BASE_URL".into(),
-        "https://user:sentinel-url-secret@example.invalid/v1".into(),
+        format!("https://user:{PROVIDER_URL_SENTINEL}@example.invalid/v1"),
     );
     let error = load_json_with_env(&valid_catalog(), &env).expect_err("credential url");
-    assert_eq!(error.category(), "invalid_provider_url");
-    let text = error.to_string();
-    assert!(!text.contains("sentinel-url-secret"));
-    assert!(!text.contains("user:"));
+    assert_invalid_provider_url_is_sanitized(&error);
 
     env.insert("OPENAI_BASE_URL".into(), "ftp://127.0.0.1/v1".into());
     let error = load_json_with_env(&valid_catalog(), &env).expect_err("scheme");
     assert_eq!(error.category(), "invalid_provider_url");
+}
+
+#[test]
+fn query_and_fragment_provider_urls_are_rejected_and_sanitized() {
+    let cases = [
+        format!("https://example.invalid/v1?api_key={PROVIDER_URL_SENTINEL}"),
+        format!("https://example.invalid/v1#{PROVIDER_URL_SENTINEL}"),
+        format!(
+            "https://example.invalid/v1?api_key={PROVIDER_URL_SENTINEL}#{PROVIDER_URL_SENTINEL}"
+        ),
+        format!(
+            "https://user:{PROVIDER_URL_SENTINEL}@example.invalid/v1?api_key={PROVIDER_URL_SENTINEL}#{PROVIDER_URL_SENTINEL}"
+        ),
+        "http://127.0.0.1:9/v1?".to_string(),
+        "http://127.0.0.1:9/v1#".to_string(),
+        "http://127.0.0.1:9/v1?#".to_string(),
+    ];
+    for url in cases {
+        let mut env = dummy_env();
+        env.insert("OPENAI_BASE_URL".into(), url.clone());
+        let error = load_json_with_env(&valid_catalog(), &env)
+            .expect_err("query/fragment provider URL must fail");
+        assert_invalid_provider_url_is_sanitized(&error);
+        assert!(
+            !format!("{error}").contains(&url) && !format!("{error:?}").contains(&url),
+            "diagnostics must omit the supplied URL {url}"
+        );
+    }
+}
+
+#[test]
+fn path_prefix_provider_urls_are_accepted_and_normalized() {
+    let cases = [
+        ("http://127.0.0.1:9/v1/", "http://127.0.0.1:9/v1"),
+        (
+            "http://127.0.0.1:9/custom/prefix/",
+            "http://127.0.0.1:9/custom/prefix",
+        ),
+        (
+            "https://api.example.invalid/v1",
+            "https://api.example.invalid/v1",
+        ),
+        (
+            "https://api.example.invalid/openai/v1/",
+            "https://api.example.invalid/openai/v1",
+        ),
+    ];
+    for (input, expected) in cases {
+        let mut env = dummy_env();
+        env.insert("OPENAI_BASE_URL".into(), input.to_string());
+        let settings = load_json_with_env(&valid_catalog(), &env)
+            .expect("plain http(s) path-prefix URL must load");
+        assert_eq!(settings.provider.base_url, expected, "input={input}");
+    }
 }
 
 #[test]

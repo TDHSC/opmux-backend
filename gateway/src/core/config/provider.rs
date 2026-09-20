@@ -42,7 +42,7 @@ impl fmt::Display for SecretString {
 pub struct ProviderSettings {
     /// Provider credential. Environment-only; never logged.
     pub api_key: SecretString,
-    /// Provider base URL without embedded credentials.
+    /// Provider base URL without credentials, query, or fragment.
     pub base_url: String,
 }
 
@@ -90,6 +90,11 @@ pub(crate) fn validate_provider_url(raw: &str) -> Result<reqwest::Url, ConfigErr
         return Err(ConfigError::invalid_provider_url());
     }
     if url.host_str().is_none() {
+        return Err(ConfigError::invalid_provider_url());
+    }
+    // Query or fragment components, including empty `?` / `#`, break appended
+    // API paths and can retain credentials in HTTP client diagnostics.
+    if url.query().is_some() || url.fragment().is_some() {
         return Err(ConfigError::invalid_provider_url());
     }
     Ok(url)
