@@ -34,6 +34,7 @@ fn create_test_route_plan(vendor_id: &str, model_id: &str) -> RoutePlan {
         vendor_id: vendor_id.to_string(),
         target_id: model_id.to_string(),
         model_id: model_id.to_string(),
+        max_output_tokens: 4_096,
         fallback_plans: vec![],
     }
 }

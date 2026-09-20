@@ -71,6 +71,10 @@ pub enum ExecutorError {
     #[error("upstream rejected the request")]
     UpstreamRejected,
 
+    /// Shared-account quota is exhausted. This is not retried or switched.
+    #[error("upstream quota exhausted")]
+    QuotaExceeded,
+
     /// Overall protected-request deadline elapsed during execution.
     #[error("request deadline exceeded")]
     DeadlineExceeded,
@@ -105,6 +109,11 @@ impl ExecutorError {
             | Self::UpstreamRejected => (
                 ErrorCode::UpstreamError,
                 "Upstream provider request failed",
+                None,
+            ),
+            Self::QuotaExceeded => (
+                ErrorCode::UpstreamError,
+                "Upstream provider quota was exhausted",
                 None,
             ),
             Self::JsonError(_) | Self::InvalidUpstreamResult => (
@@ -243,6 +252,17 @@ mod tests {
         assert_eq!(limit_body["error"]["code"], "UPSTREAM_RATE_LIMIT");
         assert!(!limit_body.to_string().contains("openai"));
         assert_ne!(limit_body["error"]["code"], "UNAUTHORIZED");
+
+        let (quota_status, quota_body) =
+            response_json(ExecutorError::QuotaExceeded).await;
+        assert_eq!(quota_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(quota_body["error"]["code"], "UPSTREAM_ERROR");
+        assert_eq!(
+            quota_body["error"]["message"],
+            "Upstream provider quota was exhausted"
+        );
+        assert_ne!(quota_body["error"]["code"], "UPSTREAM_RATE_LIMIT");
+        assert_ne!(quota_body["error"]["code"], "UNAUTHORIZED");
     }
 
     #[tokio::test]

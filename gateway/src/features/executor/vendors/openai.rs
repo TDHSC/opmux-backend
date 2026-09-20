@@ -141,18 +141,11 @@ impl LLMVendor for OpenAIVendor {
 
         if !response.status().is_success() {
             let status = response.status();
-            let _ = read_bounded_response_body(response, self.config.max_response_bytes)
-                .await;
-            return Err(match status {
-                StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
-                    ExecutorError::AuthenticationFailed("openai".to_string())
-                }
-                status if status.is_client_error() => ExecutorError::UpstreamRejected,
-                status if status.is_server_error() => {
-                    ExecutorError::ApiCallFailed("upstream http error".to_string())
-                }
-                _ => ExecutorError::ApiCallFailed("upstream http error".to_string()),
-            });
+            let body =
+                read_bounded_response_body(response, self.config.max_response_bytes)
+                    .await
+                    .unwrap_or_default();
+            return Err(classify_unsuccessful_status(status, &body));
         }
 
         let body =
@@ -189,7 +182,7 @@ impl LLMVendor for OpenAIVendor {
 
         // Check response status
         match response.status() {
-            reqwest::StatusCode::OK => {
+            StatusCode::OK => {
                 tracing::debug!("OpenAI health check passed");
                 Ok(())
             }
@@ -207,5 +200,83 @@ impl LLMVendor for OpenAIVendor {
                 status
             ))),
         }
+    }
+}
+
+fn classify_unsuccessful_status(status: StatusCode, body: &[u8]) -> ExecutorError {
+    if quota_exhausted(body) {
+        return ExecutorError::QuotaExceeded;
+    }
+    match status {
+        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
+            ExecutorError::AuthenticationFailed("openai".to_string())
+        }
+        status if status.is_client_error() => ExecutorError::UpstreamRejected,
+        _ => ExecutorError::ApiCallFailed("upstream http error".to_string()),
+    }
+}
+
+fn quota_exhausted(body: &[u8]) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+        return false;
+    };
+    let code = value
+        .pointer("/error/code")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    let error_type = value
+        .pointer("/error/type")
+        .and_then(serde_json::Value::as_str)
+        .unwrap_or("");
+    code.eq_ignore_ascii_case("insufficient_quota")
+        || error_type.eq_ignore_ascii_case("insufficient_quota")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn insufficient_quota_body_is_quota_exhausted() {
+        let body =
+            br#"{"error":{"code":"insufficient_quota","type":"insufficient_quota"}}"#;
+        assert!(quota_exhausted(body));
+        assert!(matches!(
+            classify_unsuccessful_status(StatusCode::FORBIDDEN, body),
+            ExecutorError::QuotaExceeded
+        ));
+        assert!(matches!(
+            classify_unsuccessful_status(StatusCode::BAD_REQUEST, body),
+            ExecutorError::QuotaExceeded
+        ));
+    }
+
+    #[test]
+    fn credential_failures_without_quota_code_stay_authentication() {
+        let body = br#"{"error":{"message":"invalid api key"}}"#;
+        assert!(!quota_exhausted(body));
+        assert!(matches!(
+            classify_unsuccessful_status(StatusCode::UNAUTHORIZED, body),
+            ExecutorError::AuthenticationFailed(_)
+        ));
+        assert!(matches!(
+            classify_unsuccessful_status(StatusCode::FORBIDDEN, body),
+            ExecutorError::AuthenticationFailed(_)
+        ));
+    }
+
+    #[test]
+    fn other_client_errors_are_permanent_rejections() {
+        assert!(matches!(
+            classify_unsuccessful_status(StatusCode::BAD_REQUEST, b"{}"),
+            ExecutorError::UpstreamRejected
+        ));
+        assert!(matches!(
+            classify_unsuccessful_status(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                b"{\"error\":{\"message\":\"transient\"}}"
+            ),
+            ExecutorError::ApiCallFailed(_)
+        ));
     }
 }

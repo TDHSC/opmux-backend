@@ -166,6 +166,7 @@ fn generation_plan() -> gateway::core::contracts::RoutePlan {
         vendor_id: "openai".to_string(),
         target_id: "primary".to_string(),
         model_id: "example-chat-model".to_string(),
+        max_output_tokens: 512,
         fallback_plans: Vec::new(),
     }
 }

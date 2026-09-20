@@ -236,7 +236,14 @@ below.
 - `allow_fallback` (optional boolean): omitted follows the configured fallback chain; `true` does
   the same and cannot invent fallbacks a route does not have; `false` limits execution to the
   primary target without disabling that target's bounded retries. A non-boolean value returns `400`.
-  Eligible fallback switching is enforced by the executor in a later milestone.
+  Eligible fallbacks run in the catalog's flat order under the shared attempt budget and deadline.
+  Transient transport, attempt-timeout, and provider 5xx failures may switch to a later
+  same-provider target. Invalid client input starts no calls. Malformed or oversized success bodies,
+  permanent upstream rejection, shared-credential `401`/`403`, exhausted quota, and same-account
+  throttling do not switch models. Throttling may still retry the current target while honoring
+  `Retry-After`. A later target whose `max_output_tokens` is below the already-validated
+  `max_tokens` is skipped without changing parameters. If no eligible later target can run, the
+  original primary error is preserved unless the overall deadline expires.
 - `parameters` (optional object): typed generation controls. Unknown parameter names return `400`.
   Values are not coerced or clamped.
   - `temperature` (optional JSON number): inclusive range `0.0` through `2.0`. Omitted: not sent

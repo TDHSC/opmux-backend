@@ -186,9 +186,9 @@ pub(crate) struct RawLimits {
 /// are bounded by `max_upstream_response_bytes` while reading. The protected
 /// request deadline is enforced across authentication, body extraction, and
 /// execution. Per-attempt timeouts, per-target retries, the global actual-attempt
-/// budget, and capped jitter / Retry-After waits are enforced. Fallback
-/// switching, target circuits, concurrency, and inbound raw-size enforcement
-/// are later features and must not be described as already active.
+/// budget, capped jitter / Retry-After waits, and eligible flat fallback
+/// switching are enforced. Target circuits, concurrency, and inbound raw-size
+/// enforcement are later features and must not be described as already active.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PolicyLimits {
     /// Overall protected-request deadline.

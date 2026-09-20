@@ -504,14 +504,46 @@ impl ExecutorService {
         )
     }
 
-    /// Executes fallback plans sequentially.
+    /// True when a failed hop may continue to a later configured target.
+    ///
+    /// Transient transport, attempt-timeout, and provider 5xx failures may
+    /// fall back. Client, protocol, shared-credential, quota, and same-account
+    /// throttling errors do not switch models. Open primary circuits may still
+    /// degrade to a later target.
+    pub(crate) fn is_fallback_eligible(error: &ExecutorError) -> bool {
+        matches!(
+            error,
+            ExecutorError::NetworkError(_)
+                | ExecutorError::TimeoutError(_)
+                | ExecutorError::ApiCallFailed(_)
+                | ExecutorError::CircuitOpen { .. }
+        )
+    }
+
+    /// True when this hop can serve the already-validated generation params.
+    ///
+    /// A smaller output-token cap skips the hop. Requested `max_tokens` are
+    /// never clamped or rewritten.
+    pub(crate) fn hop_supports_params(
+        plan: &RoutePlan,
+        params: &ExecutionParams,
+    ) -> bool {
+        match params.max_tokens {
+            Some(requested) if requested > 0 => u32::try_from(requested)
+                .map(|requested| requested <= plan.max_output_tokens)
+                .unwrap_or(false),
+            _ => true,
+        }
+    }
+
+    /// Executes eligible fallback hops sequentially under the shared budget.
     ///
     /// # Flow
     /// 1. Check if fallback plans exist
-    /// 2. Try each fallback plan sequentially
-    /// 3. Each fallback gets full retry logic via execute_with_retry()
-    /// 4. Return on first successful fallback
-    /// 5. Return primary error if all fallbacks fail
+    /// 2. Skip hops whose output-token cap cannot satisfy the request
+    /// 3. Try each remaining hop in catalog order with shared retries/budget
+    /// 4. Stop switching after an ineligible error such as throttling
+    /// 5. Return the first successful hop, else the original primary error
     ///
     /// # Parameters
     /// - `fallback_plans` - List of fallback routing plans
@@ -552,6 +584,17 @@ impl ExecutorService {
             if deadline.is_expired() {
                 return Err(ExecutorError::DeadlineExceeded);
             }
+            if !Self::hop_supports_params(fallback, params) {
+                tracing::info!(
+                    fallback_index = index + 1,
+                    target_id = %fallback.target_id,
+                    model_id = %fallback.model_id,
+                    requested_max_tokens = params.max_tokens,
+                    target_max_output_tokens = fallback.max_output_tokens,
+                    "Skipping fallback target that cannot satisfy the requested token cap"
+                );
+                continue;
+            }
             if let Some(retry_after_ms) =
                 self.circuit_open_retry_after_ms(&fallback.vendor_id).await
             {
@@ -565,12 +608,12 @@ impl ExecutorService {
             }
 
             tracing::info!(
-                "Attempting fallback {}/{}: vendor={}, target={}, model={}",
-                index + 1,
-                fallback_plans.len(),
-                fallback.vendor_id,
-                fallback.target_id,
-                fallback.model_id
+                fallback_index = index + 1,
+                fallback_count = fallback_plans.len(),
+                vendor_id = %fallback.vendor_id,
+                target_id = %fallback.target_id,
+                model_id = %fallback.model_id,
+                "Attempting configured fallback target"
             );
 
             match self
@@ -580,12 +623,12 @@ impl ExecutorService {
                 Ok(result) => {
                     self.record_vendor_success(&fallback.vendor_id).await;
                     tracing::info!(
-                        "Fallback {}/{} succeeded: vendor={}, target={}, model={}",
-                        index + 1,
-                        fallback_plans.len(),
-                        fallback.vendor_id,
-                        fallback.target_id,
-                        fallback.model_id
+                        fallback_index = index + 1,
+                        fallback_count = fallback_plans.len(),
+                        vendor_id = %fallback.vendor_id,
+                        target_id = %fallback.target_id,
+                        model_id = %fallback.model_id,
+                        "Fallback target succeeded"
                     );
                     return Ok(result);
                 }
@@ -609,7 +652,9 @@ impl ExecutorService {
                         model_id = %fallback.model_id,
                         "Fallback attempt failed"
                     );
-                    continue;
+                    if !Self::is_fallback_eligible(&e) {
+                        break;
+                    }
                 }
             }
         }
@@ -766,6 +811,9 @@ impl ExecutorService {
                     Self::terminate_for_provider_minimum(&primary_error, deadline)
                 {
                     return Err(terminal);
+                }
+                if !Self::is_fallback_eligible(&primary_error) {
+                    return Err(primary_error);
                 }
                 self.execute_fallbacks(
                     &plan.fallback_plans,

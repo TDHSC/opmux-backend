@@ -97,6 +97,7 @@ fn plan_for_target(
         vendor_id: target.vendor.as_str().to_string(),
         target_id: id.to_string(),
         model_id: target.model.clone(),
+        max_output_tokens: target.max_output_tokens,
         fallback_plans,
     }
 }
@@ -125,8 +126,10 @@ mod tests {
         assert_eq!(resolved.plan.target_id, "primary");
         assert_eq!(resolved.plan.model_id, "example-chat-model");
         assert_eq!(resolved.max_output_tokens, 512);
+        assert_eq!(resolved.plan.max_output_tokens, 512);
         assert_eq!(resolved.plan.fallback_plans.len(), 1);
         assert_eq!(resolved.plan.fallback_plans[0].target_id, "secondary");
+        assert_eq!(resolved.plan.fallback_plans[0].max_output_tokens, 256);
         assert_eq!(
             resolved.plan.fallback_plans[0].model_id,
             "example-chat-model-mini"

@@ -42,6 +42,8 @@ mod budget_tests;
 #[cfg(test)]
 mod deadline_tests;
 #[cfg(test)]
+mod fallback_tests;
+#[cfg(test)]
 mod repository_tests;
 #[cfg(test)]
 mod service_tests;

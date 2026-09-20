@@ -72,7 +72,11 @@ default cap 2000ms. Sleeps consume the overall deadline. A valid provider `Retry
 wait cannot finish in the remaining time, the gateway returns `429 UPSTREAM_RATE_LIMIT` without a
 later attempt or configured fallback call and without claiming deadline expiry. Provider 429
 responses are classified from headers without waiting for an unused error body. Malformed
-`Retry-After` values use the capped jitter, not an unbounded sleep. Fallback execution, target
+`Retry-After` values use the capped jitter, not an unbounded sleep. Eligible configured fallback
+switching is enforced in catalog order under that shared budget: transient transport, attempt
+timeout, and provider 5xx may continue to a later target; client, protocol, shared-credential,
+quota, and same-account throttling errors do not switch models. A fallback whose output-token cap
+cannot satisfy the already-validated request is skipped without rewriting parameters. Target
 circuits, concurrency admission, and inbound raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |

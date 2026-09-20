@@ -146,6 +146,7 @@ mod tests {
             vendor_id: vendor_id.to_string(),
             target_id: model_id.to_string(),
             model_id: model_id.to_string(),
+            max_output_tokens: 4_096,
             fallback_plans: vec![],
         }
     }
@@ -289,6 +290,12 @@ mod tests {
     #[test]
     fn test_is_not_retryable_error_deadline_exceeded() {
         let error = ExecutorError::DeadlineExceeded;
+        assert!(!ExecutorService::is_retryable_error(&error));
+    }
+
+    #[test]
+    fn test_is_not_retryable_error_quota_exceeded() {
+        let error = ExecutorError::QuotaExceeded;
         assert!(!ExecutorService::is_retryable_error(&error));
     }
 
@@ -811,6 +818,7 @@ mod tests {
             vendor_id: "openai".to_string(),
             target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
+            max_output_tokens: 4_096,
             fallback_plans: vec![],
         };
 
@@ -860,10 +868,12 @@ mod tests {
             vendor_id: "openai".to_string(),
             target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
+            max_output_tokens: 4_096,
             fallback_plans: vec![RoutePlan {
                 vendor_id: "backup".to_string(),
                 target_id: "gpt-4-turbo".to_string(),
                 model_id: "gpt-4-turbo".to_string(),
+                max_output_tokens: 4_096,
                 fallback_plans: vec![],
             }],
         };
@@ -897,6 +907,7 @@ mod tests {
             vendor_id: "openai".to_string(),
             target_id: "gpt-4".to_string(),
             model_id: "gpt-4".to_string(),
+            max_output_tokens: 4_096,
             fallback_plans: vec![],
         };
 

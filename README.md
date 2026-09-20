@@ -9,28 +9,35 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - `POST /api/v1/route`: stateless configured routing protected by inference API-key authentication.
   Omitted `route` uses the catalog default; a named route selects that route's primary target.
   Unknown routes return `400` before any provider call. Omitted `allow_fallback` follows the
-  configured chain; `false` limits execution to the primary without disabling its retries. Optional
-  `parameters.temperature` (`0.0`–`2.0`), `parameters.top_p` (`0.0`–`1.0`), and integral
-  `parameters.max_tokens` are validated against the selected primary cap and forwarded as JSON
-  numbers/integers. Omitted parameters use documented defaults (provider sampling defaults; target
-  `max_output_tokens` for `max_tokens`). Unknown controls, `stream`, and `rewrite` return `400`.
-  Prompt bounds use the original untrimmed character and UTF-8 byte lengths. Management credentials
-  receive `403` and do not generate. Metadata stays opaque and is not forwarded, logged, or
-  persisted. Successful responses preserve provider `content`, `role`, and `finish_reason`.
-  Successful Chat Completions `message.role` must be exactly `assistant`; other roles fail as
-  protocol errors. `model_used` is the provider-reported model, which may differ from the selected
-  target alias sent as the request `model`. `cost` is a USD estimate for that successful response
-  from the selected target's configured per-million prices (illustrative `1.0`/`2.0` with 120/30
-  tokens is `0.00018`), rounded to 8 decimal places. Distinct target IDs keep their own prices even
-  when they request the same provider model. Missing prices fail rather than becoming zero. The
-  estimate is not current provider billing and does not total retries or abandoned work. Malformed
-  successful payloads, empty choices, missing or invalid required fields, non-assistant roles, and
-  impossible usage fail as upstream protocol errors without fabricating model, content, usage, role,
-  or cost. Provider response bodies are capped by `max_upstream_response_bytes` while the bytes are
-  read, including chunked transfer and advertised `Content-Length`. Those protocol faults are not
-  retried as network failures. Protected endpoint errors, including JSON and path extraction
-  rejections, use `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream
-  credential, protocol, and oversized failures are sanitized `502` and are never a gateway `401`.
+  configured chain; `true` cannot invent fallbacks a route does not have; `false` limits execution
+  to the primary without disabling its retries. Transient transport, attempt-timeout, and provider
+  5xx failures may continue to later equal-capability targets in catalog order under the shared
+  attempt budget and deadline. Client, protocol, shared-credential, quota, and same-account
+  throttling failures do not switch models. A fallback whose `max_output_tokens` cannot satisfy the
+  already-validated request is skipped without clamping parameters. Successful fallbacks report the
+  fallback target's `model_used` and cost. Exhausted eligible paths keep the original primary error
+  unless the overall deadline expires (`504`). Optional `parameters.temperature` (`0.0`–`2.0`),
+  `parameters.top_p` (`0.0`–`1.0`), and integral `parameters.max_tokens` are validated against the
+  selected primary cap and forwarded as JSON numbers/integers. Omitted parameters use documented
+  defaults (provider sampling defaults; target `max_output_tokens` for `max_tokens`). Unknown
+  controls, `stream`, and `rewrite` return `400`. Prompt bounds use the original untrimmed character
+  and UTF-8 byte lengths. Management credentials receive `403` and do not generate. Metadata stays
+  opaque and is not forwarded, logged, or persisted. Successful responses preserve provider
+  `content`, `role`, and `finish_reason`. Successful Chat Completions `message.role` must be exactly
+  `assistant`; other roles fail as protocol errors. `model_used` is the provider-reported model,
+  which may differ from the selected target alias sent as the request `model`. `cost` is a USD
+  estimate for that successful response from the selected target's configured per-million prices
+  (illustrative `1.0`/`2.0` with 120/30 tokens is `0.00018`), rounded to 8 decimal places. Distinct
+  target IDs keep their own prices even when they request the same provider model. Missing prices
+  fail rather than becoming zero. The estimate is not current provider billing and does not total
+  retries or abandoned work. Malformed successful payloads, empty choices, missing or invalid
+  required fields, non-assistant roles, and impossible usage fail as upstream protocol errors
+  without fabricating model, content, usage, role, or cost. Provider response bodies are capped by
+  `max_upstream_response_bytes` while the bytes are read, including chunked transfer and advertised
+  `Content-Length`. Those protocol faults are not retried as network failures. Protected endpoint
+  errors, including JSON and path extraction rejections, use
+  `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream credential, protocol,
+  and oversized failures are sanitized `502` and are never a gateway `401`.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. That one-time
   output is not guaranteed delivery or exactly-once issuance. A timeout or disconnect during
@@ -55,9 +62,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
 operator-configured routes only; there is no Memory/Router service and no conversation history. The
 OpenAI adapter speaks Chat Completions against the configured base URL; live-provider verification
-remains deferred. Eligible fallback policy is later work. Planned Rewrite/Validation microservices
-and additional vendors should not be treated as implemented capabilities. Explicit
-`stream`/`rewrite` requests are rejected.
+remains deferred. Eligible configured fallback switching is enforced; target-scoped circuits remain
+later work. Planned Rewrite/Validation microservices and additional vendors should not be treated as
+implemented capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 ## Getting Started
 

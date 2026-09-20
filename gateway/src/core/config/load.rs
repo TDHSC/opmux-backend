@@ -203,7 +203,7 @@ impl Settings {
             "Loaded operator configuration"
         );
         tracing::info!(
-            "Policy limits are validated at startup; protected-request deadline is enforced, while fallback, circuit, and admission enforcement land in later milestones"
+            "Policy limits are validated at startup; protected-request deadline, retries, and eligible fallback switching are enforced, while target circuits and admission enforcement land in later milestones"
         );
         if self.auth.development_mode {
             tracing::info!(
