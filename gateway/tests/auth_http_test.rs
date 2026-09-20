@@ -18,15 +18,15 @@ use gateway::{
     },
 };
 use serial_test::serial;
-use std::io::Read;
+use std::io::{Read, Write};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 use support::{
     cleanup_clients, isolate_provider_environment, production_router_with_auth,
-    required_database_url, test_pool, OpenAiSimulator, MOCK_GATEWAY_API_KEY,
-    SIMULATED_CONTENT,
+    required_database_url, rewrite_owned_database_url_port, test_pool, OpenAiSimulator,
+    RecoverableDbProxy, MOCK_GATEWAY_API_KEY, SIMULATED_CONTENT,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -49,6 +49,74 @@ async fn body_string(response: axum::http::Response<Body>) -> String {
         .await
         .expect("response body");
     String::from_utf8(bytes.to_vec()).expect("utf8 body")
+}
+
+struct DebugCapture {
+    buf: Arc<Mutex<Vec<u8>>>,
+}
+
+struct CaptureWriter(Arc<Mutex<Vec<u8>>>);
+
+impl Write for CaptureWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().expect("capture lock").extend_from_slice(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+impl DebugCapture {
+    fn install() -> (Self, tracing::subscriber::DefaultGuard) {
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_ansi(false)
+            .with_env_filter(tracing_subscriber::EnvFilter::new("gateway=debug"))
+            .with_writer(move || CaptureWriter(writer.clone()))
+            .finish();
+        let guard = tracing::subscriber::set_default(subscriber);
+        (Self { buf }, guard)
+    }
+
+    fn take(&self) -> String {
+        let mut buf = self.buf.lock().expect("capture lock");
+        let text = String::from_utf8(buf.clone()).unwrap_or_default();
+        buf.clear();
+        text
+    }
+}
+
+fn digest_hex(digest: &[u8; 32]) -> String {
+    digest.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+fn assert_omits_credential_and_digest(
+    capture: &str,
+    credential: &str,
+    digest: &[u8; 32],
+) {
+    let hex = digest_hex(digest);
+    let hex_upper = hex.to_uppercase();
+    let debug_bytes = format!("{digest:?}");
+    assert!(
+        !capture.contains(credential),
+        "debug capture must omit the presented credential"
+    );
+    assert!(
+        !capture.contains(&hex),
+        "debug capture must omit the stored digest hex"
+    );
+    assert!(
+        !capture.contains(&hex_upper),
+        "debug capture must omit the stored digest hex"
+    );
+    assert!(
+        !capture.contains(&debug_bytes),
+        "debug capture must omit the stored digest bytes"
+    );
 }
 
 fn route_request(api_key: Option<&str>) -> Request<Body> {
@@ -499,38 +567,89 @@ async fn authentication_diagnostics_omit_secrets_and_digests() {
     let fixture = TwoTenantFixture::provision().await;
     let secret = fixture.a_inference.credential.clone();
     let digest = hash_credential(&secret);
-    let digest_hex = digest
-        .as_bytes()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
+    let unknown = "opmx_v1_diagnostic-unknown";
     let simulator = OpenAiSimulator::start().await;
+    let (capture, _guard) = DebugCapture::install();
     let app = production_router_with_auth(
         &simulator,
         fixture.auth_service(),
         MetricsConfig::disabled(),
     );
-    let response = app.oneshot(route_request(Some(&secret))).await.unwrap();
-    let status = response.status();
-    let body = body_string(response).await;
-    assert_eq!(status, StatusCode::OK);
-    assert!(!body.contains(&secret));
-    assert!(!body.contains(&digest_hex));
-    let unknown = production_router_with_auth(
-        &simulator,
-        fixture.auth_service(),
-        MetricsConfig::disabled(),
-    )
-    .oneshot(route_request(Some("opmx_v1_diagnostic-unknown")))
-    .await
-    .unwrap();
-    let unknown_status = unknown.status();
-    let unknown_body = body_string(unknown).await;
-    assert!(!unknown_body.contains("opmx_v1_diagnostic-unknown"));
-    assert!(!unknown_body.contains(&digest_hex));
+
+    let accepted = app
+        .clone()
+        .oneshot(route_request(Some(&secret)))
+        .await
+        .unwrap();
+    let accepted_status = accepted.status();
+    let accepted_body = body_string(accepted).await;
+    let accepted_logs = capture.take();
+    assert_eq!(accepted_status, StatusCode::OK);
+    assert!(!accepted_body.contains(&secret));
     assert!(
-        !unknown_body.contains(CREDENTIAL_PREFIX) || unknown_status != StatusCode::OK
+        !accepted_logs.is_empty(),
+        "accepted-path debug capture must be nonempty"
     );
+    assert!(
+        accepted_logs.contains("API key validation completed"),
+        "accepted-path debug capture must include the successful auth event"
+    );
+    assert_omits_credential_and_digest(&accepted_logs, &secret, digest.as_bytes());
+    assert_omits_credential_and_digest(&accepted_body, &secret, digest.as_bytes());
+
+    let rejected = app
+        .clone()
+        .oneshot(route_request(Some(unknown)))
+        .await
+        .unwrap();
+    let rejected_status = rejected.status();
+    let rejected_body = body_string(rejected).await;
+    let rejected_logs = capture.take();
+    assert_eq!(rejected_status, StatusCode::UNAUTHORIZED);
+    assert!(!rejected_body.contains(unknown));
+    assert!(
+        !rejected_logs.is_empty(),
+        "rejected-path debug capture must be nonempty"
+    );
+    assert!(
+        rejected_logs.contains("unknown_key")
+            || rejected_logs.contains("invalid_credentials"),
+        "rejected-path debug capture must include the safe denial event"
+    );
+    assert_omits_credential_and_digest(&rejected_logs, unknown, digest.as_bytes());
+    assert_omits_credential_and_digest(&rejected_logs, &secret, digest.as_bytes());
+    assert_omits_credential_and_digest(&rejected_body, unknown, digest.as_bytes());
+
+    let closed = DatabasePoolConfig::new("postgres://127.0.0.1:1/postgres")
+        .expect("parseable closed-port url")
+        .with_max_connections(1)
+        .expect("pool size")
+        .with_acquire_timeout(Duration::from_millis(200))
+        .expect("short acquire");
+    let down_auth = Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+        closed.connect_lazy().expect("lazy pool"),
+    ))));
+    let down_app =
+        production_router_with_auth(&simulator, down_auth, MetricsConfig::disabled());
+    let failed = down_app
+        .oneshot(route_request(Some(&secret)))
+        .await
+        .unwrap();
+    let failed_status = failed.status();
+    let failed_body = body_string(failed).await;
+    let failed_logs = capture.take();
+    assert_eq!(failed_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!failed_body.to_lowercase().contains("postgres"));
+    assert!(
+        !failed_logs.is_empty(),
+        "datastore-failure debug capture must be nonempty"
+    );
+    assert!(
+        failed_logs.contains("store_unavailable"),
+        "datastore-failure debug capture must include the fail-closed event"
+    );
+    assert_omits_credential_and_digest(&failed_logs, &secret, digest.as_bytes());
+    assert_omits_credential_and_digest(&failed_body, &secret, digest.as_bytes());
     fixture.drop_rows().await;
 }
 
@@ -540,38 +659,62 @@ async fn datastore_outage_fails_closed_then_recovers() {
     isolate_provider_environment();
     let fixture = TwoTenantFixture::provision().await;
     let simulator = OpenAiSimulator::start().await;
-    let closed = DatabasePoolConfig::new("postgres://127.0.0.1:1/postgres")
-        .expect("parseable closed-port url")
+    let proxy = RecoverableDbProxy::start().await;
+    tokio::task::yield_now().await;
+    let proxied = rewrite_owned_database_url_port(&required_database_url(), proxy.port());
+    let pool_config = DatabasePoolConfig::new(proxied)
+        .expect("proxied url")
         .with_max_connections(1)
         .expect("pool size")
-        .with_acquire_timeout(Duration::from_millis(200))
-        .expect("short acquire");
-    let down_pool = closed.connect_lazy().expect("lazy pool");
-    let down_auth = Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
-        down_pool,
-    ))));
-    let app =
-        production_router_with_auth(&simulator, down_auth, MetricsConfig::disabled());
-    let before = simulator.generation_count();
-    let response = app
+        .with_acquire_timeout(Duration::from_millis(1_000))
+        .expect("acquire timeout");
+    let pool = match pool_config.connect().await {
+        Ok(pool) => pool,
+        Err(_) => {
+            panic!("failed to connect the authentication pool through the loopback proxy")
+        }
+    };
+    {
+        let _warm = pool.acquire().await.expect("existing pooled connection");
+    }
+    let auth = Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(pool))));
+    let app = production_router_with_auth(&simulator, auth, MetricsConfig::disabled());
+
+    let healthy = app
+        .clone()
         .oneshot(route_request(Some(&fixture.a_inference.credential)))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
-    let body = body_string(response).await;
-    assert!(!body.contains(&fixture.a_inference.credential));
-    assert!(!body.to_lowercase().contains("postgres"));
-    assert_eq!(simulator.generation_count(), before);
+    assert_eq!(healthy.status(), StatusCode::OK);
+    let before_outage = simulator.generation_count();
+    assert!(before_outage >= 1);
 
-    let recovered = production_router_with_auth(
-        &simulator,
-        fixture.auth_service(),
-        MetricsConfig::disabled(),
-    )
-    .oneshot(route_request(Some(&fixture.a_inference.credential)))
-    .await
-    .unwrap();
+    proxy.pause();
+    tokio::task::yield_now().await;
+    let outage = app
+        .clone()
+        .oneshot(route_request(Some(&fixture.a_inference.credential)))
+        .await
+        .unwrap();
+    let outage_status = outage.status();
+    let outage_body = body_string(outage).await;
+    assert_eq!(outage_status, StatusCode::SERVICE_UNAVAILABLE);
+    assert!(!outage_body.contains(&fixture.a_inference.credential));
+    assert!(!outage_body.to_lowercase().contains("postgres"));
+    assert_eq!(
+        simulator.generation_count(),
+        before_outage,
+        "outage must start zero simulator generation calls"
+    );
+
+    proxy.resume();
+    tokio::task::yield_now().await;
+    let recovered = app
+        .oneshot(route_request(Some(&fixture.a_inference.credential)))
+        .await
+        .unwrap();
     assert_eq!(recovered.status(), StatusCode::OK);
+    assert!(simulator.generation_count() > before_outage);
     fixture.drop_rows().await;
 }
 

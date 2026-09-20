@@ -78,6 +78,20 @@ fn query_has_disallowed_option(url: &str) -> bool {
     })
 }
 
+/// Rewrites the owned loopback port so a test can dial through a local proxy.
+///
+/// The result is not printed. Production configuration is not rewritten here.
+pub fn rewrite_owned_database_url_port(url: &str, port: u16) -> String {
+    let from = format!("{OWNED_DATABASE_HOST}:{OWNED_DATABASE_PORT}");
+    let to = format!("{OWNED_DATABASE_HOST}:{port}");
+    if !url.contains(&from) {
+        panic!(
+            "owned DATABASE_URL must use the owned loopback host and port without extra destinations"
+        );
+    }
+    url.replace(&from, &to)
+}
+
 /// Requires `DATABASE_URL` for the owned local Supabase. Does not skip.
 pub fn required_database_url() -> String {
     match std::env::var("DATABASE_URL") {

@@ -43,3 +43,4 @@ tower = { version = "0.4", features = ["util"] }
 tokio = { workspace = true, features = ["test-util"] }
 serial_test = "3.2.0"
 sqlx = { workspace = true }
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
