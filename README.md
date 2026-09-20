@@ -310,7 +310,12 @@ credentials, not `api.openai.com`.
 
 Do not run `docker compose up` without the wrapper: Compose needs a private container-network
 `DATABASE_URL` for the owned database. `scripts/local-stack.sh` verifies the loopback database
-binding, writes gitignored `.env.opmux-local`, and starts only the gateway and simulator.
+binding, injects that owned URL (it wins over inherited `OPMUX_LOCAL_DATABASE_URL`), and starts only
+the gateway and simulator. Generated Compose env is private per invocation. The wrapper does not
+load project `.env` and does not overwrite or delete `.env.opmux-local` just because that filename
+exists. Process environment overrides the generated file, which overrides Compose defaults. Select
+the gateway image with `CONTAINER_IMAGE` (default `opmux-gateway:mvp`); a missing selected image
+fails clearly when `OPMUX_LOCAL_BUILD=0`.
 
 ```bash
 bash scripts/local-stack.sh up
@@ -329,19 +334,22 @@ chmod 600 "$keyfile"
 bash scripts/local-stack.sh admin tenant create --name acme > "$keyfile"
 ```
 
-Stop/start of the application stack removes only `opmux-local-gateway` and `opmux-local-simulator`.
-The owned database container, volume, and rows remain. After `up` again, `/ready` returns 200 and
-persisted inference keys still authenticate.
+Stop/start of the application stack removes only owned `opmux-local` gateway and simulator
+containers after checking Compose project, service, and repository labels. It does not use force
+removal, does not stop the shared database/network/volume, and does not need the generated env file.
+`docker stop --time 605` is a fixed ceiling for the 600-second application maximum; a normal exit
+returns immediately. After `up` again, `/ready` returns 200 and persisted inference keys still
+authenticate.
 
 ```bash
 bash scripts/local-stack.sh down
 bash scripts/local-stack.sh up
 ```
 
-`scripts/check-local-stack.sh` is the acceptance check for those bindings, reuse, and restart
-behavior. It does not stop unrelated containers. `/metrics` stays on the loopback gateway listener;
-production must restrict scrape access at the network layer rather than adding metrics
-authentication.
+`scripts/check-local-stack.sh` is the acceptance check for those bindings, image selection, delayed
+graceful stop, reuse, and restart behavior. It does not stop unrelated containers. `/metrics` stays
+on the loopback gateway listener; production must restrict scrape access at the network layer rather
+than adding metrics authentication.
 
 Hosted Postgres is a connection-string/TLS documentation path only. Use a direct or session-mode
 pooler URL with `sslmode=verify-full` and a CA. Do not link this repository to a hosted Supabase

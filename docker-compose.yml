@@ -42,7 +42,7 @@ services:
     build:
       context: .
       dockerfile: gateway/Dockerfile
-    image: opmux-gateway:mvp
+    image: ${CONTAINER_IMAGE:-opmux-gateway:mvp}
     pull_policy: never
     container_name: opmux-local-gateway
     depends_on:
@@ -50,15 +50,17 @@ services:
     user: "65532:65532"
     ports:
       - "127.0.0.1:${OPMUX_LOCAL_GATEWAY_PORT:-38080}:3000"
+    volumes:
+      - ${OPMUX_LOCAL_CONFIG_HOST:-./config/opmux.local-stack.json}:/app/config/opmux.local-stack.json:ro
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: "3000"
       SERVER_SHUTDOWN_TIMEOUT: ${SERVER_SHUTDOWN_TIMEOUT:-30}
       AUTH_DEVELOPMENT_MODE: "false"
-      OPMUX_CONFIG_FILE: /app/config/opmux.example.json
+      OPMUX_CONFIG_FILE: /app/config/opmux.local-stack.json
       OPENAI_API_KEY: ${OPMUX_LOCAL_PROVIDER_KEY:-local-stack-dummy-only}
       OPENAI_BASE_URL: http://simulator:38081/v1
-      OPENAI_TIMEOUT_MS: ${OPENAI_TIMEOUT_MS:-10000}
+      OPENAI_TIMEOUT_MS: ${OPENAI_TIMEOUT_MS:-30000}
       METRICS_ENABLED: "true"
       METRICS_PATH: /metrics
       LOG_FORMAT: ${LOG_FORMAT:-json}
@@ -69,7 +71,7 @@ services:
       DATABASE_URL: ${OPMUX_LOCAL_DATABASE_URL:?run bash scripts/local-stack.sh up}
     networks:
       - opmux
-    stop_grace_period: 35s
+    stop_grace_period: 605s
     restart: "no"
 
 networks:

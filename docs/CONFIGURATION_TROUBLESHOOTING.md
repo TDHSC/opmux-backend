@@ -223,9 +223,9 @@ cargo run -p gateway
 For a check without real credentials, use the local failure-simulation configuration in
 [README.md](../README.md#local-startup-check-no-real-llm-calls), or the documented container stack
 in [README.md](../README.md#local-container-stack) (`bash scripts/local-stack.sh up`, dummy key,
-`http://127.0.0.1:38081/v1`). HTTP integration tests start an owned loopback OpenAI simulator and
-the shared production router; they do not use inherited provider keys. Live-provider tests are
-ignored and unrun unless explicitly opted in.
+`http://127.0.0.1:38081/v1`, `CONTAINER_IMAGE` default `opmux-gateway:mvp`). HTTP integration tests
+start an owned loopback OpenAI simulator and the shared production router; they do not use inherited
+provider keys. Live-provider tests are ignored and unrun unless explicitly opted in.
 
 ### `/api/v1/route` returns `401`
 

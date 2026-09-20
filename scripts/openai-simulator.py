@@ -9,14 +9,18 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import ssl
 import sys
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 
 MAX_BODY_BYTES = 1_048_576
+MAX_DELAY_MS = 60_000
 SIMULATED_CONTENT = "SIMULATED_OPENAI_OK"
+DELAY_MARKER = "OPMUX_TEST_DELAY_MS="
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -107,6 +111,9 @@ class Handler(BaseHTTPRequestHandler):
         except (ValueError, UnicodeError, TypeError, json.JSONDecodeError):
             self.reply(400, {"error": {"message": "Invalid fixture request"}})
             return
+        delay_ms = self.generation_delay_ms(request)
+        if delay_ms > 0:
+            time.sleep(delay_ms / 1000)
         self.reply(
             200,
             {
@@ -131,14 +138,40 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
+    def generation_delay_ms(self, request: dict) -> int:
+        delay = max(self.server.delay_ms, env_delay_ms())
+        for message in request.get("messages") or []:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content")
+            if not isinstance(content, str) or DELAY_MARKER not in content:
+                continue
+            token = content.split(DELAY_MARKER, 1)[1].split()[0]
+            try:
+                delay = max(delay, int(token))
+            except ValueError:
+                continue
+        return min(max(delay, 0), MAX_DELAY_MS)
+
+
+def env_delay_ms() -> int:
+    raw = os.environ.get("OPMUX_SIMULATOR_DELAY_MS", "0")
+    try:
+        return max(int(raw or "0"), 0)
+    except ValueError:
+        return 0
+
 
 class SimulatorServer(ThreadingHTTPServer):
     """HTTP server with dummy credential and optional call counter."""
 
-    def __init__(self, address, credential: str, count_file: Path | None):
+    def __init__(
+        self, address, credential: str, count_file: Path | None, delay_ms: int = 0
+    ):
         super().__init__(address, Handler)
         self.simulator_credential = credential
         self.count_file = count_file
+        self.delay_ms = delay_ms
 
 
 def parse_args(argv: list[str]) -> argparse.Namespace:
@@ -149,8 +182,11 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--tls-cert")
     parser.add_argument("--tls-key")
     parser.add_argument("--count-file")
+    parser.add_argument("--delay-ms", type=int, default=env_delay_ms())
     parser.add_argument("--print-port", action="store_true")
     args = parser.parse_args(argv)
+    if args.delay_ms < 0:
+        parser.error("--delay-ms must be >= 0")
     if bool(args.tls_cert) != bool(args.tls_key):
         parser.error("both --tls-cert and --tls-key are required for TLS")
     return args
@@ -159,7 +195,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 def main(argv: list[str]) -> int:
     args = parse_args(argv)
     count_file = Path(args.count_file) if args.count_file else None
-    server = SimulatorServer((args.host, args.port), args.credential, count_file)
+    server = SimulatorServer(
+        (args.host, args.port), args.credential, count_file, args.delay_ms
+    )
     if args.tls_cert:
         context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         context.minimum_version = ssl.TLSVersion.TLSv1_2

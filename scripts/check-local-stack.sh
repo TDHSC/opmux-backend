@@ -22,12 +22,26 @@ INFERENCE_JSON="$WORK_DIR/inference.json"
 touch "$TENANT_JSON" "$INFERENCE_JSON"
 chmod 600 "$TENANT_JSON" "$INFERENCE_JSON"
 STARTED_STACK=0
+DELAY_PID=""
+CREATED_SENTINEL_ENV=0
+UNIQUE_TAG=""
 TENANT_NAME="local-stack-check-$$"
+SENTINEL_ENV="$ROOT_DIR/.env.opmux-local"
 
 cleanup() {
   local status=$?
+  if [ -n "${DELAY_PID:-}" ]; then
+    kill "$DELAY_PID" 2>/dev/null || true
+    wait "$DELAY_PID" 2>/dev/null || true
+  fi
   if [ "$STARTED_STACK" -eq 1 ]; then
     bash "$ROOT_DIR/scripts/local-stack.sh" down >/dev/null 2>&1 || true
+  fi
+  if [ -n "${UNIQUE_TAG:-}" ]; then
+    docker rmi "$UNIQUE_TAG" >/dev/null 2>&1 || true
+  fi
+  if [ "$CREATED_SENTINEL_ENV" -eq 1 ]; then
+    rm -f "$SENTINEL_ENV"
   fi
   rm -rf "$WORK_DIR"
   if [ "$status" -ne 0 ]; then
@@ -50,6 +64,20 @@ require_file "$ROOT_DIR/scripts/local-stack.sh"
 require_file "$ROOT_DIR/scripts/openai-simulator.py"
 require_file "$ROOT_DIR/simulator/Dockerfile"
 require_file "$ROOT_DIR/config/opmux.example.json"
+require_file "$ROOT_DIR/config/opmux.local-stack.json"
+
+if ! grep -Fq 'image: ${CONTAINER_IMAGE:-opmux-gateway:mvp}' "$COMPOSE_FILE"; then
+  echo "compose gateway image must interpolate CONTAINER_IMAGE" >&2
+  exit 1
+fi
+if grep -Eq 'down --timeout 8|--timeout 8' "$ROOT_DIR/scripts/local-stack.sh"; then
+  echo "local-stack stop must not hardcode an 8s timeout" >&2
+  exit 1
+fi
+if ! grep -Fq 'stop --time 605' "$ROOT_DIR/scripts/local-stack.sh"; then
+  echo "local-stack stop must use the 605s docker ceiling" >&2
+  exit 1
+fi
 
 if grep -Eq 'image:[[:space:]]*(postgres|supabase/postgres)' "$COMPOSE_FILE"; then
   echo "compose must not start a second database" >&2
@@ -162,16 +190,113 @@ client_count() {
     "SELECT count(*) FROM opmux_private.clients WHERE display_name = '$TENANT_NAME'"
 }
 
+SOURCE_IMAGE="$IMAGE"
+if ! docker image inspect "$SOURCE_IMAGE" >/dev/null 2>&1; then
+  echo "selected gateway image $SOURCE_IMAGE is missing; build it with docker build --file gateway/Dockerfile --tag $SOURCE_IMAGE ." >&2
+  exit 1
+fi
+UNIQUE_TAG="opmux-gateway:local-stack-check-$$"
+docker tag "$SOURCE_IMAGE" "$UNIQUE_TAG"
+IMAGE="$UNIQUE_TAG"
 export CONTAINER_IMAGE="$IMAGE"
 export OPMUX_LOCAL_GATEWAY_PORT="$GATEWAY_HOST_PORT"
 export OPMUX_LOCAL_SIMULATOR_PORT="$SIMULATOR_HOST_PORT"
 export OPMUX_LOCAL_PROVIDER_KEY="$DUMMY_PROVIDER_KEY"
-if [ -n "${SKIP_IMAGE_BUILD:-}" ]; then
-  export OPMUX_LOCAL_BUILD=0
+export OPMUX_LOCAL_BUILD=0
+export OPENAI_TIMEOUT_MS="${OPENAI_TIMEOUT_MS:-30000}"
+
+docker build --file "$ROOT_DIR/simulator/Dockerfile" --tag opmux-simulator:local "$ROOT_DIR" >/dev/null
+
+if [ -e "$SENTINEL_ENV" ]; then
+  cp "$SENTINEL_ENV" "$WORK_DIR/preexisting.env"
+  chmod 600 "$WORK_DIR/preexisting.env"
+else
+  printf 'OPMUX_USER_SENTINEL=check-local-stack\n' >"$SENTINEL_ENV"
+  chmod 600 "$SENTINEL_ENV"
+  CREATED_SENTINEL_ENV=1
 fi
+
+bash "$ROOT_DIR/scripts/local-stack.sh" down >/dev/null
+
+missing_tag="opmux-gateway:missing-local-stack-$$"
+if docker image inspect "$missing_tag" >/dev/null 2>&1; then
+  echo "missing-image fixture tag unexpectedly exists" >&2
+  exit 1
+fi
+missing_err="$WORK_DIR/missing.err"
+if CONTAINER_IMAGE="$missing_tag" OPMUX_LOCAL_BUILD=0 \
+  bash "$ROOT_DIR/scripts/local-stack.sh" up \
+  >"$WORK_DIR/missing.out" 2>"$missing_err"; then
+  echo "missing selected image must fail when OPMUX_LOCAL_BUILD=0" >&2
+  exit 1
+fi
+if ! grep -q "$missing_tag" "$missing_err"; then
+  echo "missing-image failure must name the selected tag" >&2
+  exit 1
+fi
+if grep -q 'postgresql://' "$missing_err" "$WORK_DIR/missing.out"; then
+  echo "missing-image diagnostics must omit connection URLs" >&2
+  exit 1
+fi
+
+python3 - "$ROOT_DIR" "$COMPOSE_FILE" "$IMAGE" "$WORK_DIR/compose.env" <<'PY'
+import json, os, subprocess, sys
+from pathlib import Path
+
+root, compose, image, env_file = sys.argv[1:5]
+Path(env_file).write_text(
+    "OPMUX_LOCAL_DATABASE_URL=postgresql://postgres:x@supabase_db_opmux-mvp-20260919:5432/postgres\n"
+    f"CONTAINER_IMAGE={image}\n"
+)
+os.chmod(env_file, 0o600)
+env = os.environ.copy()
+env.pop("OPMUX_LOCAL_DATABASE_URL", None)
+env["CONTAINER_IMAGE"] = image
+result = subprocess.run(
+    [
+        "docker",
+        "compose",
+        "--project-directory",
+        root,
+        "-f",
+        compose,
+        "--project-name",
+        "opmux-local-config-check",
+        "--env-file",
+        env_file,
+        "config",
+        "--format",
+        "json",
+    ],
+    check=True,
+    capture_output=True,
+    text=True,
+    env=env,
+)
+data = json.loads(result.stdout)
+actual = data["services"]["gateway"]["image"]
+if actual != image:
+    raise SystemExit("compose interpolation did not select the configured gateway image")
+PY
 
 STARTED_STACK=1
 bash "$ROOT_DIR/scripts/local-stack.sh" up
+
+running_tag="$(docker inspect -f '{{.Config.Image}}' "$GATEWAY_CONTAINER")"
+running_id="$(docker inspect -f '{{.Image}}' "$GATEWAY_CONTAINER")"
+selected_id="$(docker image inspect -f '{{.Id}}' "$IMAGE")"
+if [ "$running_tag" != "$IMAGE" ]; then
+  echo "running gateway tag does not match the configured CONTAINER_IMAGE" >&2
+  exit 1
+fi
+if [ "$running_id" != "$selected_id" ]; then
+  echo "running gateway image ID does not match the selected image" >&2
+  exit 1
+fi
+if [ "$IMAGE" = "opmux-gateway:mvp" ]; then
+  echo "acceptance must use a nondefault gateway tag" >&2
+  exit 1
+fi
 
 assert_loopback_publish "$DB_CONTAINER" "5432/tcp" "55432"
 assert_loopback_publish "$GATEWAY_CONTAINER" "3000/tcp" "$GATEWAY_HOST_PORT"
@@ -262,8 +387,49 @@ if [ "$before_stop_count" != "1" ]; then
   exit 1
 fi
 
-bash "$ROOT_DIR/scripts/local-stack.sh" down
+DELAY_BODY="$WORK_DIR/delay-body"
+DELAY_CODE="$WORK_DIR/delay-code"
+touch "$DELAY_BODY" "$DELAY_CODE"
+chmod 600 "$DELAY_BODY" "$DELAY_CODE"
+curl --noproxy '*' -sS --max-time 30 \
+  --output "$DELAY_BODY" --write-out '%{http_code}' \
+  -X POST "http://127.0.0.1:$GATEWAY_HOST_PORT/api/v1/route" \
+  -H 'Content-Type: application/json' \
+  -H "X-API-Key: $(cat "$WORK_DIR/inference.key")" \
+  -d '{"prompt":"OPMUX_TEST_DELAY_MS=12000 local-stack-grace","metadata":{}}' \
+  >"$DELAY_CODE" &
+DELAY_PID=$!
+sleep 2
+if ! kill -0 "$DELAY_PID" 2>/dev/null; then
+  echo "delayed request finished before stack stop; not a valid grace fixture" >&2
+  exit 1
+fi
+DOWN_START="$(date +%s)"
+down_out="$WORK_DIR/down.out"
+bash "$ROOT_DIR/scripts/local-stack.sh" down >"$down_out"
+DOWN_END="$(date +%s)"
+DOWN_ELAPSED=$((DOWN_END - DOWN_START))
+wait "$DELAY_PID"
+DELAY_PID=""
 STARTED_STACK=0
+delay_status="$(cat "$DELAY_CODE")"
+python3 -c '
+import json, pathlib, sys
+status, elapsed = sys.argv[1], int(sys.argv[2])
+body = json.loads(pathlib.Path(sys.argv[3]).read_text())
+if status != "200":
+    raise SystemExit("delayed admitted request must complete during down")
+if (body.get("response") or {}).get("content") != "SIMULATED_OPENAI_OK":
+    raise SystemExit("delayed request must return simulated content")
+if elapsed < 8:
+    raise SystemExit("down returned before the delayed request could prove >8s grace")
+if elapsed > 60:
+    raise SystemExit("down took too long after the delayed request finished")
+' "$delay_status" "$DOWN_ELAPSED" "$DELAY_BODY"
+if ! grep -q 'opmux-local-gateway exited 0' "$down_out"; then
+  echo "down must capture a normal gateway exit before removal" >&2
+  exit 1
+fi
 
 if docker inspect "$GATEWAY_CONTAINER" >/dev/null 2>&1; then
   echo "gateway container must be removed on stack stop" >&2
@@ -293,6 +459,26 @@ if [ "$unrelated_before" != "$unrelated_after_stop" ]; then
   echo "stop must not create or remove unrelated containers" >&2
   exit 1
 fi
+
+if [ "$CREATED_SENTINEL_ENV" -eq 1 ]; then
+  if [ "$(cat "$SENTINEL_ENV")" != "OPMUX_USER_SENTINEL=check-local-stack" ]; then
+    echo "existing .env.opmux-local must be preserved" >&2
+    exit 1
+  fi
+  rm -f "$SENTINEL_ENV"
+  CREATED_SENTINEL_ENV=0
+  if [ -e "$SENTINEL_ENV" ]; then
+    echo "failed to remove only the owned env artifact" >&2
+    exit 1
+  fi
+else
+  if ! cmp -s "$WORK_DIR/preexisting.env" "$SENTINEL_ENV"; then
+    echo "existing .env.opmux-local must be preserved" >&2
+    exit 1
+  fi
+fi
+bash "$ROOT_DIR/scripts/local-stack.sh" down
+bash "$ROOT_DIR/scripts/local-stack.sh" down
 
 STARTED_STACK=1
 bash "$ROOT_DIR/scripts/local-stack.sh" up
@@ -333,4 +519,4 @@ if ! docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" | grep -q true; then
   exit 1
 fi
 
-echo "local stack check passed: loopback publishes, reused supabase, restart retained records"
+echo "local stack check passed: loopback publishes, image selection, delayed graceful stop, reused supabase, restart retained records"

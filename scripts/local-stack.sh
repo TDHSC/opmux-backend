@@ -4,28 +4,61 @@
 # publish all interfaces, call real providers, or stop unrelated containers.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd -P)"
 COMPOSE_FILE="$ROOT_DIR/docker-compose.yml"
-ENV_FILE="$ROOT_DIR/.env.opmux-local"
+GENERATED_ENV_FILE=
 NETWORK=opmux-mvp-20260919-loopback
 DB_CONTAINER=supabase_db_opmux-mvp-20260919
 GATEWAY_CONTAINER=opmux-local-gateway
 SIMULATOR_CONTAINER=opmux-local-simulator
+COMPOSE_PROJECT=opmux-local
+GATEWAY_IMAGE="${CONTAINER_IMAGE:-opmux-gateway:mvp}"
 GATEWAY_HOST_PORT="${OPMUX_LOCAL_GATEWAY_PORT:-38080}"
 SIMULATOR_HOST_PORT="${OPMUX_LOCAL_SIMULATOR_PORT:-38081}"
 PROVIDER_KEY="${OPMUX_LOCAL_PROVIDER_KEY:-local-stack-dummy-only}"
+LOCAL_CONFIG_HOST="${OPMUX_LOCAL_CONFIG_HOST:-$ROOT_DIR/config/opmux.local-stack.json}"
+GENERATED_ENV_DIR=
+OWNED_DATABASE_URL=
 
 usage() {
   echo "usage: bash scripts/local-stack.sh up|down|status|bindings|admin [-- args]" >&2
   exit 2
 }
 
+canonical_path() {
+  python3 -c 'import os, sys; print(os.path.realpath(sys.argv[1]))' "$1"
+}
+
+cleanup_generated_env() {
+  if [ -n "${GENERATED_ENV_DIR:-}" ] && [ -d "$GENERATED_ENV_DIR" ]; then
+    rm -rf "$GENERATED_ENV_DIR"
+  fi
+  GENERATED_ENV_DIR=
+}
+
+trap cleanup_generated_env EXIT
+
 compose() {
-  docker compose \
+  if [ -z "${GENERATED_ENV_FILE:-}" ] || [ ! -f "$GENERATED_ENV_FILE" ]; then
+    echo "internal error: generated compose env is missing" >&2
+    exit 1
+  fi
+  env \
+    -u COMPOSE_FILE \
+    -u COMPOSE_PROJECT_NAME \
+    -u COMPOSE_ENV_FILES \
+    CONTAINER_IMAGE="$GATEWAY_IMAGE" \
+    OPMUX_LOCAL_DATABASE_URL="$OWNED_DATABASE_URL" \
+    OPMUX_LOCAL_PROVIDER_KEY="$PROVIDER_KEY" \
+    OPMUX_LOCAL_GATEWAY_PORT="$GATEWAY_HOST_PORT" \
+    OPMUX_LOCAL_SIMULATOR_PORT="$SIMULATOR_HOST_PORT" \
+    OPMUX_LOCAL_CONFIG_HOST="$LOCAL_CONFIG_HOST" \
+    docker compose \
     --project-directory "$ROOT_DIR" \
     -f "$COMPOSE_FILE" \
-    --project-name opmux-local \
-    --env-file "$ENV_FILE" \
+    --project-name "$COMPOSE_PROJECT" \
+    --env-file "$GENERATED_ENV_FILE" \
     "$@"
 }
 
@@ -51,8 +84,8 @@ require_owned_database() {
   fi
 }
 
-write_env_file() {
-  local pw enc url
+load_owned_database_url() {
+  local pw enc
   if ! command -v python3 >/dev/null 2>&1; then
     echo "python3 is required to encode the owned database password" >&2
     exit 1
@@ -65,16 +98,26 @@ write_env_file() {
     exit 1
   fi
   unset pw
-  url="postgresql://postgres:${enc}@${DB_CONTAINER}:5432/postgres?sslmode=disable"
+  OWNED_DATABASE_URL="postgresql://postgres:${enc}@${DB_CONTAINER}:5432/postgres?sslmode=disable"
   unset enc
+}
+
+prepare_generated_env() {
+  require_owned_database
+  load_owned_database_url
+  GENERATED_ENV_DIR="$(mktemp -d "${TMPDIR:-/tmp}/opmux-local-stack.XXXXXX")"
+  chmod 700 "$GENERATED_ENV_DIR"
+  GENERATED_ENV_FILE="$GENERATED_ENV_DIR/stack.env"
   umask 077
   {
+    printf 'CONTAINER_IMAGE=%s\n' "$GATEWAY_IMAGE"
     printf 'OPMUX_LOCAL_PROVIDER_KEY=%s\n' "$PROVIDER_KEY"
     printf 'OPMUX_LOCAL_GATEWAY_PORT=%s\n' "$GATEWAY_HOST_PORT"
     printf 'OPMUX_LOCAL_SIMULATOR_PORT=%s\n' "$SIMULATOR_HOST_PORT"
-    printf 'OPMUX_LOCAL_DATABASE_URL=%s\n' "$url"
-  } >"$ENV_FILE"
-  chmod 600 "$ENV_FILE"
+    printf 'OPMUX_LOCAL_CONFIG_HOST=%s\n' "$LOCAL_CONFIG_HOST"
+    printf 'OPMUX_LOCAL_DATABASE_URL=%s\n' "$OWNED_DATABASE_URL"
+  } >"$GENERATED_ENV_FILE"
+  chmod 600 "$GENERATED_ENV_FILE"
 }
 
 port_in_approved_range() {
@@ -120,6 +163,84 @@ assert_running() {
   fi
 }
 
+container_label() {
+  docker inspect -f "{{index .Config.Labels \"$2\"}}" "$1"
+}
+
+assert_owned_app_container() {
+  local name="$1"
+  local expected_service="$2"
+  local project service workdir config_files root_real work_real compose_real file_real found
+  project="$(container_label "$name" "com.docker.compose.project")"
+  service="$(container_label "$name" "com.docker.compose.service")"
+  workdir="$(container_label "$name" "com.docker.compose.project.working_dir")"
+  config_files="$(container_label "$name" "com.docker.compose.project.config_files")"
+  if [ "$project" != "$COMPOSE_PROJECT" ] || [ "$service" != "$expected_service" ]; then
+    echo "refusing to stop $name: not the owned $COMPOSE_PROJECT $expected_service container" >&2
+    exit 1
+  fi
+  root_real="$(canonical_path "$ROOT_DIR")"
+  compose_real="$(canonical_path "$COMPOSE_FILE")"
+  if [ -n "$workdir" ]; then
+    work_real="$(canonical_path "$workdir")"
+    if [ "$work_real" != "$root_real" ]; then
+      echo "refusing to stop $name: working directory is not this repository" >&2
+      exit 1
+    fi
+  fi
+  if [ -n "$config_files" ]; then
+    found=0
+    IFS=','
+    for file in $config_files; do
+      file_real="$(canonical_path "$file")"
+      if [ "$file_real" = "$compose_real" ]; then
+        found=1
+      fi
+    done
+    unset IFS
+    if [ "$found" -eq 0 ]; then
+      echo "refusing to stop $name: compose file is not this repository stack" >&2
+      exit 1
+    fi
+  fi
+  if [ -z "$workdir" ] && [ -z "$config_files" ]; then
+    echo "refusing to stop $name: missing compose ownership labels" >&2
+    exit 1
+  fi
+}
+
+stop_owned_app_container() {
+  local name="$1"
+  local expected_service="$2"
+  local exit_code
+  if ! docker inspect "$name" >/dev/null 2>&1; then
+    return 0
+  fi
+  assert_owned_app_container "$name" "$expected_service"
+  if docker inspect -f '{{.State.Running}}' "$name" 2>/dev/null | grep -q true; then
+    # Fixed 605s ceiling covers the 600s application maximum plus margin.
+    docker stop --time 605 "$name" >/dev/null
+  fi
+  exit_code="$(docker inspect -f '{{.State.ExitCode}}' "$name")"
+  echo "$name exited $exit_code"
+  if [ "$exit_code" = "137" ]; then
+    echo "container $name received SIGKILL; docker stop undercut graceful shutdown" >&2
+    exit 1
+  fi
+  docker rm "$name" >/dev/null
+}
+
+assert_database_untouched() {
+  local published
+  if docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null | grep -q true; then
+    published="$(docker port "$DB_CONTAINER" 5432/tcp | tr -d '\r')"
+    if [ "$published" != "127.0.0.1:55432" ]; then
+      echo "owned supabase loopback binding changed during stack stop" >&2
+      exit 1
+    fi
+  fi
+}
+
 cmd_up() {
   require_owned_database
   if ! port_in_approved_range "$GATEWAY_HOST_PORT" || ! port_in_approved_range "$SIMULATOR_HOST_PORT"; then
@@ -128,18 +249,17 @@ cmd_up() {
   fi
   require_free_or_owned_port "$GATEWAY_HOST_PORT" "$GATEWAY_CONTAINER"
   require_free_or_owned_port "$SIMULATOR_HOST_PORT" "$SIMULATOR_CONTAINER"
-  write_env_file
+  prepare_generated_env
 
-  local gateway_image="${CONTAINER_IMAGE:-opmux-gateway:mvp}"
   if [ "${OPMUX_LOCAL_BUILD:-auto}" = "1" ]; then
     compose build
   else
     if ! docker image inspect opmux-simulator:local >/dev/null 2>&1; then
       compose build simulator
     fi
-    if ! docker image inspect "$gateway_image" >/dev/null 2>&1; then
+    if ! docker image inspect "$GATEWAY_IMAGE" >/dev/null 2>&1; then
       if [ "${OPMUX_LOCAL_BUILD:-auto}" = "0" ]; then
-        echo "gateway image is missing; run docker build --file gateway/Dockerfile --tag opmux-gateway:mvp ." >&2
+        echo "selected gateway image $GATEWAY_IMAGE is missing; build it with docker build --file gateway/Dockerfile --tag $GATEWAY_IMAGE . or omit OPMUX_LOCAL_BUILD=0" >&2
         exit 1
       fi
       compose build gateway
@@ -157,26 +277,35 @@ cmd_up() {
   cmd_bindings
 }
 
-cmd_down() {
-  if [ -f "$ENV_FILE" ]; then
-    compose down --timeout 8
-  elif docker inspect "$GATEWAY_CONTAINER" >/dev/null 2>&1 \
-    || docker inspect "$SIMULATOR_CONTAINER" >/dev/null 2>&1; then
-    docker compose \
-      --project-directory "$ROOT_DIR" \
-      -f "$COMPOSE_FILE" \
-      --project-name opmux-local \
-      down --timeout 8
-  fi
-  rm -f "$ENV_FILE"
-  if docker inspect -f '{{.State.Running}}' "$DB_CONTAINER" 2>/dev/null | grep -q true; then
-    local published
-    published="$(docker port "$DB_CONTAINER" 5432/tcp | tr -d '\r')"
-    if [ "$published" != "127.0.0.1:55432" ]; then
-      echo "owned supabase loopback binding changed during stack stop" >&2
-      exit 1
+stop_owned_one_off_containers() {
+  local id name service
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    if ! docker inspect "$id" >/dev/null 2>&1; then
+      continue
     fi
-  fi
+    name="$(docker inspect -f '{{.Name}}' "$id")"
+    name="${name#/}"
+    if [ "$name" = "$GATEWAY_CONTAINER" ] \
+      || [ "$name" = "$SIMULATOR_CONTAINER" ] \
+      || [ "$name" = "$DB_CONTAINER" ]; then
+      continue
+    fi
+    service="$(container_label "$id" "com.docker.compose.service")"
+    if [ "$service" != "gateway" ] && [ "$service" != "simulator" ]; then
+      continue
+    fi
+    stop_owned_app_container "$id" "$service"
+  done <<EOF
+$(docker ps -aq --filter "label=com.docker.compose.project=${COMPOSE_PROJECT}" 2>/dev/null || true)
+EOF
+}
+
+cmd_down() {
+  stop_owned_app_container "$GATEWAY_CONTAINER" gateway
+  stop_owned_app_container "$SIMULATOR_CONTAINER" simulator
+  stop_owned_one_off_containers
+  assert_database_untouched
 }
 
 cmd_bindings() {
@@ -207,16 +336,13 @@ PY
 }
 
 cmd_status() {
-  require_owned_database
+  prepare_generated_env
   compose ps
   cmd_bindings
 }
 
 cmd_admin() {
-  require_owned_database
-  if [ ! -f "$ENV_FILE" ]; then
-    write_env_file
-  fi
+  prepare_generated_env
   compose run --rm --no-deps -T --user 65532:65532 gateway opmux-admin "$@"
 }
 
