@@ -135,7 +135,9 @@ curl -i http://127.0.0.1:3000/metrics
 - `/health` and `/metrics` are not gated by that deadline.
 - Per-attempt timeout is the lesser of the configured attempt maximum and remaining time. The global
   actual-attempt budget is not reset on fallback. A `Retry-After` that cannot finish before the
-  deadline returns `429 UPSTREAM_RATE_LIMIT`, not a false `504`.
+  deadline returns `429 UPSTREAM_RATE_LIMIT` for the whole request, including configured fallbacks,
+  not a false `504`. Provider 429 responses are classified from headers without waiting for an
+  unused error body.
 
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
 

@@ -2,7 +2,8 @@
 
 use super::{
     budget::{
-        evaluate_retry_delay, plan_retry_delay, AttemptBudget, DelayError, SystemJitter,
+        evaluate_retry_delay, plan_retry_delay, provider_minimum_cannot_fit,
+        AttemptBudget, DelayError, SystemJitter,
     },
     config::ExecutorConfig,
     error::ExecutorError,
@@ -394,6 +395,19 @@ impl ExecutorService {
                             } => Some(*ms),
                             _ => None,
                         };
+                        if let Some(terminal) =
+                            Self::terminate_for_provider_minimum(&e, deadline)
+                        {
+                            tracing::info!(
+                                vendor_id = %plan.vendor_id,
+                                target_id = %plan.target_id,
+                                model_id = %plan.model_id,
+                                retry_after_ms = retry_after_ms.unwrap_or(0),
+                                remaining_ms = deadline.remaining().as_millis() as u64,
+                                "Provider retry delay cannot fit remaining deadline"
+                            );
+                            return Err(terminal);
+                        }
                         tracing::warn!(
                             attempt,
                             max_retries,
@@ -431,6 +445,35 @@ impl ExecutorService {
         Err(last_error.unwrap_or_else(|| {
             ExecutorError::ApiCallFailed("Max retries exceeded".to_string())
         }))
+    }
+
+    /// Terminates the whole request when a valid Retry-After cannot fit.
+    ///
+    /// Actual deadline expiry is `DeadlineExceeded` (504). A provider minimum
+    /// that cannot finish in remaining time is `RateLimitExceeded` (429) and
+    /// must not start later retries or configured fallbacks.
+    fn terminate_for_provider_minimum(
+        error: &ExecutorError,
+        deadline: RequestDeadline,
+    ) -> Option<ExecutorError> {
+        let ExecutorError::RateLimitExceeded {
+            retry_after_ms: Some(ms),
+            ..
+        } = error
+        else {
+            return None;
+        };
+        if deadline.is_expired() {
+            return Some(ExecutorError::DeadlineExceeded);
+        }
+        if provider_minimum_cannot_fit(
+            Some(Duration::from_millis(*ms)),
+            deadline.remaining(),
+        ) {
+            Some(error.clone())
+        } else {
+            None
+        }
     }
 
     /// Determines if an error is retryable.
@@ -482,6 +525,8 @@ impl ExecutorService {
     ///
     /// # Errors
     /// Returns primary error if no fallbacks exist or all fallbacks fail.
+    /// A valid provider Retry-After that cannot fit remaining time terminates
+    /// the whole request as rate-limited, including later configured fallbacks.
     /// Overall deadline expiry is authoritative over the primary error.
     pub(crate) async fn execute_fallbacks(
         &self,
@@ -550,6 +595,11 @@ impl ExecutorService {
                 Err(e) => {
                     if Self::is_retryable_error(&e) {
                         self.record_vendor_failure(&fallback.vendor_id).await;
+                    }
+                    if let Some(terminal) =
+                        Self::terminate_for_provider_minimum(&e, deadline)
+                    {
+                        return Err(terminal);
                     }
                     tracing::warn!(
                         fallback_index = index + 1,
@@ -711,6 +761,11 @@ impl ExecutorService {
             Err(primary_error) => {
                 if Self::is_retryable_error(&primary_error) {
                     self.record_vendor_failure(&plan.vendor_id).await;
+                }
+                if let Some(terminal) =
+                    Self::terminate_for_provider_minimum(&primary_error, deadline)
+                {
+                    return Err(terminal);
                 }
                 self.execute_fallbacks(
                     &plan.fallback_plans,

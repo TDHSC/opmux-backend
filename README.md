@@ -145,10 +145,11 @@ actual calls); a higher per-target retry setting still cannot exceed `max_total_
 primary and fallback hops, and considering a fallback does not reset that counter. Backoff is
 full-jitter exponential capped at `backoff_cap_ms` (default 2 seconds). A valid `Retry-After`
 delta-seconds or HTTP-date is never shortened by that cap; if the provider minimum cannot finish
-before the deadline, the response is sanitized `429 UPSTREAM_RATE_LIMIT` rather than a false
-`504 DEADLINE_EXCEEDED`. Malformed `Retry-After` uses the capped jitter instead of an unbounded
-sleep. Fallback switching, target circuits, concurrency, and inbound raw-size enforcement are later
-features and are not active yet.
+before the deadline, the whole request ends as sanitized `429 UPSTREAM_RATE_LIMIT` with no later
+provider calls, including configured fallbacks, rather than a false `504 DEADLINE_EXCEEDED`. 429
+classification uses response headers and does not wait for an unused error body. Malformed
+`Retry-After` uses the capped jitter instead of an unbounded sleep. Fallback switching, target
+circuits, concurrency, and inbound raw-size enforcement are later features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the

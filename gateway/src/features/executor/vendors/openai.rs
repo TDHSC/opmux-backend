@@ -5,7 +5,8 @@
 //! provider-reported model. Cost uses the selected target's configured prices
 //! keyed by catalog target identity, not a hardcoded model-price table.
 //! Success bodies are accumulated up to `max_response_bytes` before
-//! deserialization.
+//! deserialization. Provider 429 responses are classified from headers;
+//! the unused error body is dropped rather than drained in a detached task.
 
 use crate::features::executor::{
     bounded_body::read_bounded_response_body,
@@ -124,27 +125,28 @@ impl LLMVendor for OpenAIVendor {
             .send()
             .await?;
 
+        // Preserve typed throttling from 429 headers. Do not await an unused
+        // error body; a stall would erase Retry-After or look like a timeout.
+        if response.status() == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after_ms = response
+                .headers()
+                .get(header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| retry_after_header_ms(value, SystemTime::now()));
+            return Err(ExecutorError::RateLimitExceeded {
+                vendor: "openai".to_string(),
+                retry_after_ms,
+            });
+        }
+
         if !response.status().is_success() {
             let status = response.status();
-            let retry_after_ms = if status == StatusCode::TOO_MANY_REQUESTS {
-                response
-                    .headers()
-                    .get(header::RETRY_AFTER)
-                    .and_then(|value| value.to_str().ok())
-                    .and_then(|value| retry_after_header_ms(value, SystemTime::now()))
-            } else {
-                None
-            };
             let _ = read_bounded_response_body(response, self.config.max_response_bytes)
                 .await;
             return Err(match status {
                 StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => {
                     ExecutorError::AuthenticationFailed("openai".to_string())
                 }
-                StatusCode::TOO_MANY_REQUESTS => ExecutorError::RateLimitExceeded {
-                    vendor: "openai".to_string(),
-                    retry_after_ms,
-                },
                 status if status.is_client_error() => ExecutorError::UpstreamRejected,
                 status if status.is_server_error() => {
                     ExecutorError::ApiCallFailed("upstream http error".to_string())

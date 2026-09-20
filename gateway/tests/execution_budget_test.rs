@@ -205,12 +205,36 @@ fn transient_unavailable() -> ScriptedResponse {
     ScriptedResponse::json_status(500, json!({"error":{"message":"temp"}}))
 }
 
+fn rate_limited(retry_after: &str) -> ScriptedResponse {
+    ScriptedResponse::Json {
+        status: 429,
+        body: json!({"error":{"message":"rate"}}),
+        retry_after: Some(retry_after.to_string()),
+    }
+}
+
+fn enable_default_fallback(settings: &mut gateway::core::config::Settings) {
+    settings
+        .catalog
+        .routes
+        .get_mut("default")
+        .expect("default route")
+        .fallbacks = vec!["secondary".to_string()];
+}
+
 fn generation_bodies(simulator: &OpenAiSimulator) -> Vec<serde_json::Value> {
     simulator
         .captured()
         .into_iter()
         .filter(|capture| capture.is_generation())
         .filter_map(|capture| capture.body)
+        .collect()
+}
+
+fn generation_models(simulator: &OpenAiSimulator) -> Vec<String> {
+    generation_bodies(simulator)
+        .into_iter()
+        .map(|body| body["model"].as_str().unwrap_or_default().to_string())
         .collect()
 }
 
@@ -689,11 +713,7 @@ async fn dropping_inflight_adapter_call_starts_no_later_attempt() {
 async fn dropping_during_retry_backoff_starts_no_later_attempt() {
     isolate_provider_environment();
     let simulator = OpenAiSimulator::start().await;
-    simulator.enqueue_chat(ScriptedResponse::Json {
-        status: 429,
-        body: json!({"error":{"message":"rate"}}),
-        retry_after: Some("2".to_string()),
-    });
+    simulator.enqueue_chat(rate_limited("2"));
     simulator.enqueue_chat(ScriptedResponse::chat_ok());
     let service = executor_for_simulator(&simulator, 1, Duration::from_secs(5));
     let deadline = RequestDeadline::from_timeout(Duration::from_secs(30));
@@ -937,11 +957,7 @@ async fn attempt_timeout_retries_without_claiming_deadline_expiry() {
 async fn retry_after_delta_seconds_is_honored_before_the_next_call() {
     isolate_provider_environment();
     let simulator = OpenAiSimulator::start().await;
-    simulator.enqueue_chat(ScriptedResponse::Json {
-        status: 429,
-        body: json!({"error":{"message":"rate"}}),
-        retry_after: Some("1".to_string()),
-    });
+    simulator.enqueue_chat(rate_limited("1"));
     simulator.enqueue_chat(ScriptedResponse::chat_ok());
     let service =
         executor_for_simulator_with(&simulator, 1, Duration::from_secs(5), |settings| {
@@ -978,11 +994,7 @@ async fn retry_after_that_cannot_fit_returns_429_not_504() {
     let pool = test_pool().await;
     let issued = provision_inference_key(&pool).await;
     let simulator = OpenAiSimulator::start().await;
-    simulator.enqueue_chat(ScriptedResponse::Json {
-        status: 429,
-        body: json!({"error":{"message":"rate"}}),
-        retry_after: Some("30".to_string()),
-    });
+    simulator.enqueue_chat(rate_limited("30"));
     simulator.enqueue_chat(ScriptedResponse::chat_ok());
     let settings = settings_for_simulator_with(&simulator, |settings| {
         settings.limits.protected_request_deadline = Duration::from_millis(400);
@@ -1067,11 +1079,7 @@ async fn http_date_retry_after_that_cannot_fit_is_throttling() {
 async fn malformed_retry_after_uses_capped_jitter_not_an_unbounded_sleep() {
     isolate_provider_environment();
     let simulator = OpenAiSimulator::start().await;
-    simulator.enqueue_chat(ScriptedResponse::Json {
-        status: 429,
-        body: json!({"error":{"message":"rate"}}),
-        retry_after: Some("not-a-delay".to_string()),
-    });
+    simulator.enqueue_chat(rate_limited("not-a-delay"));
     simulator.enqueue_chat(ScriptedResponse::chat_ok());
     let service =
         executor_for_simulator_with(&simulator, 1, Duration::from_secs(5), |settings| {
@@ -1090,4 +1098,150 @@ async fn malformed_retry_after_uses_capped_jitter_not_an_unbounded_sleep() {
     assert_eq!(result.content, SIMULATED_CONTENT);
     assert_eq!(simulator.generation_count(), 2);
     assert!(started.elapsed() < HTTP_BOUND);
+}
+
+#[tokio::test]
+#[serial]
+async fn stalled_429_body_preserves_retry_after_instead_of_timeout_retry() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(rate_limited("1").delay_body(Duration::from_secs(2)));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let service = executor_for_simulator_with(
+        &simulator,
+        1,
+        Duration::from_millis(150),
+        |settings| {
+            settings.limits.protected_request_deadline = Duration::from_secs(5);
+            settings.limits.backoff_cap = Duration::from_millis(1);
+        },
+    );
+    let started = Instant::now();
+    let result = service
+        .execute(
+            &generation_plan(),
+            &generation_payload(),
+            RequestDeadline::from_timeout(Duration::from_secs(5)),
+        )
+        .await
+        .expect(
+            "typed 429 Retry-After must be honored instead of an attempt-timeout retry",
+        );
+    let elapsed = started.elapsed();
+    assert_eq!(result.content, SIMULATED_CONTENT);
+    assert_eq!(simulator.generation_count(), 2);
+    assert_same_generation_bodies(&simulator, 2);
+    assert!(
+        elapsed >= Duration::from_millis(900),
+        "stalled 429 body must not convert Retry-After into an early timeout retry, elapsed {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(1_800),
+        "Retry-After wait took {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+#[serial]
+async fn stalled_429_body_that_cannot_fit_returns_429_not_504() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(rate_limited("30").delay_body(Duration::from_secs(2)));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let settings = settings_for_simulator_with(&simulator, |settings| {
+        settings.limits.protected_request_deadline = Duration::from_millis(400);
+        settings.limits.max_attempt_timeout = Duration::from_secs(10);
+        settings.limits.retries_per_target = 1;
+        settings.limits.backoff_cap = Duration::from_millis(2_000);
+    });
+    let app = production_router_with_settings(
+        settings,
+        Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+            pool.clone(),
+        )))),
+        MetricsConfig::disabled(),
+    );
+
+    let started = Instant::now();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/route")
+                .header("content-type", "application/json")
+                .header("x-api-key", &issued.credential)
+                .body(Body::from(ROUTE_JSON))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "UPSTREAM_RATE_LIMIT");
+    assert_ne!(body["error"]["code"], "DEADLINE_EXCEEDED");
+    assert!(body.get("response").is_none());
+    assert_eq!(simulator.generation_count(), 1);
+    assert!(
+        elapsed < HTTP_BOUND,
+        "stalled 429 body cannot-fit took {elapsed:?}"
+    );
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn retry_after_that_cannot_fit_does_not_call_configured_fallback() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(rate_limited("30"));
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let settings = settings_for_simulator_with(&simulator, |settings| {
+        enable_default_fallback(settings);
+        settings.limits.protected_request_deadline = Duration::from_millis(400);
+        settings.limits.retries_per_target = 0;
+        settings.limits.max_total_attempts = 3;
+        settings.limits.backoff_cap = Duration::from_millis(2_000);
+    });
+    let app = production_router_with_settings(
+        settings,
+        Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+            pool.clone(),
+        )))),
+        MetricsConfig::disabled(),
+    );
+
+    let started = Instant::now();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/route")
+                .header("content-type", "application/json")
+                .header("x-api-key", &issued.credential)
+                .body(Body::from(ROUTE_JSON))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"]["code"], "UPSTREAM_RATE_LIMIT");
+    assert_ne!(body["error"]["code"], "DEADLINE_EXCEEDED");
+    assert!(body.get("response").is_none());
+    assert_eq!(simulator.generation_count(), 1);
+    assert_eq!(generation_models(&simulator), vec!["example-chat-model"]);
+    assert!(
+        elapsed < HTTP_BOUND,
+        "cannot-fit with configured fallback took {elapsed:?}"
+    );
+    cleanup_clients(&pool, &[issued.client_id]).await;
 }

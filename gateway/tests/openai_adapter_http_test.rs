@@ -7,7 +7,9 @@ use gateway::features::executor::{
     models::{ExecutionParams, Message},
     vendors::{openai::OpenAIVendor, LLMVendor},
 };
+use serde_json::json;
 use serial_test::serial;
+use std::time::{Duration, Instant};
 use support::{
     isolate_provider_environment, min_padded_chat_completion_len,
     openai_config_for_simulator, padded_chat_completion_bytes, OpenAiSimulator,
@@ -529,4 +531,43 @@ async fn real_adapter_enforces_response_size_while_reading() {
         assert!(!text.contains("XXXX"));
     }
     assert_eq!(simulator.generation_count(), 4);
+}
+
+#[tokio::test]
+#[serial]
+async fn real_adapter_preserves_429_retry_after_without_waiting_for_stalled_body() {
+    isolate_provider_environment();
+    let simulator = OpenAiSimulator::start().await;
+    simulator.enqueue_chat(
+        ScriptedResponse::Json {
+            status: 429,
+            body: json!({"error":{"message":"rate"}}),
+            retry_after: Some("30".to_string()),
+        }
+        .delay_body(Duration::from_secs(2)),
+    );
+    let vendor = OpenAIVendor::new(openai_config_for_simulator(&simulator))
+        .expect("adapter should construct with dummy local config");
+
+    let started = Instant::now();
+    let error = vendor
+        .execute("gpt-4", "gpt-4", user_params("stalled 429"))
+        .await
+        .expect_err("429 headers must fail without a success body");
+    let elapsed = started.elapsed();
+    match error {
+        ExecutorError::RateLimitExceeded {
+            vendor,
+            retry_after_ms,
+        } => {
+            assert_eq!(vendor, "openai");
+            assert_eq!(retry_after_ms, Some(30_000));
+        }
+        other => panic!("expected RateLimitExceeded, got {other:?}"),
+    }
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "stalled 429 body must not delay typed throttling, took {elapsed:?}"
+    );
+    assert_eq!(simulator.generation_count(), 1);
 }

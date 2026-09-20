@@ -4,8 +4,9 @@
 //! fallback hops. Per-attempt timeout is capped by remaining deadline time.
 //! Exponential full jitter is capped by `backoff_cap_ms`. A valid provider
 //! `Retry-After` is never shortened by that cap; if it cannot finish before
-//! the deadline, the caller returns provider throttling instead of claiming
-//! the deadline already elapsed.
+//! the deadline, the caller terminates the whole request as provider
+//! throttling instead of claiming the deadline already elapsed or starting
+//! later retries or configured fallbacks.
 
 use std::time::{Duration, SystemTime};
 
@@ -183,6 +184,36 @@ pub(crate) fn plan_retry_delay(
             provider_minimum: false,
         }
     }
+}
+
+/// True when a valid provider Retry-After cannot finish in `remaining`.
+///
+/// Missing, malformed, or zero delays are not a provider minimum and must not
+/// terminate the request as cannot-fit throttling.
+///
+/// # Parameters
+/// - `provider_retry_after` - Parsed provider minimum wait, when valid
+/// - `remaining` - Time left on the protected-request deadline
+///
+/// # Returns
+/// `true` when the provider minimum exceeds remaining time
+pub(crate) fn provider_minimum_cannot_fit(
+    provider_retry_after: Option<Duration>,
+    remaining: Duration,
+) -> bool {
+    let Some(delay) = provider_retry_after.filter(|delay| !delay.is_zero()) else {
+        return false;
+    };
+    matches!(
+        evaluate_retry_delay(
+            RetryDelay::Sleep {
+                delay,
+                provider_minimum: true,
+            },
+            remaining,
+        ),
+        Err(DelayError::ProviderDelayCannotFit { .. })
+    )
 }
 
 /// Bounds a planned wait by remaining deadline without shortening Retry-After.
@@ -420,5 +451,22 @@ mod tests {
             evaluate_retry_delay(delay, Duration::from_secs(1)),
             Ok(Duration::from_millis(250))
         );
+    }
+
+    #[test]
+    fn provider_minimum_cannot_fit_ignores_missing_or_zero_delays() {
+        assert!(!provider_minimum_cannot_fit(None, Duration::from_millis(1)));
+        assert!(!provider_minimum_cannot_fit(
+            Some(Duration::ZERO),
+            Duration::from_millis(1)
+        ));
+        assert!(!provider_minimum_cannot_fit(
+            Some(Duration::from_millis(200)),
+            Duration::from_secs(1)
+        ));
+        assert!(provider_minimum_cannot_fit(
+            Some(Duration::from_secs(30)),
+            Duration::from_millis(400)
+        ));
     }
 }

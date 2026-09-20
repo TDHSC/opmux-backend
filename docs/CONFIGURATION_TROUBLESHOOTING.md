@@ -69,10 +69,11 @@ actual started provider calls across the whole request and does not replenish wh
 to a fallback. Exponential backoff uses full jitter (`0..=min(1000 * 2^(retry-1), backoff_cap_ms)`),
 default cap 2000ms. Sleeps consume the overall deadline. A valid provider `Retry-After`
 (delta-seconds or HTTP-date) is the minimum wait and is not shortened by the backoff cap; if that
-wait cannot finish in the remaining time, the gateway returns `429 UPSTREAM_RATE_LIMIT` without an
-extra attempt and without claiming deadline expiry. Malformed `Retry-After` values use the capped
-jitter, not an unbounded sleep. Fallback execution, target circuits, concurrency admission, and
-inbound raw-body enforcement are later milestones.
+wait cannot finish in the remaining time, the gateway returns `429 UPSTREAM_RATE_LIMIT` without a
+later attempt or configured fallback call and without claiming deadline expiry. Provider 429
+responses are classified from headers without waiting for an unused error body. Malformed
+`Retry-After` values use the capped jitter, not an unbounded sleep. Fallback execution, target
+circuits, concurrency admission, and inbound raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |
