@@ -1,6 +1,11 @@
 # Gateway API Reference
 
-Base URL: `http://<host>:3000`
+This is the shipped **API-only** contract. There is no dashboard, JWT, or gRPC control plane. Native
+examples use `http://127.0.0.1:3000`. The documented local container stack publishes
+`http://127.0.0.1:38080`. OpenAI results in local tests are **SIMULATED ONLY**. Live-provider and
+hosted verification are deferred and unrun.
+
+Base URL: `http://<host>:<port>` (`3000` native default, `38080` local stack)
 
 ## GET /
 
@@ -298,7 +303,15 @@ below.
 Successful generation uses the real OpenAI Chat Completions adapter:
 `POST {OPENAI_BASE_URL}/chat/completions` with `Authorization: Bearer`,
 `Content-Type: application/json`, the selected target model, the original user prompt, and accepted
-typed options. Streaming is not enabled.
+typed options. Streaming is not enabled. Local tests and the documented stack use a loopback
+simulator (**SIMULATED ONLY**).
+
+```bash
+curl --noproxy '*' -sS -X POST http://127.0.0.1:38080/api/v1/route \
+  -H "Content-Type: application/json" \
+  -H "X-API-Key: $INFERENCE_KEY" \
+  -d '{"prompt":"hello","metadata":{},"route":"fast"}'
+```
 
 Response `200 OK`:
 

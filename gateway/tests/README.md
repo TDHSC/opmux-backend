@@ -1,6 +1,8 @@
 # Integration Tests
 
-This directory contains HTTP and process integration tests for the Gateway service.
+This directory contains HTTP and process integration tests for the Gateway service. Routine tests
+use real local Supabase and an owned loopback OpenAI simulator. OpenAI is **SIMULATED ONLY**.
+Live-provider, hosted deployment, and hosted-Supabase/TLS tests are deferred and unrun.
 
 ## Local HTTP fixtures (default)
 
@@ -125,9 +127,12 @@ the generated env file. `scripts/check-local-stack.sh` inspects those host bindi
 tag and ID, delayed graceful stop, then stop/start recovery of persisted keys. Do not overlap the
 shared 38080/38081 mission processes when that check runs.
 
-## Additional Task 13 artifacts
+## Additional local tools
 
 - End-to-end integration coverage for resilience behavior in `observability_integration_test.rs`
   (circuit-open transition under repeated upstream failures).
-- Performance/load testing guide in `PERFORMANCE_LOAD_TESTING.md`.
-- Load test runner script at `scripts/run-load-tests.sh`.
+- Performance/load testing guide in `PERFORMANCE_LOAD_TESTING.md` (requires a reachable simulator;
+  `/ready` must be 200).
+- Load test runner script at `scripts/run-load-tests.sh` (HTTP 2xx only counts as success).
+- Deferred live-provider runner: `scripts/run-integration-tests.sh` (refuses unless
+  `OPMUX_LIVE_PROVIDER_TESTS=1`).

@@ -1,5 +1,11 @@
 # Technical Solution Design
 
+> **Historical design.** Module paths, gRPC clients, JWT, hot reload, Anthropic, and Memory/Router
+> microservices in this file are not the shipped architecture. Current layout is
+> `gateway/src/{app,core,features,middleware}` with catalog routing and a real OpenAI adapter.
+> Operator docs: [README.md](../../README.md). OpenAI is **SIMULATED ONLY**. Hosted/live-provider
+> validation is deferred and unrun.
+
 ## Architecture Overview
 
 The Gateway Microservice serves as the unified entry point for the AI API Router system,

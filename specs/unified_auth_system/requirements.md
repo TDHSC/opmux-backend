@@ -1,5 +1,12 @@
 # Requirements Document
 
+> **Historical requirements.** Shipped auth is persisted tenant-scoped API keys (management vs
+> inference) with SHA-256 digests, no plaintext storage, no authentication cache, and no
+> `AUTH_DEVELOPMENT_MODE` bypass. Former public mock keys return 401.
+>
+> **Not shipped:** JWT/dashboard login, organizations/projects, key expiration, service tokens, mock
+> development bypass, and latency SLAs. See [README.md](../../README.md).
+
 ## Introduction
 
 Design and implement a unified authentication system for the Gateway Microservice that supports

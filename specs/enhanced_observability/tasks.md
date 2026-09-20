@@ -1,5 +1,9 @@
 # Implementation Plan - Enhanced Observability (Phase 1)
 
+> **Historical task list.** `HEALTH_CHECK_MODE`, 30s cache, and degraded vendor readiness in later
+> tasks were not implemented. Shipped behavior: 5-second success-only cache, `/health` liveness,
+> `/ready` database + `/models` + usable default-route. See [README.md](../../README.md).
+
 ## Overview
 
 This implementation plan follows the **business-logic-first development principles** for adding
@@ -7,7 +11,7 @@ enhanced observability features to the Gateway Service.
 
 **Related Requirement**: Requirement 5 - Monitoring and Observability
 
-**Implementation Scope**: Phase 1 (MVP) - Production Readiness
+**Implementation Scope**: Phase 1 (API MVP). Not a hosted/production-readiness claim.
 
 **Estimated Time**: 2-3 days
 
@@ -533,8 +537,9 @@ HEALTH_CHECK_CACHE_TTL_SECS=5
   - `/ready` returned `503 Service Unavailable` with unhealthy dependency details under dummy vendor
     credentials
   - `/metrics` returned Prometheus metrics payload
-- `/api/v1/route` returned `500 Internal Server Error` with `execution_failed` under dummy upstream
-  config and preserved `X-Correlation-ID`
+- `/api/v1/route` historically returned `500`/`execution_failed` under dummy upstream. **Shipped
+  now:** authenticated generation against an unreachable dummy URL returns `502 UPSTREAM_ERROR` with
+  a preserved `X-Correlation-ID`. Former mock keys return `401`.
 - Task status reconciled:
   - Gateway Task 10 marked complete in `specs/gateway_service/tasks.md`
 - Documentation and integration artifacts for 10.8/10.9 are implemented in this milestone

@@ -1,10 +1,11 @@
 # Configuration and Troubleshooting
 
 The gateway reads **process environment** plus a non-secret JSON catalog selected by
-`OPMUX_CONFIG_FILE`. Copying `.env` is not configuration. Credentials and database URLs stay in the
-environment; the catalog is not a secret store. `DATABASE_URL` is required for gateway bind after
-catalog load, persistence tests, `opmux-admin`, and migration apply. `AUTH_DEVELOPMENT_MODE` does
-not bypass authentication.
+`OPMUX_CONFIG_FILE`. Copying `.env` is not configuration. Local provider verification is **SIMULATED
+ONLY**. Live OpenAI, hosted deployment, and hosted-Supabase/TLS checks are deferred and unrun.
+Credentials and database URLs stay in the environment; the catalog is not a secret store.
+`DATABASE_URL` is required for gateway bind after catalog load, persistence tests, `opmux-admin`,
+and migration apply. `AUTH_DEVELOPMENT_MODE` does not bypass authentication.
 
 Example catalog prices and model names are illustrative samples. They are not current provider
 billing or model-availability facts. Distinct target identifiers may request the same provider model
@@ -215,17 +216,19 @@ Action:
 
 ```bash
 export OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json"
-export OPENAI_API_KEY=your-key
-export OPENAI_BASE_URL=https://api.openai.com/v1
+export OPENAI_API_KEY=dummy-key
+export OPENAI_BASE_URL=http://127.0.0.1:38081/v1
 cargo run -p gateway
 ```
 
-For a check without real credentials, use the local failure-simulation configuration in
-[README.md](../README.md#local-startup-check-no-real-llm-calls), or the documented container stack
-in [README.md](../README.md#local-container-stack) (`bash scripts/local-stack.sh up`, dummy key,
-`http://127.0.0.1:38081/v1`, `CONTAINER_IMAGE` default `opmux-gateway:mvp`). HTTP integration tests
-start an owned loopback OpenAI simulator and the shared production router; they do not use inherited
-provider keys. Live-provider tests are ignored and unrun unless explicitly opted in.
+Documented local checks use a dummy key and an owned loopback simulator or an intentionally
+unavailable local URL. See [README.md](../README.md#local-startup-check-no-real-llm-calls) and the
+container stack in [README.md](../README.md#local-container-stack)
+(`bash scripts/local-stack.sh up`, dummy key, `http://127.0.0.1:38081/v1`, `CONTAINER_IMAGE` default
+`opmux-gateway:mvp`). HTTP integration tests start an owned loopback OpenAI simulator and the shared
+production router; they do not use inherited provider keys. Setting
+`OPENAI_BASE_URL=https://api.openai.com/v1` is optional paid-provider configuration. Live-provider
+tests are ignored and unrun unless explicitly opted in.
 
 ### `/api/v1/route` returns `401`
 
@@ -252,11 +255,16 @@ code `DRAINING`; datastore outages use `AUTH_DEPENDENCY_UNAVAILABLE`.
 Action: confirm `DATABASE_URL`, schema (`scripts/db-migrate.sh`), and that the runtime role can
 select `opmux_private.api_keys`.
 
-### `/api/v1/route` returns `500 execution_failed`
+### `/api/v1/route` returns `502 UPSTREAM_ERROR`
 
-Cause: upstream execution failed.
+Cause: the real adapter could not complete Chat Completions (network failure, timeout, unexpected
+provider rejection). Dummy `OPENAI_BASE_URL=http://127.0.0.1:9/v1` startup checks are expected to
+fail this way after a valid inference key is used. Provider 401/403 is
+`502 UPSTREAM_AUTHENTICATION`, never gateway `401`.
 
-Action: inspect upstream availability, timeout, and base URL settings.
+Action: confirm the configured base URL is the owned simulator for local work, or a reachable
+compatible endpoint for optional paid-provider use (unrun here). Inspect timeout and catalog
+targets. Do not treat this as an invalid gateway key.
 
 ### `/api/v1/route` returns `503 circuit_open`
 

@@ -1,7 +1,10 @@
 # Observability Guide
 
 This service provides correlation IDs, structured logs, health/readiness checks, and Prometheus
-metrics.
+metrics. `/metrics` is an internal scrape surface (loopback locally; network-restrict in
+production). There is no selectable `HEALTH_CHECK_MODE`. Successful dependency probes cache for
+`HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds); failures are never cached. Local provider checks
+are **SIMULATED ONLY**.
 
 ## Correlation IDs
 

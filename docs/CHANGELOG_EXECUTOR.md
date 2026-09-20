@@ -1,5 +1,17 @@
 # Executor Layer Implementation - Changelog
 
+> **Historical note (Oct 21, 2025).** This changelog records the original executor foundation. It is
+> not current architecture and must not be read as shipped status.
+>
+> **Shipped now:** `gateway/src/features/executor/` with retry, fallback, and target-scoped circuits
+> in `ExecutorService`; OpenAI Chat Completions only; catalog prices per million tokens; upstream
+> credential failures are sanitized `502`, never gateway `401`. Local verification uses the real
+> adapter against an owned simulator (**SIMULATED ONLY**). Live OpenAI tests remain ignored/unrun.
+> Additional vendors, streaming, and RouterService-as-a-microservice are deferred.
+>
+> Current operator docs: [README.md](../README.md), [API reference](API_REFERENCE.md),
+> [configuration](CONFIGURATION_TROUBLESHOOTING.md).
+
 ## Date: Oct 21, 2025
 
 ## Summary

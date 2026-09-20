@@ -1,5 +1,8 @@
 # Prometheus Integration Guide
 
+Local scrapes target the loopback gateway. This is not hosted-metrics verification. `/metrics` has
+no application authentication; restrict it at the network layer in production.
+
 ## Metrics endpoint
 
 By default, metrics are exposed at `GET /metrics` when `METRICS_ENABLED=true`.

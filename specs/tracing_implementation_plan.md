@@ -1,9 +1,10 @@
 # Tracing and Correlation ID Implementation Plan
 
-> **⚠️ DEPRECATED**: This document has been superseded by the comprehensive Enhanced Observability
-> specification.
->
-> **Please refer to**: `specs/enhanced_observability/` for the current implementation.
+> **⚠️ DEPRECATED / historical.** Current correlation, metrics, and health behavior are documented
+> in [README.md](../README.md), [docs/OBSERVABILITY.md](../docs/OBSERVABILITY.md), and
+> [docs/PROMETHEUS.md](../docs/PROMETHEUS.md). `specs/enhanced_observability/` is also historical:
+> there is no `HEALTH_CHECK_MODE`, the success-only cache default is 5 seconds, and distributed
+> tracing export is deferred.
 >
 > **Key differences from this plan**:
 >

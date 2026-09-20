@@ -1,5 +1,10 @@
 # Gateway Operations Runbook
 
+Operator runbook for the shipped API-only gateway. Persistence is real local Supabase. OpenAI
+verification is **SIMULATED ONLY**. Live-provider calls, hosted deployment, and hosted-Supabase/TLS
+checks are deferred and unrun. `/metrics` is an internal scrape surface: loopback locally,
+network-restrict in production. Do not add metrics authentication.
+
 ## Schema migrations
 
 Application tables live in the private schema `opmux_private` (`clients`, `api_keys`). Digests are
@@ -44,10 +49,14 @@ true. Query `client_id`/`tenant_id`, unknown parameters, and invalid `limit`/`of
 idempotent). Other-tenant and unknown IDs return indistinguishable 404 and do not change the target.
 
 Successful commands print one JSON object to **stdout**, including the newly generated
-`opmx_v1_<base64url>` credential exactly once. Write stdout to a fresh private file created with
-`mktemp` (mode 0600 even under umask 022). Do not redirect onto an existing path or symlink. Do not
-copy the secret into logs, tickets, or shell history. Failed commands print no credential and leave
-no partial tenant/key row. Secrets cannot be retrieved later; issue a replacement key to recover.
+`opmx_v1_<base64url>` credential exactly once. Tenant create also includes `display_name` (the
+tenant name), `client_id`, `key_id`, `display_id`, `kind` (`management`), and `name`
+(`initial-management` for the first key). Key issue uses the supplied `--name` as `name` and does
+not add another tenant. Read `client_id` from that JSON for later `key issue` commands. Write stdout
+to a fresh private file created with `mktemp` (mode 0600 even under umask 022). Do not redirect onto
+an existing path or symlink. Do not copy the secret into logs, tickets, or shell history. Failed
+commands print no credential and leave no partial tenant/key row. Secrets cannot be retrieved later;
+issue a replacement key to recover.
 
 HTTP key creation and revocation use the same protected-request deadline as inference. A `504` or
 client disconnect during a management mutation does not prove rollback. If creation committed and
@@ -84,12 +93,12 @@ first.
 ```bash
 replacement=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
 chmod 600 "$replacement"
-curl -sS -X POST http://127.0.0.1:3000/api/v1/auth/keys \
+curl --noproxy '*' -sS -X POST http://127.0.0.1:3000/api/v1/auth/keys \
   -H "X-API-Key: $OLD_MANAGER" \
   -H "Content-Type: application/json" \
   -d '{"name":"replacement-manager","kind":"management"}' > "$replacement"
 # Confirm the replacement can list keys, then revoke the old key with it:
-curl -sS -X DELETE "http://127.0.0.1:3000/api/v1/auth/keys/$OLD_KEY_ID" \
+curl --noproxy '*' -sS -X DELETE "http://127.0.0.1:3000/api/v1/auth/keys/$OLD_KEY_ID" \
   -H "X-API-Key: $REPLACEMENT_MANAGER"
 ```
 
@@ -118,9 +127,9 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
 3. Validate endpoints:
 
 ```bash
-curl -i http://127.0.0.1:3000/health
-curl -i http://127.0.0.1:3000/ready
-curl -i http://127.0.0.1:3000/metrics
+curl --noproxy '*' -i http://127.0.0.1:3000/health
+curl --noproxy '*' -i http://127.0.0.1:3000/ready
+curl --noproxy '*' -i http://127.0.0.1:3000/metrics
 ```
 
 An occupied `SERVER_HOST`/`SERVER_PORT` fails before serving. The process exits nonzero with

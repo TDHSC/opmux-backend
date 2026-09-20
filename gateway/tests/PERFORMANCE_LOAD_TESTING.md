@@ -1,14 +1,27 @@
 # Performance and Load Testing
 
-This guide provides repeatable load checks for the gateway HTTP pipeline.
+This guide provides repeatable load checks for the gateway HTTP pipeline. It is not a performance
+SLA and not live-provider or hosted validation. OpenAI traffic must use a **reachable local
+simulator**. Dummy `127.0.0.1:9` startup checks leave `/ready` at 503 and cannot run this script.
 
 ## Prerequisites
 
-1. Start the gateway against owned local Supabase and a reachable simulated or real upstream:
+1. Start the documented local stack (owned Supabase + simulator), or a native gateway pointed at a
+   loopback simulator with dummy credentials:
 
 ```bash
+bash scripts/local-stack.sh up
+```
+
+Native equivalent (not `127.0.0.1:9`):
+
+```bash
+export OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json"
 export OPENAI_API_KEY=dummy-key
-export OPENAI_BASE_URL=http://127.0.0.1:9/v1
+export OPENAI_BASE_URL=http://127.0.0.1:38081/v1
+export AUTH_DEVELOPMENT_MODE=false
+export SERVER_HOST=127.0.0.1
+export SERVER_PORT=3000
 bash scripts/with-owned-database.sh cargo run -p gateway
 ```
 
@@ -17,7 +30,15 @@ failures.
 
 2. In another terminal, run the load script. `/health` and `/ready` must both return `200`.
 
-## Default load test
+Local stack default:
+
+```bash
+GATEWAY_BASE_URL=http://127.0.0.1:38080 \
+GATEWAY_API_KEY="$INFERENCE_KEY" \
+./scripts/run-load-tests.sh
+```
+
+## Default load test (native :3000)
 
 ```bash
 GATEWAY_API_KEY="$INFERENCE_KEY" ./scripts/run-load-tests.sh
@@ -34,7 +55,7 @@ Defaults:
 ## Custom load test
 
 ```bash
-GATEWAY_BASE_URL=http://127.0.0.1:3000 \
+GATEWAY_BASE_URL=http://127.0.0.1:38080 \
 GATEWAY_API_KEY="$INFERENCE_KEY" \
 TOTAL_REQUESTS=200 \
 CONCURRENCY=20 \
@@ -52,9 +73,11 @@ CONCURRENCY=20 \
 Exit `0` only when every request is 2xx. Exit `2` when any request is non-2xx or a transport
 failure. Exit `1` for setup errors (missing key, health/ready not 200, invalid counts).
 
-For Task 13 validation, record:
+Record:
 
 1. total requests and concurrency used,
 2. success/failure counts,
 3. throughput and wall time,
 4. any observed circuit-open behavior during upstream failure scenarios.
+
+Do not treat these numbers as live OpenAI capacity or hosted production evidence.

@@ -1,5 +1,18 @@
 # Implementation Plan - Business Logic First Development
 
+> **Historical task list.** Checkbox state is contemporaneous and is **not** current shipped
+> inventory. In particular:
+>
+> - `AUTH_DEVELOPMENT_MODE` / mock keys are **not** shipped. Persisted API-key auth is required.
+> - Local Supabase persistence **is** shipped (this file still marks some of it deferred).
+> - Ingress no longer uses Memory/Router mocks or `execute_llm_call()` stubs.
+> - Item 8.6.10 "real OpenAI API" tests are deferred/unrun. Shipped verification uses the local
+>   simulator (**SIMULATED ONLY**).
+> - Distributed tracing export, gRPC client pooling, and conversation-context caches are **not**
+>   shipped.
+>
+> Current commands and contract: [README.md](../../README.md).
+
 ## Development Philosophy
 
 Based on the complete system design (requirements.md + design.md), this implementation follows

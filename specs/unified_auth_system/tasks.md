@@ -1,5 +1,9 @@
 # Implementation Plan
 
+> **Historical task list.** Hardcoded `test-api-key-123`, mock repositories, and development-mode
+> bypass in these checkboxes are **not** shipped. Those keys now return 401. Persistence uses real
+> local Supabase. See [README.md](../../README.md).
+
 Following incremental development principles: start with core business logic that delivers immediate
 value, then add supporting infrastructure organically as needed.
 

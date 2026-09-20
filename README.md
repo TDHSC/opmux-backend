@@ -1,8 +1,98 @@
 # Opmux Backend
 
 Opmux's Rust workspace contains an Axum gateway (`gateway`) and a small shared crate (`common`). The
-gateway exposes an authenticated AI request endpoint, executes LLM calls through vendor adapters,
-and provides health checks, correlation IDs, and Prometheus metrics.
+gateway is an **API-only** service: persisted tenant-scoped API keys, configured routing, bounded
+OpenAI Chat Completions execution, health/readiness, correlation IDs, and Prometheus metrics. There
+is no dashboard, JWT login, or gRPC microservice mesh.
+
+## MVP Scope and Validation Boundary
+
+| Surface     | This MVP                                                                         | Not this MVP / not validated                                       |
+| ----------- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------ |
+| Product     | HTTP API plus `opmux-admin`                                                      | Dashboard, public signup, JWT, service tokens                      |
+| Persistence | Real local database-only Supabase Postgres (`127.0.0.1:55432`)                   | Hosted Supabase deployment, hosted mutations, hosted TLS proof     |
+| Provider    | Real Reqwest adapter against an **owned loopback simulator** (dummy credentials) | Live OpenAI / paid-provider calls                                  |
+| Routing     | Operator-configured catalog routes and flat fallbacks                            | Memory/Router/Rewrite/Validation microservices, client-chosen URLs |
+| Auth        | Persisted SHA-256 API keys; management vs inference                              | Mock keys, `AUTH_DEVELOPMENT_MODE` bypass, auth cache              |
+| Cost        | Successful-response estimate from configured target prices                       | Billing ledger, current provider price sheets                      |
+| Metrics     | Internal `/metrics` (loopback locally; network-restrict in production)           | Metrics authentication, tenant/request-id labels                   |
+| Deployment  | Locked non-root image and loopback Compose stack                                 | Hosted/production deployment                                       |
+
+**OpenAI verification is SIMULATED ONLY.** Persistence uses the real owned local database. The
+following are **deferred and unrun**; do not treat them as production-ready:
+
+- Live OpenAI or other paid-provider calls
+- Hosted deployment
+- Hosted Supabase mutations or hosted TLS verification
+
+Portable SQL and documented `sslmode=verify-full` connection choices are compatibility intent, not a
+hosted test. Documents under `specs/` are historical context unless a file's status banner says
+otherwise.
+
+## Command Index
+
+Copying `.env` is not process configuration. Native examples bind `127.0.0.1:3000`. The documented
+container stack publishes `127.0.0.1:38080` (gateway) and `127.0.0.1:38081` (simulator). Use
+`--noproxy '*'` for local curl so inherited proxies cannot hijack loopback.
+
+```bash
+# Setup
+npm ci
+cargo build --workspace --locked -j 2
+
+# Migrate owned local Supabase (same history CI uses)
+bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
+
+# Run native (dummy provider, unavailable upstream: live=/health, unready=/ready)
+bash scripts/with-owned-database.sh env \
+  SERVER_HOST=127.0.0.1 SERVER_PORT=3000 AUTH_DEVELOPMENT_MODE=false \
+  OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
+  OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:9/v1 OPENAI_TIMEOUT_MS=200 \
+  cargo run -p gateway
+
+# Provision / recover (one-time secret on stdout; write to a fresh mktemp file)
+# Tenant JSON includes display_name, client_id, and credential once. The first
+# key's name is initial-management; read client_id for later key issue commands.
+keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$keyfile"
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  tenant create --name acme > "$keyfile"
+inference_file=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$inference_file"
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  key issue --client-id "$CLIENT_ID" --kind inference --name route > "$inference_file"
+recovered=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$recovered"
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  key issue --client-id "$CLIENT_ID" --kind management --name recovered-manager > "$recovered"
+
+# Rotate (create replacement, verify, then revoke) / revoke
+curl --noproxy '*' -sS -X POST http://127.0.0.1:3000/api/v1/auth/keys \
+  -H "X-API-Key: $OLD_MANAGER" -H "Content-Type: application/json" \
+  -d '{"name":"replacement-manager","kind":"management"}'
+curl --noproxy '*' -sS -X DELETE "http://127.0.0.1:3000/api/v1/auth/keys/$OLD_KEY_ID" \
+  -H "X-API-Key: $REPLACEMENT_MANAGER"
+
+# Test (owned DB + dummy loopback provider; live-provider tests stay ignored)
+bash scripts/with-owned-database.sh bash scripts/with-safe-test-env.sh \
+  env CARGO_BUILD_JOBS=2 \
+  cargo test --workspace --locked --all-features -j 2 -- --test-threads=2
+bash scripts/ci-local.sh
+
+# Container / local stack (simulator, not api.openai.com)
+docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
+bash scripts/check-container.sh
+bash scripts/local-stack.sh up
+bash scripts/local-stack.sh admin tenant create --name acme
+bash scripts/local-stack.sh down
+
+# Shutdown native process
+kill -TERM "$GATEWAY_PID"
+```
+
+Details, defaults, and recovery notes follow. Exact flags also appear in
+[docs/OPERATIONS_RUNBOOK.md](docs/OPERATIONS_RUNBOOK.md) and
+[docs/API_REFERENCE.md](docs/API_REFERENCE.md).
 
 ## Current Capabilities
 
@@ -98,7 +188,7 @@ capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 ### Prerequisites
 
-- Rust stable and Cargo, with rustfmt and Clippy for development.
+- Rust **1.89.0** and Cargo, with rustfmt and Clippy (`rust-toolchain.toml`).
 - Node.js and npm for non-Rust formatting.
 - Docker with Compose, if using the documented local container stack.
 - `npm ci` installs Prettier and the pinned Supabase CLI **2.117.0** used by
@@ -107,8 +197,8 @@ capabilities. Explicit `stream`/`rewrite` requests are rejected.
 From the repository root:
 
 ```bash
-cargo build
 npm ci
+cargo build --workspace --locked -j 2
 ```
 
 ### Local Startup Check (No Real LLM Calls)
@@ -134,19 +224,21 @@ cargo run -p gateway
 These environment overrides apply only to this command. In another terminal:
 
 ```bash
-curl -i http://127.0.0.1:3000/health
-curl -i http://127.0.0.1:3000/ready
-curl -i http://127.0.0.1:3000/metrics
+curl --noproxy '*' -i http://127.0.0.1:3000/health
+curl --noproxy '*' -i http://127.0.0.1:3000/ready
+curl --noproxy '*' -i http://127.0.0.1:3000/metrics
 ```
 
 Expected with no upstream listening on port 9: `/health` returns `200`, `/ready` returns `503`, and
 `/metrics` returns Prometheus output. This is a failure simulation, not a working LLM configuration.
 A healthy process does not imply healthy upstream dependencies.
 
-### Real Upstream Access
+### Optional paid-provider configuration (unrun)
 
-Replace the placeholder with a valid provider key in your local environment, and keep `DATABASE_URL`
-pointed at local Supabase:
+The documented local path is the simulator. A compatible Chat Completions base URL can be configured
+by replacing **both** the dummy key and the loopback URL. That optional path is **not** the MVP
+acceptance configuration. Live-provider calls were **not run** for this release and are not claimed
+production-ready.
 
 ```bash
 bash scripts/with-owned-database.sh env \
@@ -156,10 +248,10 @@ OPENAI_API_KEY='<your-provider-key>' OPENAI_BASE_URL=https://api.openai.com/v1 \
 cargo run -p gateway
 ```
 
-`OPENAI_BASE_URL` defaults to `https://api.openai.com/v1` when unset; override it for a compatible
-http or https path-prefix endpoint. Userinfo, query strings, and fragments (including empty `?` or
-`#`) are rejected before the process binds; a trailing slash is stripped. Keep real keys out of
-version control. The provider key is separate from the gateway's `X-API-Key` request header; see the
+`OPENAI_BASE_URL` defaults to `https://api.openai.com/v1` when unset; documented local commands
+always override it. Userinfo, query strings, and fragments (including empty `?` or `#`) are rejected
+before the process binds; a trailing slash is stripped. Keep real keys out of version control. The
+provider key is separate from the gateway's `X-API-Key` request header; see the
 [API reference](docs/API_REFERENCE.md) for request examples. Gateway `X-API-Key` values must be
 operator-provisioned credentials, not the former public mock keys.
 
@@ -361,10 +453,11 @@ than adding metrics authentication.
 Hosted Postgres is a connection-string/TLS documentation path only. Use a direct or session-mode
 pooler URL with `sslmode=verify-full` and a CA. Do not link this repository to a hosted Supabase
 project, do not run hosted mutations from local tooling, and do not treat local `sslmode=disable` as
-hosted TLS proof.
+hosted TLS proof. Hosted deployment and hosted-Supabase/TLS verification are **deferred and unrun**.
 
 For a paid compatible upstream, replace **both** the dummy key and simulator URL so the local
-Compose default is not retained. That path is optional and is not the documented local stack.
+Compose default is not retained. That path is optional, unrun, and is not the documented local
+stack.
 
 ## Development Checks
 
@@ -489,7 +582,11 @@ opmux-backend/
 - [Observability testing](gateway/tests/OBSERVABILITY_TESTING.md) and
   [performance/load testing](gateway/tests/PERFORMANCE_LOAD_TESTING.md).
 
-Read relevant requirements and designs in `specs/` before changing a feature, but verify their
-status against the implementation: historical or unmarked specs are not an inventory of shipped
-features. Keep usage instructions here, engineering rules in `docs/rules/`, and feature requirements
-in `specs/`.
+Keep usage instructions here, engineering rules in `docs/rules/`, and historical feature
+requirements in `specs/`. Each spec file has a status banner. Those documents preserve earlier
+designs (JWT/dashboard, gRPC Memory/Router/Rewrite/Validation services, selectable health modes, hot
+reload, extra vendors, streaming) as **roadmap context**. They are not shipped. The current operator
+surface is this README plus `docs/` and `gateway/tests/README.md`.
+
+[docs/CHANGELOG_EXECUTOR.md](docs/CHANGELOG_EXECUTOR.md) is a dated foundation note, not current
+architecture.

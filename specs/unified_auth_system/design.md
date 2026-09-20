@@ -1,5 +1,9 @@
 # Technical Solution Design
 
+> **Historical design.** Shipped auth does not use moka/Redis caches, JWT, or dashboard sessions.
+> Identity is `AuthContext { client_id, key_id, kind }` from a digest lookup in `opmux_private`.
+> Operator CLI is `opmux-admin`. See [README.md](../../README.md).
+
 ## Architecture Overview
 
 The Unified Authentication System implements a hybrid middleware-based architecture supporting

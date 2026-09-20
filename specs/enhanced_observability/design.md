@@ -1,5 +1,11 @@
 # Technical Solution Design - Enhanced Observability
 
+> **Historical design.** Shipped observability is documented in [README.md](../../README.md),
+> [docs/OBSERVABILITY.md](../../docs/OBSERVABILITY.md), and
+> [docs/PROMETHEUS.md](../../docs/PROMETHEUS.md). There is no `HEALTH_CHECK_MODE`. The success-only
+> health cache default is 5 seconds. `/metrics` has no application auth. Distributed tracing export
+> is deferred. OpenAI probes are **SIMULATED ONLY**.
+
 ## Overview
 
 This design document describes the implementation of enhanced observability features for the Gateway
@@ -8,7 +14,8 @@ enhanced health check endpoints.
 
 **Related Requirement**: Requirement 5 - Monitoring and Observability
 
-**Implementation Scope**: Phase 1 (MVP) - Production Readiness
+**Implementation Scope**: Phase 1 (API MVP). Not a hosted/production-readiness claim.
+`HEALTH_CHECK_MODE` in later sections is historical design, not shipped.
 
 ## Architecture Overview
 

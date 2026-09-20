@@ -6,12 +6,16 @@ This specification describes the implementation of enhanced observability featur
 Service, including structured logging with correlation IDs, Prometheus metrics collection, and
 enhanced health check endpoints.
 
-**Status**: ✅ Implemented for current milestone
+**Status**: Historical specification. Correlation IDs, structured logs, Prometheus HTTP and bounded
+execution metrics, `/health` liveness, and `/ready` dependency probes **are shipped**. Selectable
+`HEALTH_CHECK_MODE`, 30-second health cache, degraded "at least one vendor" readiness, and
+distributed tracing export are **not shipped**. This is not a hosted/production-readiness claim.
+OpenAI checks are **SIMULATED ONLY**.
 
 **Related Requirement**: Requirement 5 - Monitoring and Observability (from
 `specs/gateway_service/requirements.md`)
 
-**Implementation Phase**: Phase 1 (MVP) - Production Readiness
+**Implementation Phase**: Phase 1 (API MVP) — see [README.md](../../README.md) for current behavior.
 
 ## Documents
 
@@ -40,16 +44,16 @@ enhanced health check endpoints.
   IDs, and finite outcome classes. `/metrics` is an internal scrape surface (network restriction,
   not a metrics auth system).
 
-✅ **Enhanced Health Check (Hybrid Approach)**
+✅ **Health and readiness (shipped behavior)**
 
-- Enhanced `/health` endpoint (liveness probe)
-- New `/ready` endpoint (readiness probe)
-- Configurable health check mode:
-  - `config`: Fast configuration check (development)
-  - `connectivity`: Actual API connectivity check (production)
-- Health check cache (30s TTL, reduces API calls by 66%)
-- Timeout protection (2s)
-- Degraded mode support (at least 1 vendor healthy)
+- `/health` is process liveness only
+- `/ready` requires authentication-database schema/access, upstream `GET /models`, and at least one
+  usable default-route target
+- Success-only cache: `HEALTH_CHECK_CACHE_TTL_SECS` default **5 seconds**; failures are never cached
+- Probe timeout: `HEALTH_CHECK_TIMEOUT` default 2 seconds
+- No selectable `HEALTH_CHECK_MODE`, no degraded "one vendor healthy" shortcut, no 30s TTL
+
+The hybrid `config` vs `connectivity` mode below is **historical design**, not shipped.
 
 ### Phase 2 (Future)
 
@@ -145,32 +149,15 @@ features/      - Business logic with tracing spans
 - Thread IDs: ~5-10% overhead
 - Production default: Both disabled
 
-### 5. Health Check Strategy (Hybrid Approach)
+### 5. Health Check Strategy (Historical Hybrid Approach)
 
-**Design Decision**: Configurable health check mode via environment variable
+**Shipped:** `/health` liveness; `/ready` always probes database access, `/models` reachability, and
+usable default-route targets. Success cache default 5 seconds. Failures uncached. No
+`HEALTH_CHECK_MODE`.
 
-**Mode: `config`** (Development/Testing)
-
-- ✅ Fast (< 1ms)
-- ✅ No external dependencies
-- ✅ No API calls
-- ⚠️ Only checks configuration, not actual connectivity
-
-**Mode: `connectivity`** (Production - Recommended)
-
-- ✅ Actual API connectivity check
-- ✅ Lightweight API calls (GET /models, no token consumption)
-- ✅ Cache with 30s TTL (reduces API calls by 66%)
-- ✅ Timeout protection (2s)
-- ✅ Degraded mode (at least 1 vendor healthy)
-- ✅ True production readiness
-- ⚠️ Higher latency (~50-100ms, cached)
-
-**Rationale**:
-
-- "Ready" should mean "able to handle requests", not just "configured correctly"
-- If OpenAI API is down, Kubernetes should stop routing traffic
-- Cache reduces API calls while maintaining freshness
+**Historical design (not shipped):** configurable `config` vs `connectivity` modes, 30s TTL, and
+degraded "at least 1 vendor healthy" readiness. Do not configure `HEALTH_CHECK_MODE`; the binary
+does not implement it.
 
 ## Implementation Timeline
 
@@ -230,14 +217,12 @@ production readiness.
    - Explicit: Pass RequestContext when needed (external APIs)
    - **Anti-pattern**: Avoid adding `request_id` to child span fields (causes duplication)
 
-3. **Health Check Granularity** ⭐
-   - Hybrid approach: Configurable via `HEALTH_CHECK_MODE`
-   - Mode `config`: Fast configuration check (development)
-   - Mode `connectivity`: Actual API connectivity check (production)
-   - Health check cache (30s TTL)
+3. **Health Check Granularity**
+   - Historical hybrid `HEALTH_CHECK_MODE` was **not implemented**
+   - Shipped `/ready` always checks database access, `/models`, and usable default-route targets
+   - Success-only cache default 5 seconds; failures never cached
    - Timeout protection (2s)
-   - Degraded mode support (at least 1 vendor healthy)
-   - True production readiness
+   - Not a hosted/production-readiness certification
 
 4. **Production Performance** ⭐
    - Configurable logging verbosity (`LOG_VERBOSE_DEBUG`)
@@ -253,10 +238,8 @@ Please review the design and tasks documents and provide feedback on:
 2. **Middleware Error Handling** - Is the fail-safe design sufficient?
 3. **Context Access Strategy** - Hybrid approach (automatic + explicit) acceptable?
 4. **Avoiding Duplication** - Is the "root span only" rule clear and sufficient?
-5. **Health Check Strategy** - Is the hybrid approach (configurable mode) acceptable?
-   - Development: `HEALTH_CHECK_MODE=config` (fast, no API calls)
-   - Production: `HEALTH_CHECK_MODE=connectivity` (actual connectivity check)
-6. **Health Check Cache** - Is 30s TTL reasonable? (reduces API calls by 66%)
+5. **Health Check Strategy** - Historical question. Shipped behavior has no `HEALTH_CHECK_MODE`.
+6. **Health Check Cache** - Shipped default is 5 seconds, success-only.
 7. **Performance Optimization** - Is configurable logging verbosity sufficient?
 8. **Technology Stack** - Are the chosen libraries appropriate?
 9. **Implementation Scope** - Is Phase 1 scope reasonable (includes connectivity check)?
@@ -265,4 +248,4 @@ Please review the design and tasks documents and provide feedback on:
 
 ---
 
-**Status**: ✅ Current milestone implemented
+**Status**: Historical spec with shipped correlation/metrics/health subset documented in README

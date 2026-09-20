@@ -25,7 +25,9 @@
 //! # Usage
 //!
 //! ```bash
-//! curl -X POST http://localhost:3000/api/v1/route
+//! curl --noproxy '*' -X POST http://127.0.0.1:3000/api/v1/route \
+//!   -H "X-API-Key: $INFERENCE_KEY" -H "Content-Type: application/json" \
+//!   -d '{"prompt":"hello","metadata":{}}'
 //! ```
 
 /// Brief description of submodule purpose.
@@ -116,14 +118,12 @@ Optional (use when helpful): `# Flow` for multi-step processes, `# Errors`, `# E
 /// Processes an AI routing request through the complete pipeline.
 ///
 /// # Flow
-/// 1. Retrieves conversation context
-/// 2. Optimizes the prompt (applies rewrite if requested)
+/// 1. Validates the prompt and opaque metadata
+/// 2. Selects the configured catalog route
 /// 3. Executes the LLM call via `ExecutorService`
-/// 4. Updates conversation context with the new exchange
 ///
 /// # Parameters
-/// - `request` - AI routing request with prompt and metadata
-/// - `user_id` - User identifier for context management
+/// - `request` - AI routing request with prompt and opaque metadata
 /// - `request_context` - Correlation IDs for downstream calls
 ///
 /// # Returns
@@ -131,7 +131,6 @@ Optional (use when helpful): `# Flow` for multi-step processes, `# Errors`, `# E
 pub async fn process_request(
     &self,
     request: IngressRequest,
-    user_id: String,
     request_context: &RequestContext,
 ) -> Result<IngressResponse, IngressError>
 ```

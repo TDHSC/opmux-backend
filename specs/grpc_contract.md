@@ -1,5 +1,10 @@
 # gRPC Contract Design
 
+> **Deferred / not shipped.** This contract describes planned Memory/Router/Rewrite/Validation
+> microservices. The MVP gateway does not start gRPC clients or those services. Ingress selects
+> operator-configured catalog routes. Explicit `rewrite`/`stream` requests are rejected. See
+> [README.md](../README.md).
+
 Protocol Buffers clearly define:
 
 1. **Service**: A collection of functionalities that a microservice provides. For example,

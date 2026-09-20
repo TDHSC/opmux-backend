@@ -1,5 +1,12 @@
 # Executor Layer - Technical Design
 
+> **Historical design.** Current executor lives in `gateway/src/features/executor/`. OpenAI is the
+> only vendor. Pricing is **per million** tokens on catalog **target IDs**, not per 1000 tokens and
+> not a hardcoded model table. Retries, fallback, and target-scoped circuits are implemented in
+> `ExecutorService`; vendor clients do not retry. Streaming, Anthropic/Cohere, and RouterService as
+> a microservice are deferred. Local verification is **SIMULATED ONLY**. See
+> [README.md](../../README.md).
+
 ## Overview
 
 The Executor Layer is an internal module within Gateway Service responsible for executing actual LLM

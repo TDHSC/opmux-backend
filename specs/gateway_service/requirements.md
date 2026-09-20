@@ -1,5 +1,15 @@
 # Requirements Document
 
+> **Historical requirements.** This file is original product intent, not shipped inventory.
+> Implemented MVP: API-only gateway, persisted tenant-scoped API keys, configured stateless routing,
+> OpenAI Chat Completions with retry/fallback/circuits, real local Supabase, operator CLI. See
+> [README.md](../../README.md).
+>
+> **Not shipped:** Rewrite/Router/Memory/Validation microservices, gRPC coordination, JWT/dashboard
+> auth, service tokens, `AUTH_DEVELOPMENT_MODE` bypass, hot reload, configuration-dump endpoints.
+> OpenAI verification is **SIMULATED ONLY**. Live-provider, hosted deployment, and hosted
+> Supabase/TLS checks are deferred and unrun.
+
 ## Introduction
 
 Design and develop the Gateway Microservice for AI API Router, serving as the unified entry point
