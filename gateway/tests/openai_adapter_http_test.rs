@@ -547,7 +547,7 @@ async fn real_adapter_preserves_429_retry_after_without_waiting_for_stalled_body
         .delay_body(Duration::from_secs(2)),
     );
     let mut config = openai_config_for_simulator(&simulator);
-    config.timeout_ms = 200;
+    config.timeout_ms = 1_000;
     let vendor = OpenAIVendor::new(config)
         .expect("adapter should construct with dummy local config");
 
@@ -568,8 +568,8 @@ async fn real_adapter_preserves_429_retry_after_without_waiting_for_stalled_body
         other => panic!("expected RateLimitExceeded, got {other:?}"),
     }
     assert!(
-        elapsed < Duration::from_millis(500),
-        "stalled 429 body must not delay typed throttling, took {elapsed:?}"
+        elapsed < Duration::from_millis(250),
+        "stalled 429 body must use a short refinement window, took {elapsed:?}"
     );
     assert_eq!(simulator.generation_count(), 1);
 }

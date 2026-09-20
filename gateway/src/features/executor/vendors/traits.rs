@@ -31,8 +31,8 @@ pub trait LLMVendor: Send + Sync {
     /// Executes one provider call against a shared per-attempt cutoff.
     ///
     /// Default implementations ignore the cutoff and call [`execute`]. OpenAI
-    /// uses it to save 429 header classification before bounded body
-    /// refinement.
+    /// uses it to save 429 header classification before a short bounded body
+    /// refinement inside the remaining attempt budget.
     ///
     /// # Parameters
     /// - `model` - Requested provider model sent on the wire

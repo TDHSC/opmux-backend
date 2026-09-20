@@ -6,9 +6,10 @@
 //! keyed by catalog target identity, not a hardcoded model-price table.
 //! Success bodies are accumulated up to `max_response_bytes` before
 //! deserialization. Provider 429 responses save header throttling and
-//! Retry-After before a bounded body refinement. Complete quota JSON becomes
-//! terminal quota; stalled, failed, malformed, or oversized bodies keep the
-//! saved throttling. There is no detached body drain.
+//! Retry-After before a short bounded body refinement inside the remaining
+//! attempt budget. Complete quota JSON becomes terminal quota; stalled,
+//! failed, malformed, or oversized bodies keep the saved throttling. There is
+//! no detached body drain.
 
 use crate::features::executor::{
     attempt::AttemptContext,
@@ -241,12 +242,13 @@ async fn classify_too_many_requests(
     };
     attempt.observe(throttling.clone());
 
-    if attempt.remaining().is_zero() {
+    let window = attempt.body_refinement_window();
+    if window.is_zero() {
         return throttling;
     }
 
-    let body = match tokio::time::timeout_at(
-        attempt.cutoff(),
+    let body = match tokio::time::timeout(
+        window,
         read_bounded_response_body(response, max_bytes),
     )
     .await

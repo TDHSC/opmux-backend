@@ -1187,9 +1187,93 @@ async fn stalled_429_body_that_cannot_fit_returns_429_not_504() {
     assert!(body.get("response").is_none());
     assert_eq!(simulator.generation_count(), 1);
     assert!(
-        elapsed < HTTP_BOUND,
-        "stalled 429 body cannot-fit took {elapsed:?}"
+        elapsed < Duration::from_millis(400),
+        "cannot-fit 429 must return before the 400ms deadline, elapsed {elapsed:?}"
     );
+    cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn stalled_fitting_429_then_held_retry_expires_504_without_fallback() {
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let issued = provision_inference_key(&pool).await;
+    let simulator = OpenAiSimulator::start().await;
+    let (held, hold) = ScriptedResponse::chat_ok().hold();
+    simulator.enqueue_chat(rate_limited("1").delay_body(Duration::from_secs(5)));
+    simulator.enqueue_chat(held);
+    simulator.enqueue_chat(ScriptedResponse::chat_ok());
+    let settings = settings_for_simulator_with(&simulator, |settings| {
+        enable_default_fallback(settings);
+        settings.limits.protected_request_deadline = Duration::from_secs(2);
+        settings.limits.max_attempt_timeout = Duration::from_secs(10);
+        settings.limits.retries_per_target = 1;
+        settings.limits.max_total_attempts = 3;
+        settings.limits.backoff_cap = Duration::from_millis(2_000);
+    });
+    let app = production_router_with_settings(
+        settings,
+        Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+            pool.clone(),
+        )))),
+        MetricsConfig::disabled(),
+    );
+
+    let started = Instant::now();
+    let response = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/v1/route")
+                .header("content-type", "application/json")
+                .header("x-api-key", &issued.credential)
+                .body(Body::from(ROUTE_JSON))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let elapsed = started.elapsed();
+    let request_id = response
+        .headers()
+        .get("X-Request-ID")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let status = response.status();
+    let body = body_json(response).await;
+    assert_deadline_envelope(status, &body, &request_id);
+    assert!(
+        elapsed >= Duration::from_millis(1_500),
+        "held retry must consume the overall deadline, elapsed {elapsed:?}"
+    );
+    assert!(
+        elapsed < Duration::from_millis(3_000),
+        "held retry 504 took {elapsed:?}"
+    );
+    let models = generation_models(&simulator);
+    assert!(
+        models.len() <= 2,
+        "at most two primary calls, got {models:?}"
+    );
+    assert!(
+        models.iter().all(|model| model == "example-chat-model"),
+        "held retry must not call fallback, got {models:?}"
+    );
+    tokio::time::sleep(Duration::from_millis(400)).await;
+    assert!(
+        simulator.generation_count() <= 2,
+        "deadline must not start late calls, got {}",
+        simulator.generation_count()
+    );
+    assert_eq!(
+        generation_models(&simulator)
+            .iter()
+            .filter(|model| *model == "example-chat-model-mini")
+            .count(),
+        0
+    );
+    hold.release();
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
 

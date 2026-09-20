@@ -4,9 +4,10 @@
 //! fallback hops. Per-attempt timeout is capped by remaining deadline time.
 //! Exponential full jitter is capped by `backoff_cap_ms`. A valid provider
 //! `Retry-After` is never shortened by that cap; if it cannot finish before
-//! the deadline, the caller terminates the whole request as provider
-//! throttling instead of claiming the deadline already elapsed or starting
-//! later retries or configured fallbacks.
+//! the deadline and the deadline has not actually elapsed, the caller
+//! terminates the whole request as provider throttling instead of claiming
+//! the deadline already elapsed or starting later retries or configured
+//! fallbacks. Actual overall expiry remains `DeadlineExceeded`.
 
 use std::time::{Duration, SystemTime};
 

@@ -3,6 +3,7 @@
 use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
 use crate::features::executor::{
+    attempt::AttemptContext,
     config::ExecutorConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult},
@@ -143,6 +144,89 @@ impl LLMVendor for SequenceVendor {
         self.outcomes.get(call).cloned().unwrap_or_else(|| {
             panic!("unexpected extra call {call} on {}", self.vendor_id)
         })
+    }
+
+    fn vendor_id(&self) -> &str {
+        &self.vendor_id
+    }
+
+    fn supports_model(&self, model: &str) -> bool {
+        self.models.iter().any(|item| item == model)
+    }
+
+    fn calculate_cost(
+        &self,
+        _prompt_tokens: i64,
+        _completion_tokens: i64,
+        _target_id: &str,
+    ) -> Result<f64, ExecutorError> {
+        Ok(0.0)
+    }
+
+    async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {
+        Ok(())
+    }
+}
+
+struct HeaderThrottleVendor {
+    vendor_id: String,
+    models: Vec<String>,
+    calls: Arc<AtomicUsize>,
+    retry_after_ms: Option<u64>,
+    stall: Duration,
+}
+
+impl HeaderThrottleVendor {
+    fn new(
+        vendor_id: &str,
+        model: &str,
+        retry_after_ms: Option<u64>,
+        stall: Duration,
+    ) -> (Self, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                vendor_id: vendor_id.to_string(),
+                models: vec![model.to_string()],
+                calls: calls.clone(),
+                retry_after_ms,
+                stall,
+            },
+            calls,
+        )
+    }
+}
+
+#[async_trait]
+impl LLMVendor for HeaderThrottleVendor {
+    async fn execute(
+        &self,
+        model: &str,
+        target_id: &str,
+        params: ExecutionParams,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        let attempt = AttemptContext::from_timeout(Duration::from_secs(30));
+        self.execute_attempt(model, target_id, params, &attempt)
+            .await
+    }
+
+    async fn execute_attempt(
+        &self,
+        _model: &str,
+        _target_id: &str,
+        _params: ExecutionParams,
+        attempt: &AttemptContext,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let error = ExecutorError::RateLimitExceeded {
+            vendor: self.vendor_id.clone(),
+            retry_after_ms: self.retry_after_ms,
+        };
+        attempt.observe(error.clone());
+        if !self.stall.is_zero() {
+            tokio::time::sleep(self.stall).await;
+        }
+        Err(error)
     }
 
     fn vendor_id(&self) -> &str {
@@ -722,4 +806,53 @@ async fn fitting_retry_after_still_retries_primary_when_fallback_exists() {
     assert_eq!(result.model_used, "gpt-4");
     assert_eq!(primary_calls.load(Ordering::SeqCst), 2);
     assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
+}
+
+#[tokio::test(start_paused = true)]
+async fn saved_throttling_after_overall_expiry_is_deadline() {
+    for stall in [Duration::from_millis(100), Duration::from_millis(200)] {
+        for retry_after_ms in [Some(1_000_u64), Some(30_000), None] {
+            let (primary, primary_calls) =
+                HeaderThrottleVendor::new("mock", "model-1", retry_after_ms, stall);
+            let (fallback, fallback_calls) = SequenceVendor::new(
+                "backup",
+                "model-2",
+                vec![Ok(success_result("backup", "model-2"))],
+            );
+            let service = service_with_policy(
+                vec![
+                    ("mock".to_string(), Arc::new(primary)),
+                    ("backup".to_string(), Arc::new(fallback)),
+                ],
+                0,
+                3,
+                10_000,
+                2_000,
+            );
+            let route = plan("mock", "model-1", vec![plan("backup", "model-2", vec![])]);
+            let deadline = RequestDeadline::from_timeout(Duration::from_millis(100));
+            let handle = tokio::spawn(async move {
+                service.execute(&route, &payload(), deadline).await
+            });
+            wait_for_calls(&primary_calls, 1).await;
+            tokio::time::advance(Duration::from_millis(100)).await;
+            tokio::task::yield_now().await;
+            match handle.await.expect("join") {
+                Err(ExecutorError::DeadlineExceeded) => {}
+                other => panic!(
+                    "stall={stall:?} retry_after_ms={retry_after_ms:?}: expected DeadlineExceeded, got {other:?}"
+                ),
+            }
+            assert_eq!(
+                primary_calls.load(Ordering::SeqCst),
+                1,
+                "stall={stall:?} retry_after_ms={retry_after_ms:?}"
+            );
+            assert_eq!(
+                fallback_calls.load(Ordering::SeqCst),
+                0,
+                "stall={stall:?} retry_after_ms={retry_after_ms:?}"
+            );
+        }
+    }
 }

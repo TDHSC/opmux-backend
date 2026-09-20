@@ -136,9 +136,11 @@ curl -i http://127.0.0.1:3000/metrics
 - Per-attempt timeout is the lesser of the configured attempt maximum and remaining time. The global
   actual-attempt budget is not reset on fallback. A `Retry-After` that cannot finish before the
   deadline returns `429 UPSTREAM_RATE_LIMIT` for the whole request, including configured fallbacks,
-  not a false `504`. Provider 429 responses save header throttling and parsed `Retry-After` before a
-  bounded body refinement. Complete `insufficient_quota` JSON is terminal quota; stalled, malformed,
-  or oversized 429 bodies keep throttling. Throttling does not open circuits.
+  not a false `504`, but only while the overall deadline has not actually elapsed. Actual expiry is
+  always `504`, including when a ready 429 or saved `Retry-After` is already observed. Provider 429
+  responses save header throttling and parsed `Retry-After` before a short bounded body refinement
+  inside the remaining attempt budget. Complete `insufficient_quota` JSON is terminal quota;
+  stalled, malformed, or oversized 429 bodies keep throttling. Throttling does not open circuits.
 
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
 

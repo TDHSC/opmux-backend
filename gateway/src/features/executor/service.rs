@@ -402,12 +402,12 @@ impl ExecutorService {
             };
             let cutoff = tokio::time::Instant::now() + attempt_timeout;
             let attempt_ctx = AttemptContext::new(cutoff);
-            let error = match tokio::time::timeout_at(
+            let outcome = tokio::time::timeout_at(
                 cutoff,
                 self.repository.call_llm(plan, params, &attempt_ctx),
             )
-            .await
-            {
+            .await;
+            let error = match outcome {
                 Ok(Ok(result)) => {
                     if attempt > 0 {
                         tracing::info!(
@@ -431,6 +431,9 @@ impl ExecutorService {
                     }
                 },
             };
+            if deadline.is_expired() {
+                return Err(ExecutorError::DeadlineExceeded);
+            }
             if Self::is_retryable_error(&error) {
                 retry_after_ms = match &error {
                     ExecutorError::RateLimitExceeded {
@@ -473,15 +476,18 @@ impl ExecutorService {
 
     /// Terminates the whole request when a valid Retry-After cannot fit.
     ///
-    /// A provider minimum that cannot finish in remaining time is
-    /// `RateLimitExceeded` (429), including when body refinement later
-    /// exhausts the budget. Actual deadline expiry without a cannot-fit
-    /// provider minimum is `DeadlineExceeded` (504). This must not start
-    /// later retries or configured fallbacks.
+    /// Actual overall expiry is always `DeadlineExceeded` (504), including
+    /// when a ready attempt result or saved header observation is already
+    /// classified as throttling. A still-unexpired provider minimum that
+    /// cannot finish in remaining time is `RateLimitExceeded` (429). This
+    /// must not start later retries or configured fallbacks.
     fn terminate_for_provider_minimum(
         error: &ExecutorError,
         deadline: RequestDeadline,
     ) -> Option<ExecutorError> {
+        if deadline.is_expired() {
+            return Some(ExecutorError::DeadlineExceeded);
+        }
         let ExecutorError::RateLimitExceeded {
             retry_after_ms: Some(ms),
             ..
@@ -493,10 +499,7 @@ impl ExecutorService {
             Some(Duration::from_millis(*ms)),
             deadline.remaining(),
         ) {
-            return Some(error.clone());
-        }
-        if deadline.is_expired() {
-            Some(ExecutorError::DeadlineExceeded)
+            Some(error.clone())
         } else {
             None
         }

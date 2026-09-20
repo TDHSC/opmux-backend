@@ -326,12 +326,16 @@ Response `200 OK`:
   - `401 Unauthorized` invalid/missing/ambiguous API key (`UNAUTHORIZED`)
   - `403 Forbidden` authenticated management key (generation requires inference) (`FORBIDDEN`)
   - `415 Unsupported Media Type` non-JSON Content-Type (`UNSUPPORTED_MEDIA_TYPE`)
-  - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`)
+  - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`). A valid
+    `Retry-After` that cannot finish in remaining time returns this status only while the overall
+    deadline has not elapsed.
   - `502 Bad Gateway` upstream credential, protocol, oversized, quota, or other provider failure
     (`UPSTREAM_AUTHENTICATION`, `UPSTREAM_PROTOCOL`, `UPSTREAM_ERROR`). Provider 401/403 is never a
     gateway `401`. A complete bounded HTTP 429 JSON body with `error.code` or `error.type`
-    `insufficient_quota` is exhausted quota (`UPSTREAM_ERROR`), not throttling.
-  - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`)
+    `insufficient_quota` is exhausted quota (`UPSTREAM_ERROR`), not throttling. Stalled, malformed,
+    or oversized 429 bodies keep header throttling.
+  - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`). Actual
+    expiry takes precedence over a ready 429 or saved `Retry-After`.
   - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
   - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)
     or all eligible targets circuit-open (`CIRCUIT_OPEN`)

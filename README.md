@@ -164,12 +164,16 @@ primary and fallback hops, and considering a fallback does not reset that counte
 full-jitter exponential capped at `backoff_cap_ms` (default 2 seconds). A valid `Retry-After`
 delta-seconds or HTTP-date is never shortened by that cap; if the provider minimum cannot finish
 before the deadline, the whole request ends as sanitized `429 UPSTREAM_RATE_LIMIT` with no later
-provider calls, including configured fallbacks, rather than a false `504 DEADLINE_EXCEEDED`. 429
-classification uses response headers and does not wait for an unused error body. Malformed
-`Retry-After` uses the capped jitter instead of an unbounded sleep. Eligible fallback switching and
-target-scoped circuits are enforced: an open primary does not block a healthy same-provider
-fallback, skipped open targets consume no attempt, and recovery uses one half-open probe per target.
-Concurrency admission and inbound raw-size enforcement are later features and are not active yet.
+provider calls, including configured fallbacks, rather than a false `504 DEADLINE_EXCEEDED`. Actual
+overall expiry is always `504`, including when a ready 429 or saved `Retry-After` is already
+observed. Provider 429 responses save header throttling immediately, then refine a complete bounded
+body inside a short window of the remaining attempt budget (`min(100ms, remaining / 2)`). Complete
+`insufficient_quota` JSON is terminal quota; stalled, failed, malformed, or oversized bodies keep
+the saved throttling. Malformed `Retry-After` uses the capped jitter instead of an unbounded sleep.
+Eligible fallback switching and target-scoped circuits are enforced: an open primary does not block
+a healthy same-provider fallback, skipped open targets consume no attempt, and recovery uses one
+half-open probe per target. Concurrency admission and inbound raw-size enforcement are later
+features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the
