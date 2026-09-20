@@ -1,16 +1,20 @@
 //! Service Layer - Authentication Business Logic
 //!
 //! Resolves presented credentials against the persisted store, derives tenant
-//! identity and kind, records last-used on successful authentication, and
-//! issues tenant-scoped keys through the shared provisioning service.
+//! identity and kind, records last-used on successful authentication, issues
+//! tenant-scoped keys through the shared provisioning service, and revokes
+//! same-tenant keys through the store on every request.
 
 use super::credentials::hash_credential;
 use super::error::AuthError;
 use super::models::{ApiKeyMetadata, AuthContext, KeyInventory, KeyListOptions};
-use super::persist::{ApiKeyKind, AuthStore, AuthStoreError, MAX_KEY_LIST_LIMIT};
+use super::persist::{
+    ApiKeyKind, AuthStore, AuthStoreError, RevokeOutcome, MAX_KEY_LIST_LIMIT,
+};
 use super::provision::{IssuedKey, ProvisioningService};
 use chrono::Utc;
 use std::sync::Arc;
+use uuid::Uuid;
 
 /// Failures from authenticating a presented credential.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +175,37 @@ impl AuthService {
         })
     }
 
+    /// Revokes a key owned by the authenticated tenant.
+    ///
+    /// Tenant scope is `actor.client_id`. Path identifiers cannot select
+    /// another client. Self-revocation and final-manager revocation are
+    /// allowed. Repeat revocation of an already-revoked same-tenant key is
+    /// success. Missing and other-tenant identifiers are `KeyNotFound`.
+    ///
+    /// # Parameters
+    /// - `actor` - Authenticated management context
+    /// - `key_id` - Target key identifier
+    ///
+    /// # Errors
+    /// - `CapabilityDenied` when the actor is not a management key
+    /// - `KeyNotFound` when no same-tenant key exists
+    /// - `StoreUnavailable` when persistence fails
+    pub async fn revoke_key(
+        &self,
+        actor: &AuthContext,
+        key_id: Uuid,
+    ) -> Result<(), AuthError> {
+        Self::require_management(actor)?;
+        match self
+            .store
+            .revoke_key(actor.client_id, key_id, Utc::now())
+            .await?
+        {
+            RevokeOutcome::Revoked(_) | RevokeOutcome::AlreadyRevoked(_) => Ok(()),
+            RevokeOutcome::NotFound => Err(AuthError::KeyNotFound),
+        }
+    }
+
     /// Validates a presented credential and returns persisted identity.
     ///
     /// # Flow
@@ -283,8 +318,10 @@ mod tests {
         lookups: Mutex<u32>,
         touches: Mutex<u32>,
         inserts: Mutex<u32>,
+        revokes: Mutex<u32>,
         fail_lookup: bool,
         fail_touch: bool,
+        fail_revoke: bool,
     }
 
     impl ScriptedStore {
@@ -296,8 +333,10 @@ mod tests {
                 lookups: Mutex::new(0),
                 touches: Mutex::new(0),
                 inserts: Mutex::new(0),
+                revokes: Mutex::new(0),
                 fail_lookup: false,
                 fail_touch: false,
+                fail_revoke: false,
             }
         }
 
@@ -307,8 +346,10 @@ mod tests {
                 lookups: Mutex::new(0),
                 touches: Mutex::new(0),
                 inserts: Mutex::new(0),
+                revokes: Mutex::new(0),
                 fail_lookup: true,
                 fail_touch: false,
+                fail_revoke: false,
             }
         }
     }
@@ -404,11 +445,28 @@ mod tests {
 
         async fn revoke_key(
             &self,
-            _client_id: Uuid,
-            _key_id: Uuid,
-            _revoked_at: DateTime<Utc>,
+            client_id: Uuid,
+            key_id: Uuid,
+            revoked_at: DateTime<Utc>,
         ) -> Result<RevokeOutcome, AuthStoreError> {
-            Ok(RevokeOutcome::NotFound)
+            *self.revokes.lock().expect("lock") += 1;
+            if self.fail_revoke {
+                return Err(AuthStoreError::Unavailable);
+            }
+            let mut records = self.records.lock().expect("lock");
+            let Some(digest) = records
+                .values()
+                .find(|record| record.id == key_id && record.client_id == client_id)
+                .map(|record| record.digest)
+            else {
+                return Ok(RevokeOutcome::NotFound);
+            };
+            let record = records.get_mut(&digest).expect("present");
+            if record.revoked_at.is_some() {
+                return Ok(RevokeOutcome::AlreadyRevoked(record.clone()));
+            }
+            record.revoked_at = Some(revoked_at);
+            Ok(RevokeOutcome::Revoked(record.clone()))
         }
     }
 
@@ -568,6 +626,95 @@ mod tests {
             .await
             .expect_err("list denied");
         assert!(matches!(list_denied, AuthError::CapabilityDenied));
+    }
+
+    #[tokio::test]
+    async fn revoke_key_is_tenant_scoped_idempotent_and_management_only() {
+        let (_, stored) = record(ApiKeyKind::Management, false);
+        let target = ApiKeyRecord {
+            id: Uuid::new_v4(),
+            client_id: stored.client_id,
+            digest: hash_credential("opmx_v1_revoke-target"),
+            display_id: format!("opk_{}", Uuid::new_v4().simple()),
+            name: "revoke-target".to_string(),
+            kind: ApiKeyKind::Inference,
+            created_at: Utc::now(),
+            last_used_at: None,
+            revoked_at: None,
+        };
+        let other_tenant = ApiKeyRecord {
+            id: Uuid::new_v4(),
+            client_id: Uuid::new_v4(),
+            digest: hash_credential("opmx_v1_other-tenant"),
+            display_id: format!("opk_{}", Uuid::new_v4().simple()),
+            name: "other".to_string(),
+            kind: ApiKeyKind::Inference,
+            created_at: Utc::now(),
+            last_used_at: None,
+            revoked_at: None,
+        };
+        let store = Arc::new(ScriptedStore::with_record(stored.clone()));
+        store
+            .records
+            .lock()
+            .expect("lock")
+            .insert(target.digest, target.clone());
+        store
+            .records
+            .lock()
+            .expect("lock")
+            .insert(other_tenant.digest, other_tenant.clone());
+        let svc = AuthService::new(store.clone());
+        let actor = AuthContext {
+            client_id: stored.client_id,
+            key_id: stored.id,
+            kind: ApiKeyKind::Management,
+        };
+
+        svc.revoke_key(&actor, target.id).await.expect("revoke");
+        svc.revoke_key(&actor, target.id)
+            .await
+            .expect("idempotent revoke");
+        let revoked = store
+            .records
+            .lock()
+            .expect("lock")
+            .get(&target.digest)
+            .cloned()
+            .expect("target");
+        assert!(revoked.revoked_at.is_some());
+        assert_eq!(*store.revokes.lock().expect("lock"), 2);
+
+        let missing = svc
+            .revoke_key(&actor, other_tenant.id)
+            .await
+            .expect_err("cross-tenant");
+        assert!(matches!(missing, AuthError::KeyNotFound));
+        let unknown = svc
+            .revoke_key(&actor, Uuid::new_v4())
+            .await
+            .expect_err("unknown");
+        assert!(matches!(unknown, AuthError::KeyNotFound));
+        assert!(store
+            .records
+            .lock()
+            .expect("lock")
+            .get(&other_tenant.digest)
+            .expect("other")
+            .revoked_at
+            .is_none());
+
+        let inference_actor = AuthContext {
+            client_id: stored.client_id,
+            key_id: stored.id,
+            kind: ApiKeyKind::Inference,
+        };
+        let denied = svc
+            .revoke_key(&inference_actor, target.id)
+            .await
+            .expect_err("denied");
+        assert!(matches!(denied, AuthError::CapabilityDenied));
+        assert_eq!(*store.revokes.lock().expect("lock"), 4);
     }
 
     struct VecWriter(std::sync::Arc<Mutex<Vec<u8>>>);

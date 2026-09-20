@@ -27,6 +27,10 @@ pub enum AuthError {
     #[error("Invalid key management request: {0}")]
     InvalidInput(String),
 
+    /// Same-tenant key is missing. Other-tenant identifiers use this too.
+    #[error("API key was not found")]
+    KeyNotFound,
+
     /// The authentication datastore is unreachable or timed out.
     #[error("Authentication dependency unavailable")]
     StoreUnavailable,
@@ -66,6 +70,9 @@ impl IntoResponse for AuthError {
                 "You do not have permission to perform this operation.".to_string(),
             ),
             Self::InvalidInput(message) => (StatusCode::BAD_REQUEST, message),
+            Self::KeyNotFound => {
+                (StatusCode::NOT_FOUND, "API key was not found".to_string())
+            }
             Self::StoreUnavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "Authentication dependency unavailable".to_string(),
@@ -114,6 +121,19 @@ mod tests {
         let s = String::from_utf8(bytes.to_vec()).unwrap();
         assert!(s.contains("kind must be management or inference"));
         assert!(!s.contains("digest"));
+    }
+
+    #[tokio::test]
+    async fn key_not_found_maps_to_indistinguishable_404() {
+        let err = AuthError::KeyNotFound;
+        let resp = err.into_response();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let s = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(s.contains("API key was not found"));
+        assert!(!s.contains("tenant"));
+        assert!(!s.contains("digest"));
+        assert!(!s.contains("revoked"));
     }
 
     #[tokio::test]

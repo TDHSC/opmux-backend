@@ -151,6 +151,33 @@ Response codes:
 - `403 Forbidden` authenticated inference key
 - `503 Service Unavailable` authentication datastore unavailable
 
+## DELETE /api/v1/auth/keys/{id}
+
+Revoke a key in the authenticated tenant. The row is retained with a revocation timestamp.
+
+- Auth: required management `X-API-Key`. Inference credentials receive `403`, including when
+  targeting a key in their own tenant. Missing, unknown, and malformed credentials receive `401`.
+- Tenant ownership comes from the authenticated key. The path `{id}` cannot select another tenant.
+  Other-tenant and well-formed nonexistent UUIDs return indistinguishable `404` status and error
+  text (correlation headers may differ).
+- First revocation commits `revoked_at` and returns `204`. Repeating DELETE for the same tenant
+  returns `204` without changing the original timestamp.
+- Self-revocation and final-manager revocation are allowed. There is no last-manager lock. Recover
+  with `opmux-admin key issue` for the existing client; that issues a replacement and does not
+  revive revoked keys.
+- Rotation is create a replacement manager, verify it, then revoke the old key. Overlap is required:
+  the replacement must work before the old key is revoked.
+- Revocation is effective for authentication after commit. Already admitted requests may finish;
+  revocation does not cancel in-flight provider work.
+
+Response codes:
+
+- `204 No Content` success, including idempotent same-tenant repeats
+- `401 Unauthorized` missing/invalid API key
+- `403 Forbidden` authenticated inference key
+- `404 Not Found` missing or other-tenant key
+- `503 Service Unavailable` authentication datastore unavailable
+
 ## POST /api/v1/route
 
 Protected AI routing endpoint.

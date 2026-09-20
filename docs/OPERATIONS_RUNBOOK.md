@@ -36,7 +36,8 @@ client and one management key atomically. Existing-client issuance adds one key 
 over HTTP; ownership cannot be taken from the request body. `GET /api/v1/auth/keys` lists only that
 tenant's safe metadata (default/max 100, newest first). Continue with `offset` when `has_more` is
 true. Query `client_id`/`tenant_id`, unknown parameters, and invalid `limit`/`offset`/`kind` return
-400 and do not change inventory.
+400 and do not change inventory. `DELETE /api/v1/auth/keys/{id}` revokes a same-tenant key (204,
+idempotent). Other-tenant and unknown IDs return indistinguishable 404 and do not change the target.
 
 Successful commands print one JSON object to **stdout**, including the newly generated
 `opmx_v1_<base64url>` credential exactly once. Write stdout to a fresh private file created with
@@ -58,7 +59,42 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
 Do not seed public mock keys (`test-api-key-123`, `dev-api-key-456`) into the database. HTTP request
 authentication hashes the presented credential and looks up the digest in `opmux_private`. Last
 successful authentication updates `last_used_at` before the request is admitted, including when
-later inference fails. There is no authentication cache.
+later inference fails. There is no authentication cache. Revocation is visible to subsequent
+authentication as soon as DELETE commits. Already admitted work may finish; revocation does not
+promise cancellation of an in-flight provider call.
+
+### Rotate a management key
+
+Create the replacement, confirm it can list the tenant, then revoke the old key. Do not revoke
+first.
+
+```bash
+replacement=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$replacement"
+curl -sS -X POST http://127.0.0.1:3000/api/v1/auth/keys \
+  -H "X-API-Key: $OLD_MANAGER" \
+  -H "Content-Type: application/json" \
+  -d '{"name":"replacement-manager","kind":"management"}' > "$replacement"
+# Confirm the replacement can list keys, then revoke the old key with it:
+curl -sS -X DELETE "http://127.0.0.1:3000/api/v1/auth/keys/$OLD_KEY_ID" \
+  -H "X-API-Key: $REPLACEMENT_MANAGER"
+```
+
+Read the replacement credential from `$replacement` privately. Do not paste it into logs.
+
+### Recover after last-manager revocation
+
+Self-revocation and final-manager revocation are allowed. There is no last-manager prohibition. If
+every management key for a client is revoked, HTTP management is unavailable until an operator
+issues a replacement for that existing client. This does not create another tenant or revive revoked
+keys.
+
+```bash
+recovered=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$recovered"
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  key issue --client-id "$CLIENT_ID" --kind management --name recovered-manager > "$recovered"
+```
 
 ## Startup checks
 

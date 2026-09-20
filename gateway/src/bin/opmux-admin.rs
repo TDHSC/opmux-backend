@@ -28,7 +28,11 @@ an existing path or symlink.
   opmux-admin tenant create --name acme > \"$keyfile\"
 
 Do not paste secrets into tickets, logs, or shell history. The secret cannot
-be retrieved later; issue a replacement key if it is lost.
+be retrieved later; issue a replacement key if it is lost. HTTP self-revocation
+and final-manager revocation are allowed. Recover a tenant that has no active
+management key with `key issue --client-id UUID --kind management --name NAME`
+for the existing client. That does not revive revoked keys or create another
+tenant.
 
 The CLI is not an unauthenticated HTTP bootstrap. It uses DATABASE_URL and
 assumes the connecting user can SET ROLE to OPMUX_DB_ROLE (default

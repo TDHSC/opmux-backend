@@ -12,6 +12,10 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
   ownership selectors and invalid paging are rejected.
+- `DELETE /api/v1/auth/keys/{id}`: management-only same-tenant revocation. First and repeat DELETE
+  return `204`. Other-tenant and unknown IDs return indistinguishable `404`. Self-revocation and
+  final-manager revocation are allowed; recover with `opmux-admin key issue`. Subsequent auth is
+  denied after commit; already admitted requests may finish.
 - LLM execution: an OpenAI vendor implementation, with retry, fallback, and circuit-breaker logic in
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
@@ -156,7 +160,11 @@ HTTP generation authenticates persisted inference keys. Management keys may crea
 management or inference keys for their own tenant through `POST /api/v1/auth/keys`; they cannot
 generate. `GET /api/v1/auth/keys` lists that tenant's safe metadata only (at most 100 keys, newest
 first; optional `limit`, `offset`, and `kind`). Ownership selectors and invalid paging/kind values
-return 400. Inference keys cannot create or list keys. Do not seed `test-api-key-123` or
+return 400. `DELETE /api/v1/auth/keys/{id}` revokes a same-tenant key (204, idempotent) and returns
+indistinguishable 404 for other-tenant or unknown IDs. Rotate a manager by creating a replacement,
+verifying it, then revoking the old key. Final-manager self-revocation is allowed; recover with
+`opmux-admin key issue --client-id UUID --kind management --name NAME` for the existing client.
+Inference keys cannot create, list, or revoke keys. Do not seed `test-api-key-123` or
 `dev-api-key-456` into `opmux_private`; those former public keys return 401.
 
 Wrap workspace tests so they receive the owned database URL. The wrapper ignores inherited remote or

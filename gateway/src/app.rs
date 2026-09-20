@@ -21,7 +21,7 @@ use crate::{
 use axum::{
     middleware,
     response::Html,
-    routing::{get, post},
+    routing::{delete, get, post},
     Router,
 };
 use std::sync::Arc;
@@ -101,6 +101,7 @@ pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Route
             "/api/v1/auth/keys",
             post(auth::create_api_key).get(auth::list_api_keys),
         )
+        .route("/api/v1/auth/keys/{id}", delete(auth::revoke_api_key))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::auth_middleware,

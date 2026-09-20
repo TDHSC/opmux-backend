@@ -1,15 +1,16 @@
 //! Authentication Feature Module
 //!
 //! Provides API key authentication functionality following 3-layer architecture:
-//! - Handler Layer: `POST`/`GET /api/v1/auth/keys` for tenant-scoped issuance
+//! - Handler Layer: `POST`/`GET`/`DELETE /api/v1/auth/keys` for tenant-scoped
+//!   issuance, inventory, and revocation
 //! - Service Layer: persisted request authentication plus shared provisioning
 //! - Repository Layer: fallible Postgres store (`persist`)
 //!
 //! HTTP authentication hashes presented credentials, looks them up in
 //! `opmux_private`, and derives tenant/key/kind from the stored row. Management
-//! keys may create and list same-tenant keys; inference keys generate only.
-//! Mock key acceptance and development bypass are test-only leftovers, not
-//! runtime behavior.
+//! keys may create, list, and revoke same-tenant keys; inference keys generate
+//! only. Mock key acceptance and development bypass are test-only leftovers,
+//! not runtime behavior.
 
 pub use config::{get_auth_config, AuthConfig};
 pub use credentials::{
@@ -18,7 +19,7 @@ pub use credentials::{
     INITIAL_MANAGEMENT_KEY_NAME, SECRET_PAYLOAD_LEN,
 };
 pub use error::AuthError;
-pub use handler::{create_api_key, list_api_keys};
+pub use handler::{create_api_key, list_api_keys, revoke_api_key};
 pub use models::{ApiKeyMetadata, AuthContext, KeyInventory, KeyListOptions};
 pub use persist::{
     ApiKeyKind, ApiKeyRecord, AuthStore, AuthStoreError, ClientRecord, KeyDigest,

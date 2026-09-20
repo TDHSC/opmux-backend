@@ -1,9 +1,10 @@
 //! Handler Layer - HTTP API key management.
 //!
-//! Management credentials may create and list keys for the authenticated
-//! tenant. Inference credentials receive 403. Ownership and kind come from
-//! `AuthContext`, never from request body or query fields. Inventory paging
-//! uses documented `limit`/`offset`/`kind` query parameters.
+//! Management credentials may create, list, and revoke keys for the
+//! authenticated tenant. Inference credentials receive 403. Ownership and kind
+//! come from `AuthContext`, never from request body, query, or path-tenant
+//! fields. Inventory paging uses documented `limit`/`offset`/`kind` query
+//! parameters. Revocation is idempotent for a same-tenant key.
 
 use super::{
     persist::{ApiKeyKind, MAX_KEY_LIST_LIMIT},
@@ -11,12 +12,13 @@ use super::{
 };
 use crate::AppState;
 use axum::{
-    extract::{Json, RawQuery, State},
+    extract::{Json, Path, RawQuery, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json as ResponseJson, Response},
 };
 use serde_json::Value;
 use std::collections::HashSet;
+use uuid::Uuid;
 
 /// Creates a management or inference key in the authenticated tenant.
 ///
@@ -93,6 +95,46 @@ pub async fn list_api_keys(
     Ok(ResponseJson(
         state.auth_service.list_keys(&auth, options).await?,
     ))
+}
+
+/// Revokes a same-tenant key without deleting its inventory row.
+///
+/// First revocation commits `revoked_at` and returns 204. Repeating DELETE
+/// for the same tenant returns 204 without changing that timestamp.
+/// Other-tenant and unknown identifiers are indistinguishable 404. There is
+/// no last-manager prohibition; operator CLI recovery issues a replacement.
+/// Subsequent authentication is denied after commit. Already admitted work
+/// may finish.
+///
+/// # Parameters
+/// - `state` - Injected application state
+/// - `auth` - Authenticated tenant, key, and kind
+/// - `key_id` - Target key identifier from the path
+///
+/// # Returns
+/// Empty 204 response after commit
+///
+/// # Errors
+/// - `401` from authentication middleware for missing/unknown credentials
+/// - `403` when the caller is not a management key
+/// - `404` when the key is missing or owned by another tenant
+#[tracing::instrument(
+    skip(state, auth),
+    fields(
+        endpoint = "/api/v1/auth/keys/{id}",
+        client_id = %auth.client_id,
+        key_id = %auth.key_id,
+        target_key_id = %key_id,
+    )
+)]
+pub async fn revoke_api_key(
+    State(state): State<AppState>,
+    auth: AuthContext,
+    Path(key_id): Path<Uuid>,
+) -> Result<StatusCode, AuthError> {
+    AuthService::require_management(&auth)?;
+    state.auth_service.revoke_key(&auth, key_id).await?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 fn created_key_response(issued: IssuedKey) -> Response {
