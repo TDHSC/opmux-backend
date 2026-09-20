@@ -189,8 +189,7 @@ pub(crate) struct RawLimits {
 /// budget, capped jitter / Retry-After waits, eligible flat fallback switching,
 /// and target-scoped circuits are enforced. Protected JSON routes enforce
 /// `max_request_body_bytes` and ingress metadata enforces `max_metadata_bytes`.
-/// Concurrent generation admission is a later feature and must not be described
-/// as already active.
+/// Concurrent generation admission is enforced by `max_concurrent_generations`.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PolicyLimits {
     /// Overall protected-request deadline.

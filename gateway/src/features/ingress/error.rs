@@ -1,5 +1,6 @@
 use axum::response::{IntoResponse, Response};
 
+use crate::core::admission::LOCAL_OVERLOAD_RETRY_AFTER_SECS;
 use crate::core::http_error::{error_response, ErrorCode};
 use crate::features::executor::error::ExecutorError;
 
@@ -71,6 +72,11 @@ impl IntoResponse for IngressError {
     fn into_response(self) -> Response {
         match self {
             Self::ExecutionFailed(error) => error.into_response(),
+            Self::Overloaded => error_response(
+                ErrorCode::Overloaded,
+                "The service is overloaded",
+                Some(LOCAL_OVERLOAD_RETRY_AFTER_SECS),
+            ),
             other => {
                 let (code, message) = other.http_mapping();
                 error_response(code, message, None)
@@ -122,8 +128,21 @@ mod tests {
         assert_eq!(too_large_status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(too_large["error"]["code"], "PAYLOAD_TOO_LARGE");
 
-        let (overloaded_status, overloaded) = envelope(IngressError::Overloaded).await;
-        assert_eq!(overloaded_status, StatusCode::TOO_MANY_REQUESTS);
+        let overloaded_response = IngressError::Overloaded.into_response();
+        assert_eq!(overloaded_response.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(
+            overloaded_response
+                .headers()
+                .get(axum::http::header::RETRY_AFTER)
+                .and_then(|value| value.to_str().ok()),
+            Some("1")
+        );
+        let overloaded_bytes =
+            body::to_bytes(overloaded_response.into_body(), usize::MAX)
+                .await
+                .unwrap();
+        let overloaded: serde_json::Value =
+            serde_json::from_slice(&overloaded_bytes).unwrap();
         assert_eq!(overloaded["error"]["code"], "OVERLOADED");
     }
 }

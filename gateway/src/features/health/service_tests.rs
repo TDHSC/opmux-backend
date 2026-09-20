@@ -554,7 +554,7 @@ mod tests {
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(
                     executor.clone(),
-                    settings,
+                    settings.clone(),
                 ),
             ),
             executor_service: executor,
@@ -562,6 +562,9 @@ mod tests {
             auth_service: Arc::new(crate::features::auth::AuthService::new(Arc::new(
                 crate::features::auth::UnavailableAuthStore,
             ))),
+            admission: crate::core::admission::AdmissionLimiter::new(
+                settings.limits.max_concurrent_generations,
+            ),
         };
 
         Router::new()

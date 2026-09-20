@@ -7,7 +7,7 @@
 //!
 //! # Request Flow
 //!
-//! 1. **Handler** - Validates HTTP requests and extracts data
+//! 1. **Handler** - Validates HTTP requests, extracts data, and admits generation
 //! 2. **Service** - Selects a configured route and builds a flat target plan
 //! 3. **Repository** - Calls the executor execution boundary
 //!

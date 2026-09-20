@@ -6,6 +6,7 @@
 use crate::core::extract::RequestBodyLimit;
 use crate::{
     core::{
+        admission::AdmissionLimiter,
         config::Settings,
         metrics::{create_metrics, MetricsConfig},
     },
@@ -63,6 +64,7 @@ impl Application {
             executor_service.clone(),
             settings.clone(),
         ));
+        let admission = AdmissionLimiter::new(settings.limits.max_concurrent_generations);
 
         Ok(Self {
             state: AppState {
@@ -71,6 +73,7 @@ impl Application {
                 ingress_service,
                 health_service,
                 auth_service,
+                admission,
             },
         })
     }
@@ -97,6 +100,10 @@ impl Application {
 /// 4. Auth (protected routes only) - validates authentication
 /// 5. Raw-body limit (protected routes only) - configured `max_request_body_bytes`
 ///    for JSON extraction. Health, readiness, and metrics stay outside it.
+///
+/// Generation admission is a non-blocking try-acquire after inference
+/// validation in the route handler. Saturation does not queue and does not
+/// wrap health, readiness, or metrics.
 ///
 /// # Parameters
 /// - `state` - Injected application state

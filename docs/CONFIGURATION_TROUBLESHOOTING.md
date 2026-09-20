@@ -92,8 +92,11 @@ quota, protocol, rejection, and throttling errors do not open circuits. Protecte
 enforce `max_request_body_bytes` during extraction, including advertised `Content-Length` and
 chunked/no-length bodies. Exact bound is accepted; one byte over returns `413 PAYLOAD_TOO_LARGE`.
 Serialized `metadata` is capped by `max_metadata_bytes` and returns `400 INVALID_REQUEST` when over.
-`/health`, `/ready`, and `/metrics` are not this raw-body limit. Concurrent generation admission is
-a later milestone.
+`/health`, `/ready`, and `/metrics` are not this raw-body limit. `max_concurrent_generations`
+(default 32) caps admitted generation work without a wait queue. Saturation returns `429 OVERLOADED`
+with `Retry-After: 1` and zero provider calls. A permit covers primary execution, retry backoff, and
+fallback, and is released on success, failure, deadline, and cancellation. Health, readiness, and
+metrics stay independent of those slots.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |

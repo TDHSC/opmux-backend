@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use crate::core::admission::AdmissionLimiter;
+
 // Shared production application and router composition
 pub mod app;
 
@@ -48,4 +50,7 @@ pub struct AppState {
 
     /// Shared AuthService for persisted API-key authentication
     pub auth_service: Arc<features::auth::AuthService>,
+
+    /// Non-blocking concurrent generation admission limiter.
+    pub admission: AdmissionLimiter,
 }

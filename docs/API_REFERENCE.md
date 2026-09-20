@@ -280,6 +280,9 @@ below.
   - `allow_fallback`, when present, must be a boolean
   - `parameters` types/ranges and the selected primary token cap are checked before upstream access
   - Invalid JSON that cannot be decoded and semantic/typed field violations both return `400`.
+  - Concurrent generation is capped by `max_concurrent_generations` (default 32). Saturation returns
+    `429 OVERLOADED` with `Retry-After: 1` and does not wait for a slot. Health, readiness, and
+    metrics are not this generation limit.
 
 Successful generation uses the real OpenAI Chat Completions adapter:
 `POST {OPENAI_BASE_URL}/chat/completions` with `Authorization: Bearer`,
@@ -343,9 +346,10 @@ Response `200 OK`:
   - `403 Forbidden` authenticated management key (generation requires inference) (`FORBIDDEN`)
   - `413 Payload Too Large` raw body above `max_request_body_bytes` (`PAYLOAD_TOO_LARGE`)
   - `415 Unsupported Media Type` non-JSON Content-Type (`UNSUPPORTED_MEDIA_TYPE`)
-  - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`). A valid
-    `Retry-After` that cannot finish in remaining time returns this status only while the overall
-    deadline has not elapsed.
+  - `429 Too Many Requests` local generation admission saturation (`OVERLOADED`) or upstream
+    provider throttling (`UPSTREAM_RATE_LIMIT`). Local overload returns `Retry-After: 1` and does
+    not start a provider call. A valid provider `Retry-After` that cannot finish in remaining time
+    returns `UPSTREAM_RATE_LIMIT` only while the overall deadline has not elapsed.
   - `502 Bad Gateway` upstream credential, protocol, oversized, quota, or other provider failure
     (`UPSTREAM_AUTHENTICATION`, `UPSTREAM_PROTOCOL`, `UPSTREAM_ERROR`). Provider 401/403 is never a
     gateway `401`. A complete bounded HTTP 429 JSON body with `error.code` or `error.type`
@@ -395,7 +399,7 @@ Documented codes:
 | `INTERNAL_ERROR`              | 500    | Unexpected internal fault                                 |
 | `DEADLINE_EXCEEDED`           | 504    | Protected-request deadline elapsed                        |
 | `CIRCUIT_OPEN`                | 503    | All eligible targets are circuit-open                     |
-| `OVERLOADED`                  | 429    | Reserved for later local admission                        |
+| `OVERLOADED`                  | 429    | Local generation concurrency is saturated                 |
 | `PAYLOAD_TOO_LARGE`           | 413    | Raw protected JSON body exceeded `max_request_body_bytes` |
 
 Health and readiness probes keep their existing status documents; they are not this protected-API

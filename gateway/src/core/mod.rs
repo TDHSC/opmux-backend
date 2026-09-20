@@ -1,5 +1,6 @@
 // Core module containing reusable primitives and shared functionality
 
+pub mod admission; // Non-blocking concurrent generation admission
 pub mod config; // Centralized configuration management
 pub mod contracts;
 pub mod correlation; // Request correlation and context management (Task 10.1.2)

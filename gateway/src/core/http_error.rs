@@ -51,7 +51,7 @@ pub enum ErrorCode {
     DeadlineExceeded,
     /// No eligible target is currently usable because circuits are open.
     CircuitOpen,
-    /// Local generation admission is saturated. Owned by later admission.
+    /// Local generation admission is saturated.
     Overloaded,
     /// Request body exceeded the configured protected-route limit.
     PayloadTooLarge,

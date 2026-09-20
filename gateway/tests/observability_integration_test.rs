@@ -47,12 +47,16 @@ fn build_test_app(
         settings.clone(),
     ));
 
+    let admission = gateway::core::admission::AdmissionLimiter::new(
+        settings.limits.max_concurrent_generations,
+    );
     let app_state = AppState {
         settings,
         ingress_service,
         executor_service,
         health_service,
         auth_service: Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
+        admission,
     };
 
     let metrics = if include_metrics {
@@ -221,12 +225,16 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
         executor_service.clone(),
         settings.clone(),
     ));
+    let admission = gateway::core::admission::AdmissionLimiter::new(
+        settings.limits.max_concurrent_generations,
+    );
     let app_state = AppState {
         settings,
         ingress_service,
         executor_service,
         health_service: Arc::new(health::HealthService::new()),
         auth_service: auth_service_from_pool(pool.clone()),
+        admission,
     };
     let app = build_production_router(app_state, MetricsConfig::disabled());
 

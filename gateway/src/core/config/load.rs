@@ -202,10 +202,11 @@ impl Settings {
             backoff_cap_ms = self.limits.backoff_cap_ms(),
             circuit_failure_threshold = self.limits.circuit_failure_threshold,
             circuit_cooldown_ms = self.limits.circuit_cooldown_ms(),
+            max_concurrent_generations = self.limits.max_concurrent_generations,
             "Loaded operator configuration"
         );
         tracing::info!(
-            "Policy limits are validated at startup; protected-request deadline, retries, eligible fallback switching, and target-scoped circuits are enforced, while admission enforcement lands in a later milestone"
+            "Policy limits are validated at startup; protected-request deadline, retries, eligible fallback switching, target-scoped circuits, and concurrent generation admission are enforced"
         );
         if self.auth.development_mode {
             tracing::info!(

@@ -110,12 +110,15 @@ mod tests {
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(
                     executor_service.clone(),
-                    settings,
+                    settings.clone(),
                 ),
             ),
             executor_service,
             health_service: Arc::new(HealthService::new()),
             auth_service: Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
+            admission: crate::core::admission::AdmissionLimiter::new(
+                settings.limits.max_concurrent_generations,
+            ),
         };
 
         Router::new()

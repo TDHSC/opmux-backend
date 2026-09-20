@@ -1,4 +1,4 @@
-//! Raw-body and metadata admission limits through the production router.
+//! Raw-body, metadata, and concurrent generation admission through the production router.
 //!
 //! Evidence omits credentials, prompts, metadata, and raw provider bodies.
 
@@ -15,10 +15,13 @@ use gateway::{
 };
 use serial_test::serial;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use support::{
-    cleanup_clients, isolate_provider_environment, production_router_with_settings,
-    settings_for_simulator_with, test_pool, OpenAiSimulator,
+    cleanup_clients, isolate_provider_environment, min_padded_chat_completion_len,
+    padded_chat_completion_bytes, production_router_with_settings,
+    settings_for_simulator_with, test_pool, OpenAiSimulator, ScriptedResponse,
 };
+use tokio::time::sleep;
 use tower::ServiceExt;
 use uuid::Uuid;
 
@@ -85,10 +88,19 @@ fn limits_router(
     auth_service: Arc<AuthService>,
     mutate: impl FnOnce(&mut gateway::core::config::Settings),
 ) -> axum::Router {
+    limits_router_with(simulator, auth_service, mutate, MetricsConfig::disabled())
+}
+
+fn limits_router_with(
+    simulator: &OpenAiSimulator,
+    auth_service: Arc<AuthService>,
+    mutate: impl FnOnce(&mut gateway::core::config::Settings),
+    metrics: MetricsConfig,
+) -> axum::Router {
     production_router_with_settings(
         settings_for_simulator_with(simulator, mutate),
         auth_service,
-        MetricsConfig::disabled(),
+        metrics,
     )
 }
 
@@ -530,6 +542,291 @@ async fn small_protected_body_limit_does_not_restrict_health_probes() {
     .await;
     assert_eq!(ready.status(), StatusCode::OK);
     assert_eq!(simulator.generation_count(), 0);
+
+    fixture.drop_rows().await;
+}
+
+const CONCURRENCY_N: u32 = 2;
+const OVERLOAD_PROMPT_BOUND: Duration = Duration::from_millis(400);
+const GENERATION_WAIT_BOUND: Duration = Duration::from_secs(2);
+const PROBE_BOUND: Duration = Duration::from_secs(2);
+
+fn route_json_request(credential: &str) -> Request<Body> {
+    route_request(credential, Body::from(ROUTE_JSON), None)
+}
+
+async fn wait_generation_at_least(simulator: &OpenAiSimulator, expected: usize) {
+    let started = Instant::now();
+    while simulator.generation_count() < expected {
+        assert!(
+            started.elapsed() < GENERATION_WAIT_BOUND,
+            "timed out waiting for {expected} generation calls, saw {}",
+            simulator.generation_count()
+        );
+        sleep(Duration::from_millis(5)).await;
+    }
+}
+
+async fn spawn_route(
+    app: axum::Router,
+    credential: String,
+) -> tokio::task::JoinHandle<axum::http::Response<Body>> {
+    tokio::spawn(async move { send(app, route_json_request(&credential)).await })
+}
+
+async fn get_uri(app: axum::Router, uri: &str) -> axum::http::Response<Body> {
+    send(
+        app,
+        Request::builder().uri(uri).body(Body::empty()).unwrap(),
+    )
+    .await
+}
+
+fn assert_overloaded(status: StatusCode, headers: &HeaderMap, body: &serde_json::Value) {
+    assert_envelope(
+        status,
+        headers,
+        body,
+        StatusCode::TOO_MANY_REQUESTS,
+        "OVERLOADED",
+    );
+    assert_ne!(body["error"]["code"], "UPSTREAM_RATE_LIMIT");
+    let retry_after = headers
+        .get(header::RETRY_AFTER)
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default();
+    assert_eq!(retry_after, "1");
+    let parsed: u64 = retry_after.parse().expect("retry-after seconds");
+    assert!(parsed > 0);
+}
+
+#[tokio::test]
+#[serial]
+async fn concurrent_generations_cap_rejects_overload_without_queuing() {
+    isolate_provider_environment();
+    let fixture = LimitFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = limits_router_with(
+        &simulator,
+        fixture.auth_service(),
+        |settings| {
+            settings.limits.max_concurrent_generations = CONCURRENCY_N;
+            settings.limits.retries_per_target = 0;
+        },
+        MetricsConfig::production(),
+    );
+
+    let mut holds = Vec::new();
+    let mut admitted = Vec::new();
+    for _ in 0..CONCURRENCY_N {
+        let (held, hold) = ScriptedResponse::chat_ok().hold();
+        simulator.enqueue_chat(held);
+        holds.push(hold);
+        admitted
+            .push(spawn_route(app.clone(), fixture.inference.credential.clone()).await);
+    }
+    wait_generation_at_least(&simulator, CONCURRENCY_N as usize).await;
+    assert_eq!(simulator.generation_count(), CONCURRENCY_N as usize);
+
+    let extra_started = Instant::now();
+    let extra = tokio::time::timeout(
+        OVERLOAD_PROMPT_BOUND,
+        send(
+            app.clone(),
+            route_json_request(&fixture.inference.credential),
+        ),
+    )
+    .await
+    .expect("local overload should reject without waiting for a slot");
+    assert!(
+        extra_started.elapsed() < OVERLOAD_PROMPT_BOUND,
+        "overload waited {:?}",
+        extra_started.elapsed()
+    );
+    let extra_headers = extra.headers().clone();
+    let extra_status = extra.status();
+    let extra_body = json_of(extra).await;
+    assert_overloaded(extra_status, &extra_headers, &extra_body);
+    assert_eq!(simulator.generation_count(), CONCURRENCY_N as usize);
+
+    let probe_started = Instant::now();
+    let health = tokio::time::timeout(PROBE_BOUND, get_uri(app.clone(), "/health"))
+        .await
+        .expect("health should stay responsive");
+    assert_eq!(health.status(), StatusCode::OK);
+    let ready = tokio::time::timeout(PROBE_BOUND, get_uri(app.clone(), "/ready"))
+        .await
+        .expect("ready should stay responsive");
+    assert_eq!(ready.status(), StatusCode::OK);
+    let metrics = tokio::time::timeout(PROBE_BOUND, get_uri(app.clone(), "/metrics"))
+        .await
+        .expect("metrics should stay responsive");
+    assert_eq!(metrics.status(), StatusCode::OK);
+    let metrics_body = axum::body::to_bytes(metrics.into_body(), usize::MAX)
+        .await
+        .expect("metrics body");
+    assert!(!metrics_body.is_empty());
+    assert!(probe_started.elapsed() < PROBE_BOUND);
+
+    for hold in holds {
+        hold.release();
+    }
+    for task in admitted {
+        let response = task.await.expect("admitted join");
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let follow_up = send(app, route_json_request(&fixture.inference.credential)).await;
+    assert_eq!(follow_up.status(), StatusCode::OK);
+    assert_eq!(simulator.generation_count(), CONCURRENCY_N as usize + 1);
+
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn permit_covers_retry_backoff_and_fallback() {
+    isolate_provider_environment();
+    let fixture = LimitFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+
+    let retry_app = limits_router(&simulator, fixture.auth_service(), |settings| {
+        settings.limits.max_concurrent_generations = 1;
+        settings.limits.retries_per_target = 1;
+        settings.limits.max_total_attempts = 3;
+    });
+    let (retry_held, retry_hold) = ScriptedResponse::chat_ok().hold();
+    simulator.enqueue_chat(ScriptedResponse::rate_limited("1"));
+    simulator.enqueue_chat(retry_held);
+    let retry_task =
+        spawn_route(retry_app.clone(), fixture.inference.credential.clone()).await;
+    wait_generation_at_least(&simulator, 1).await;
+    let retry_extra = tokio::time::timeout(
+        OVERLOAD_PROMPT_BOUND,
+        send(retry_app, route_json_request(&fixture.inference.credential)),
+    )
+    .await
+    .expect("retry backoff must keep the generation permit");
+    let retry_headers = retry_extra.headers().clone();
+    let retry_status = retry_extra.status();
+    let retry_body = json_of(retry_extra).await;
+    assert_overloaded(retry_status, &retry_headers, &retry_body);
+    assert_eq!(simulator.generation_count(), 1);
+    retry_task.abort();
+    let _ = retry_task.await;
+    retry_hold.release();
+    simulator.clear_chat_script();
+
+    let fallback_app = limits_router(&simulator, fixture.auth_service(), |settings| {
+        settings.limits.max_concurrent_generations = 1;
+        settings.limits.retries_per_target = 0;
+        settings.limits.max_total_attempts = 3;
+        settings
+            .catalog
+            .targets
+            .get_mut("secondary")
+            .expect("secondary target")
+            .max_output_tokens = 512;
+        settings
+            .catalog
+            .routes
+            .get_mut("default")
+            .expect("default route")
+            .fallbacks
+            .push("secondary".to_string());
+    });
+    let (fallback_held, fallback_hold) = ScriptedResponse::chat_ok().hold();
+    simulator.enqueue_chat(ScriptedResponse::json_status(
+        500,
+        serde_json::json!({"error":{"message":"transient"}}),
+    ));
+    simulator.enqueue_chat(fallback_held);
+    let before_fallback = simulator.generation_count();
+    let fallback_task =
+        spawn_route(fallback_app.clone(), fixture.inference.credential.clone()).await;
+    wait_generation_at_least(&simulator, before_fallback + 2).await;
+    let fallback_extra = tokio::time::timeout(
+        OVERLOAD_PROMPT_BOUND,
+        send(
+            fallback_app,
+            route_json_request(&fixture.inference.credential),
+        ),
+    )
+    .await
+    .expect("fallback must keep the generation permit");
+    let fallback_headers = fallback_extra.headers().clone();
+    let fallback_status = fallback_extra.status();
+    let fallback_body = json_of(fallback_extra).await;
+    assert_overloaded(fallback_status, &fallback_headers, &fallback_body);
+    assert_eq!(simulator.generation_count(), before_fallback + 2);
+    fallback_hold.release();
+    let fallback_response = fallback_task.await.expect("fallback join");
+    assert_eq!(fallback_response.status(), StatusCode::OK);
+
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn each_terminal_path_releases_capacity_for_a_later_request() {
+    isolate_provider_environment();
+    let fixture = LimitFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+    let bound = min_padded_chat_completion_len() + 32;
+    let app = limits_router(&simulator, fixture.auth_service(), |settings| {
+        settings.limits.max_concurrent_generations = 1;
+        settings.limits.retries_per_target = 0;
+        settings.limits.max_total_attempts = 1;
+        settings.limits.max_upstream_response_bytes = bound as u64;
+        settings.limits.protected_request_deadline = Duration::from_millis(300);
+        settings.limits.max_attempt_timeout = Duration::from_millis(300);
+    });
+
+    simulator.enqueue_chat(ScriptedResponse::raw_json_bytes(
+        padded_chat_completion_bytes(bound + 1),
+    ));
+    let oversized = send(
+        app.clone(),
+        route_json_request(&fixture.inference.credential),
+    )
+    .await;
+    assert_eq!(oversized.status(), StatusCode::BAD_GATEWAY);
+    let oversized_body = json_of(oversized).await;
+    assert_eq!(oversized_body["error"]["code"], "UPSTREAM_PROTOCOL");
+    let after_failure = send(
+        app.clone(),
+        route_json_request(&fixture.inference.credential),
+    )
+    .await;
+    assert_eq!(after_failure.status(), StatusCode::OK);
+
+    simulator
+        .enqueue_chat(ScriptedResponse::chat_ok().delay_headers(Duration::from_secs(2)));
+    let expired = send(
+        app.clone(),
+        route_json_request(&fixture.inference.credential),
+    )
+    .await;
+    assert_eq!(expired.status(), StatusCode::GATEWAY_TIMEOUT);
+    let expired_body = json_of(expired).await;
+    assert_eq!(expired_body["error"]["code"], "DEADLINE_EXCEEDED");
+    let after_deadline = send(
+        app.clone(),
+        route_json_request(&fixture.inference.credential),
+    )
+    .await;
+    assert_eq!(after_deadline.status(), StatusCode::OK);
+
+    let expected_after_hold = simulator.generation_count() + 1;
+    let (held, hold) = ScriptedResponse::chat_ok().hold();
+    simulator.enqueue_chat(held);
+    let cancelled = spawn_route(app.clone(), fixture.inference.credential.clone()).await;
+    wait_generation_at_least(&simulator, expected_after_hold).await;
+    cancelled.abort();
+    let _ = cancelled.await;
+    hold.release();
+    let after_cancel = send(app, route_json_request(&fixture.inference.credential)).await;
+    assert_eq!(after_cancel.status(), StatusCode::OK);
 
     fixture.drop_rows().await;
 }

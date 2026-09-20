@@ -161,6 +161,14 @@ curl -i http://127.0.0.1:3000/metrics
 - Investigate upstream network/timeout conditions for the failing target. Permanent credential,
   quota, and throttling failures do not open circuits.
 
+### Symptom: `/api/v1/route` returns `429 OVERLOADED`
+
+- Generation concurrency reached `max_concurrent_generations`. The extra request is rejected
+  immediately; it is not queued behind in-flight retries or fallbacks.
+- The response includes `Retry-After: 1`. This is local admission, not `UPSTREAM_RATE_LIMIT`.
+- `/health`, `/ready`, and `/metrics` must remain usable while generation slots are occupied.
+- Capacity returns when an admitted request finishes, fails, times out, or is cancelled.
+
 ### Symptom: increased latency
 
 - Inspect metrics endpoint for request counters/latency trends.

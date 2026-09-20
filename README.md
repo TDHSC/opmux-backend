@@ -46,9 +46,13 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   impossible usage fail as upstream protocol errors without fabricating model, content, usage, role,
   or cost. Provider response bodies are capped by `max_upstream_response_bytes` while the bytes are
   read, including chunked transfer and advertised `Content-Length`. Those protocol faults are not
-  retried as network failures. Protected endpoint errors, including JSON and path extraction
-  rejections, use `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream
-  credential, protocol, and oversized failures are sanitized `502` and are never a gateway `401`.
+  retried as network failures. Concurrent generation is capped by `max_concurrent_generations`
+  (default 32). Saturation returns `429 OVERLOADED` with `Retry-After: 1` immediately and does not
+  queue; the permit covers primary work, retry backoff, and fallback, and is released on success,
+  upstream failure, deadline, and cancellation. `/health`, `/ready`, and `/metrics` stay independent
+  of generation slots. Protected endpoint errors, including JSON and path extraction rejections, use
+  `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream credential, protocol,
+  and oversized failures are sanitized `502` and are never a gateway `401`.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. That one-time
   output is not guaranteed delivery or exactly-once issuance. A timeout or disconnect during
@@ -177,8 +181,8 @@ body inside a short window of the remaining attempt budget (`min(100ms, remainin
 the saved throttling. Malformed `Retry-After` uses the capped jitter instead of an unbounded sleep.
 Eligible fallback switching and target-scoped circuits are enforced: an open primary does not block
 a healthy same-provider fallback, skipped open targets consume no attempt, and recovery uses one
-half-open probe per target. Concurrency admission and inbound raw-size enforcement are later
-features and are not active yet.
+half-open probe per target. Concurrent generation admission and inbound raw-size limits are
+enforced.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the
