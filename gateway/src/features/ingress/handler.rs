@@ -23,9 +23,10 @@ use serde_json::Value;
 /// # Flow
 /// 1. Validates inference capability
 /// 2. Parses the canonical request contract and prompt/parameter bounds
-/// 3. Acquires a generation admission permit without waiting
-/// 4. Processes the request through stateless configured routing
-/// 5. Returns JSON response or error. The permit is released on every exit.
+/// 3. Rejects generation when the process is draining
+/// 4. Acquires a generation admission permit without waiting
+/// 5. Processes the request through stateless configured routing
+/// 6. Returns JSON response or error. The permit is released on every exit.
 ///
 /// # Parameters
 /// - `state` - Application state with shared services (injected via Axum state)
@@ -65,6 +66,14 @@ pub async fn ingress_handler(
     let request = parse_ingress_request(&body, &state.settings.limits)?;
     tracing::Span::current().record("prompt_length", request.prompt.len());
     tracing::debug!("Request validation passed");
+
+    if state.shutdown.is_draining() {
+        tracing::debug!(
+            reason = "draining",
+            "Generation is not admitted while draining"
+        );
+        return Err(IngressError::Draining);
+    }
 
     let _permit = match state.admission.try_acquire() {
         Some(permit) => permit,

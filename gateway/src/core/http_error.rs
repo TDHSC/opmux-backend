@@ -55,6 +55,8 @@ pub enum ErrorCode {
     Overloaded,
     /// Request body exceeded the configured protected-route limit.
     PayloadTooLarge,
+    /// The process is draining and is not admitting new generation.
+    Draining,
 }
 
 impl ErrorCode {
@@ -78,6 +80,7 @@ impl ErrorCode {
             Self::CircuitOpen => "CIRCUIT_OPEN",
             Self::Overloaded => "OVERLOADED",
             Self::PayloadTooLarge => "PAYLOAD_TOO_LARGE",
+            Self::Draining => "DRAINING",
         }
     }
 
@@ -93,7 +96,7 @@ impl ErrorCode {
             Self::NotFound => StatusCode::NOT_FOUND,
             Self::PayloadTooLarge => StatusCode::PAYLOAD_TOO_LARGE,
             Self::UpstreamRateLimit | Self::Overloaded => StatusCode::TOO_MANY_REQUESTS,
-            Self::AuthDependencyUnavailable | Self::CircuitOpen => {
+            Self::AuthDependencyUnavailable | Self::CircuitOpen | Self::Draining => {
                 StatusCode::SERVICE_UNAVAILABLE
             }
             Self::UpstreamError
@@ -292,6 +295,10 @@ mod tests {
             ErrorCode::PayloadTooLarge.status(),
             StatusCode::PAYLOAD_TOO_LARGE
         );
+        assert_eq!(
+            ErrorCode::Draining.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
         assert_ne!(
             ErrorCode::UpstreamAuthentication.status(),
             StatusCode::UNAUTHORIZED
@@ -351,5 +358,10 @@ mod tests {
             body_json(too_large).await["error"]["code"],
             "PAYLOAD_TOO_LARGE"
         );
+
+        let draining =
+            error_response(ErrorCode::Draining, "The service is shutting down", None);
+        assert_eq!(draining.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body_json(draining).await["error"]["code"], "DRAINING");
     }
 }

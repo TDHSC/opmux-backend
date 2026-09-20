@@ -3,6 +3,7 @@
 #[cfg(test)]
 mod tests {
     use crate::core::config::{Route, Settings};
+    use crate::core::lifecycle::ShutdownState;
     use crate::features::auth::persist::{
         ApiKeyKind, ApiKeyRecord, ClientRecord, KeyDigest, NewApiKey, NewClient,
         RevokeOutcome,
@@ -458,6 +459,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn draining_overrides_cached_readiness_without_new_probes() {
+        let vendor = MockVendor::new_healthy("mock-vendor", vec!["example-chat-model"]);
+        let probes = vendor.probes.clone();
+        let shutdown = ShutdownState::new();
+        let service = HealthService::with_dependencies(
+            mock_executor(vendor),
+            ready_auth(),
+            Arc::new(Settings::for_tests()),
+            HealthConfig::new(2, 60),
+        )
+        .with_shutdown_state(shutdown.clone());
+        let ready = service.check_readiness().await.unwrap();
+        assert_eq!(ready.status, "ready");
+        assert!(!ready.draining);
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+
+        shutdown.mark_draining();
+        let draining = service.check_readiness().await.unwrap();
+        assert_eq!(draining.status, "not_ready");
+        assert!(draining.draining);
+        assert_eq!(draining.dependencies.upstream.status, "healthy");
+        assert_eq!(probes.load(Ordering::SeqCst), 1);
+
+        let live = service.check_health().await.unwrap();
+        assert_eq!(live.status, "healthy");
+    }
+
+    #[tokio::test]
     async fn open_primary_with_usable_fallback_stays_ready() {
         let executor = healthy_executor();
         executor.force_open_target("primary");
@@ -565,6 +594,7 @@ mod tests {
             admission: crate::core::admission::AdmissionLimiter::new(
                 settings.limits.max_concurrent_generations,
             ),
+            shutdown: crate::core::lifecycle::ShutdownState::new(),
         };
 
         Router::new()

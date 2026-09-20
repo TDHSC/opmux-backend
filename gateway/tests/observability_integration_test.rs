@@ -57,6 +57,7 @@ fn build_test_app(
         health_service,
         auth_service: Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
         admission,
+        shutdown: gateway::core::lifecycle::ShutdownState::new(),
     };
 
     let metrics = if include_metrics {
@@ -235,6 +236,7 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
         health_service: Arc::new(health::HealthService::new()),
         auth_service: auth_service_from_pool(pool.clone()),
         admission,
+        shutdown: gateway::core::lifecycle::ShutdownState::new(),
     };
     let app = build_production_router(app_state, MetricsConfig::disabled());
 

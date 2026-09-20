@@ -34,6 +34,10 @@ pub enum IngressError {
     #[error("The service is overloaded")]
     Overloaded,
 
+    /// The process is draining and is not admitting new generation.
+    #[error("The service is shutting down")]
+    Draining,
+
     /// LLM execution failed (wraps ExecutorError).
     #[error(transparent)]
     ExecutionFailed(#[from] ExecutorError),
@@ -61,6 +65,10 @@ impl IngressError {
             Self::Overloaded => (
                 ErrorCode::Overloaded,
                 "The service is overloaded".to_string(),
+            ),
+            Self::Draining => (
+                ErrorCode::Draining,
+                "The service is shutting down".to_string(),
             ),
             Self::ExecutionFailed(_) => unreachable!("mapped by IntoResponse"),
         }
@@ -144,5 +152,14 @@ mod tests {
         let overloaded: serde_json::Value =
             serde_json::from_slice(&overloaded_bytes).unwrap();
         assert_eq!(overloaded["error"]["code"], "OVERLOADED");
+    }
+
+    #[tokio::test]
+    async fn draining_maps_to_sanitized_503() {
+        let (status, body) = envelope(IngressError::Draining).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "DRAINING");
+        assert_eq!(body["error"]["message"], "The service is shutting down");
+        assert!(body.get("response").is_none());
     }
 }

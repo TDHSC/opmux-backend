@@ -119,6 +119,7 @@ mod tests {
             admission: crate::core::admission::AdmissionLimiter::new(
                 settings.limits.max_concurrent_generations,
             ),
+            shutdown: crate::core::lifecycle::ShutdownState::new(),
         };
 
         Router::new()

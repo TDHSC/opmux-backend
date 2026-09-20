@@ -78,6 +78,7 @@ pub async fn health_handler(
 /// {
 ///   "status": "not_ready",
 ///   "timestamp": "2025-09-01T16:53:30.625665+00:00",
+///   "draining": false,
 ///   "dependencies": {
 ///     "database": { "status": "unhealthy", "error": "Authentication database unavailable" },
 ///     "upstream": { "status": "healthy" },
@@ -85,6 +86,9 @@ pub async fn health_handler(
 ///   }
 /// }
 /// ```
+///
+/// Draining (SIGTERM/SIGINT) returns `503` with `"draining": true` even when
+/// cached dependencies are still healthy. `/health` stays liveness-only.
 ///
 /// # Usage
 ///

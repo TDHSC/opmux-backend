@@ -9,5 +9,6 @@ pub mod deadline; // Monotonic protected-request deadline
 pub mod error; // Application-wide error handling
 pub mod extract; // Protected-endpoint extractors with the canonical envelope
 pub mod http_error; // Canonical protected-API error envelope
+pub mod lifecycle; // Drain state and bounded process shutdown
 pub mod metrics; // Prometheus metrics configuration (Task 10.1.4)
 pub mod tracing; // Tracing and logging configuration (Task 10.1.3)

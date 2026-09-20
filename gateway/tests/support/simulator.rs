@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::Notify;
 use tokio::task::JoinHandle;
 
@@ -43,6 +43,8 @@ pub struct CapturedRequest {
     pub authorization_matches_fixture: bool,
     /// Parsed JSON body when the request had a JSON object.
     pub body: Option<Value>,
+    /// Local time when the simulator accepted the request.
+    pub received_at: Instant,
 }
 
 impl CapturedRequest {
@@ -505,6 +507,15 @@ impl OpenAiSimulator {
             .count()
     }
 
+    /// Local receive times for captured Chat Completions calls, oldest first.
+    pub fn generation_received_at(&self) -> Vec<Instant> {
+        self.captured()
+            .iter()
+            .filter(|capture| capture.is_generation())
+            .map(|capture| capture.received_at)
+            .collect()
+    }
+
     /// Number of `/models` probes captured.
     pub fn models_probe_count(&self) -> usize {
         self.captured()
@@ -554,6 +565,7 @@ fn capture_from_headers(
         authorization_present: authorization.is_some(),
         authorization_matches_fixture: authorization == Some(expected.as_str()),
         body,
+        received_at: Instant::now(),
     }
 }
 

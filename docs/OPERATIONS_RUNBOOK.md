@@ -119,10 +119,28 @@ curl -i http://127.0.0.1:3000/ready
 curl -i http://127.0.0.1:3000/metrics
 ```
 
+An occupied `SERVER_HOST`/`SERVER_PORT` fails before serving. The process exits nonzero with
+`bind_address_in_use` and does not replace or terminate the listener that already owns that address.
+
+## Shutdown
+
+SIGTERM and SIGINT (CTRL-C) start draining. `/ready` becomes `503` even if dependency success is
+still cached. `/health` stays liveness-only. Newly handled `POST /api/v1/route` returns
+`503 DRAINING` with zero provider calls. Already admitted generation may finish until
+`SERVER_SHUTDOWN_TIMEOUT` (default 30 seconds, inclusive bounds 1–600). Grace expiry cancels owned
+in-flight and retry-backoff work and starts no later attempt or fallback. The process then exits and
+closes its listener. Cancellation does not reverse computation already started on a remote provider.
+
+```bash
+kill -TERM "$GATEWAY_PID"
+```
+
 ## Incident triage
 
 ### Symptom: `/ready` returns `503`
 
+- If `draining` is `true`, the process received SIGTERM or SIGINT. Stop sending generation; wait for
+  the configured shutdown grace, then start a replacement process.
 - `/health` staying `200` means the process is live; readiness is independent liveness.
 - Inspect `dependencies.database`, `dependencies.upstream`, and `dependencies.default_route`.
   Messages are sanitized (`Authentication database unavailable`, `Upstream provider unreachable`,
@@ -151,6 +169,12 @@ curl -i http://127.0.0.1:3000/metrics
   responses save header throttling and parsed `Retry-After` before a short bounded body refinement
   inside the remaining attempt budget. Complete `insufficient_quota` JSON is terminal quota;
   stalled, malformed, or oversized 429 bodies keep throttling. Throttling does not open circuits.
+
+### Symptom: `/api/v1/route` returns `503 DRAINING`
+
+- The process is shutting down and is not admitting new generation.
+- In-flight work may still complete until `SERVER_SHUTDOWN_TIMEOUT`.
+- Send new generation to a replacement process after it becomes ready.
 
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
 

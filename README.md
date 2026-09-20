@@ -80,7 +80,10 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   selected-column, locking, and `last_used_at` UPDATE access, upstream `/models` reachability, and
   at least one usable default-route target. `/models` is not a generation call and cannot override
   circuit-open default-route targets. Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS`
-  (default 5 seconds); failures are never cached.
+  (default 5 seconds); failures are never cached. SIGTERM and SIGINT mark `/ready` unready, reject
+  new generation with `503 DRAINING`, and bound in-flight work by `SERVER_SHUTDOWN_TIMEOUT` (default
+  30 seconds). An occupied listen address fails startup with a sanitized `bind_address_in_use`
+  diagnostic and does not disturb the existing listener.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
@@ -318,6 +321,9 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_P
   and a local unavailable upstream for HTTP failure scenarios.
 - `gateway/tests/startup_integration_test.rs` launches the binary without vendor keys to verify
   logging defaults, environment-variable precedence, and the expected startup failure.
+- `gateway/tests/process_lifecycle_test.rs` launches owned gateway subprocesses for occupied-port
+  bind failure, SIGTERM/SIGINT draining, grace-bounded cancellation, and same-port restart against
+  the owned simulator and local Supabase.
 - `gateway/tests/executor_integration_test.rs` is **ignored live-provider verification**. It does
   not run because a key is present. Live OpenAI checks are unrun unless you explicitly opt in.
 

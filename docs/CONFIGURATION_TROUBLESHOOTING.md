@@ -128,7 +128,9 @@ Server:
 
 - `SERVER_HOST` (default `0.0.0.0`)
 - `SERVER_PORT` (default `3000`)
-- `SERVER_SHUTDOWN_TIMEOUT` (default `30` seconds)
+- `SERVER_SHUTDOWN_TIMEOUT` (default `30` seconds; integer 1–600). SIGTERM and SIGINT drain new
+  generation, keep `/health` live, mark `/ready` unready, and cancel remaining owned work when this
+  grace expires.
 
 Auth:
 
@@ -189,10 +191,11 @@ database from this repository.
 ### Startup fails before the process listens
 
 Cause: missing `OPMUX_CONFIG_FILE`, unreadable or invalid catalog, blank `OPENAI_API_KEY`, invalid
-`OPENAI_BASE_URL`, missing/invalid `DATABASE_URL`, out-of-range limits, or HTTP client construction
-failure. Diagnostics include a stable category such as `catalog_duplicate_target`,
-`missing_credential`, or `missing_database_url` and omit keys, URLs with userinfo, query, or
-fragment, connection strings, and full configuration dumps.
+`OPENAI_BASE_URL`, missing/invalid `DATABASE_URL`, out-of-range limits, HTTP client construction
+failure, or an occupied listen address. Diagnostics include a stable category such as
+`catalog_duplicate_target`, `missing_credential`, `missing_database_url`, or `bind_address_in_use`
+and omit keys, URLs with userinfo, query, or fragment, connection strings, and full configuration
+dumps. Address-in-use does not terminate the process that already owns the port.
 
 Action: point `OPMUX_CONFIG_FILE` at a valid version-1 catalog, export a nonempty provider key, and
 use a loopback URL for local checks. The binary does not automatically load `.env`.
@@ -224,10 +227,18 @@ keys are also rejected. `AUTH_DEVELOPMENT_MODE` does not grant access.
 Action: provision a tenant and inference key with `opmux-admin` and send that one-time credential in
 `X-API-Key`.
 
+### `/api/v1/route` returns `503 DRAINING`
+
+Cause: the process received SIGTERM or SIGINT and is no longer admitting generation.
+
+Action: route new generation to a replacement process. In-flight work is bounded by
+`SERVER_SHUTDOWN_TIMEOUT`.
+
 ### `/api/v1/route` returns `503` without a circuit-open body
 
-Cause: authentication datastore timeout or unavailability. The process can stay live; protected
-requests fail closed and do not call the provider.
+Cause: authentication datastore timeout or unavailability, or the process is draining. The process
+can stay live; protected requests fail closed and do not call the provider. Draining responses use
+code `DRAINING`; datastore outages use `AUTH_DEPENDENCY_UNAVAILABLE`.
 
 Action: confirm `DATABASE_URL`, schema (`scripts/db-migrate.sh`), and that the runtime role can
 select `opmux_private.api_keys`.

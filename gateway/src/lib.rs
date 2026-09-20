@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use crate::core::admission::AdmissionLimiter;
+use crate::core::lifecycle::ShutdownState;
 
 // Shared production application and router composition
 pub mod app;
@@ -53,4 +54,7 @@ pub struct AppState {
 
     /// Non-blocking concurrent generation admission limiter.
     pub admission: AdmissionLimiter,
+
+    /// Process drain flag shared by readiness and generation admission.
+    pub shutdown: ShutdownState,
 }

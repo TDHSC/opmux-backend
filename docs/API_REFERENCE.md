@@ -27,12 +27,15 @@ triggers. `/models` is a reachability and credential probe; it does not call gen
 prove that a configured model can generate. Cached `/models` success cannot override a default route
 whose eligible targets are all circuit-open. Successful database and upstream probes may be cached
 for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures are never cached, so a restored
-dependency is rechecked on the next probe. Draining override is not part of this endpoint yet.
+dependency is rechecked on the next probe. SIGTERM and SIGINT mark the process draining: `/ready`
+returns `503` with `"status":"not_ready"` and `"draining": true` even when those probes are still
+cached healthy. `/health` stays liveness-only.
 
 - Auth: none
 - Response:
-  - `200 OK` when `database`, `upstream`, and `default_route` are healthy
-  - `503 Service Unavailable` when any required dependency is unhealthy
+  - `200 OK` when `database`, `upstream`, and `default_route` are healthy and the process is not
+    draining
+  - `503 Service Unavailable` when any required dependency is unhealthy or the process is draining
 - Probe timeout: `HEALTH_CHECK_TIMEOUT` (default 2 seconds)
 
 Example response (`503`):
@@ -364,8 +367,11 @@ Response `200 OK`:
   - `504 Gateway Timeout` overall protected-request deadline elapsed (`DEADLINE_EXCEEDED`). Actual
     expiry takes precedence over a ready 429 or saved `Retry-After`.
   - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
-  - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)
-    or all eligible targets circuit-open (`CIRCUIT_OPEN`)
+  - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`),
+    all eligible targets circuit-open (`CIRCUIT_OPEN`), or the process is draining (`DRAINING`).
+    Draining rejects newly handled generation without a provider call. Already admitted work may
+    finish until `SERVER_SHUTDOWN_TIMEOUT` (default 30 seconds) expires, after which remaining owned
+    work is cancelled and no later retry or fallback starts.
 
 Protected route, key-create, key-list, and key-delete errors, including JSON and path extraction
 rejections, use one envelope:
@@ -409,6 +415,7 @@ Documented codes:
 | `CIRCUIT_OPEN`                | 503    | All eligible targets are circuit-open                     |
 | `OVERLOADED`                  | 429    | Local generation concurrency is saturated                 |
 | `PAYLOAD_TOO_LARGE`           | 413    | Raw protected JSON body exceeded `max_request_body_bytes` |
+| `DRAINING`                    | 503    | Process is shutting down and is not admitting generation  |
 
 Health and readiness probes keep their existing status documents; they are not this protected-API
 envelope.

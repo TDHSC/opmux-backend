@@ -8,6 +8,7 @@ use crate::{
     core::{
         admission::AdmissionLimiter,
         config::Settings,
+        lifecycle::ShutdownState,
         metrics::{create_metrics, execution_metrics_sink, MetricsConfig},
     },
     features::{
@@ -80,12 +81,16 @@ impl Application {
             executor_config,
             execution_metrics_sink(metrics.enabled),
         )?);
-        let health_service = Arc::new(health::HealthService::with_dependencies(
-            executor_service.clone(),
-            auth_service.clone(),
-            settings.clone(),
-            health::HealthConfig::from_env(),
-        ));
+        let shutdown = ShutdownState::new();
+        let health_service = Arc::new(
+            health::HealthService::with_dependencies(
+                executor_service.clone(),
+                auth_service.clone(),
+                settings.clone(),
+                health::HealthConfig::from_env(),
+            )
+            .with_shutdown_state(shutdown.clone()),
+        );
         let ingress_service = Arc::new(ingress::service::IngressService::new(
             executor_service.clone(),
             settings.clone(),
@@ -100,6 +105,7 @@ impl Application {
                 health_service,
                 auth_service,
                 admission,
+                shutdown,
             },
         })
     }

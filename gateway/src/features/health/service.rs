@@ -2,6 +2,7 @@
 
 use super::{error::HealthError, repository::HealthRepository};
 use crate::core::config::Settings;
+use crate::core::lifecycle::ShutdownState;
 use crate::features::auth::AuthService;
 use crate::features::executor::service::ExecutorService;
 use serde::{Deserialize, Serialize};
@@ -49,6 +50,9 @@ pub struct ReadinessResponse {
 
     /// Bounded safe statuses for required dependencies.
     pub dependencies: ReadinessDependencies,
+
+    /// True when the process is draining and must not receive new generation.
+    pub draining: bool,
 }
 
 /// Named dependency statuses reported by `/ready`.
@@ -156,8 +160,8 @@ impl HealthConfig {
 /// selected-column, locking, and last_used_at UPDATE access, upstream
 /// `/models` reachability, and at least one usable default-route target.
 /// Successful probes may be cached for the configured TTL; failures
-/// are never cached. Draining override is added in a later lifecycle
-/// milestone.
+/// are never cached. Draining overrides cached dependency success and
+/// reports not ready.
 pub struct HealthService {
     /// Repository for process liveness.
     repository: HealthRepository,
@@ -175,6 +179,8 @@ pub struct HealthService {
     database_success_at: Arc<RwLock<Option<Instant>>>,
     /// Last successful upstream `/models` probe. Failures are not stored.
     upstream_success_at: Arc<RwLock<Option<Instant>>>,
+    /// Process drain flag. When set, readiness is unready regardless of cache.
+    shutdown: ShutdownState,
 }
 
 impl HealthService {
@@ -192,6 +198,7 @@ impl HealthService {
             start_time: Instant::now(),
             database_success_at: Arc::new(RwLock::new(None)),
             upstream_success_at: Arc::new(RwLock::new(None)),
+            shutdown: ShutdownState::new(),
         }
     }
 
@@ -209,6 +216,7 @@ impl HealthService {
             start_time: Instant::now(),
             database_success_at: Arc::new(RwLock::new(None)),
             upstream_success_at: Arc::new(RwLock::new(None)),
+            shutdown: ShutdownState::new(),
         }
     }
 
@@ -228,7 +236,25 @@ impl HealthService {
             start_time: Instant::now(),
             database_success_at: Arc::new(RwLock::new(None)),
             upstream_success_at: Arc::new(RwLock::new(None)),
+            shutdown: ShutdownState::new(),
         }
+    }
+
+    /// Replaces the drain flag with a shared process-level state.
+    ///
+    /// # Parameters
+    /// - `shutdown` - Drain flag also used by generation admission
+    ///
+    /// # Returns
+    /// Service that reports not ready after `shutdown` is marked draining
+    pub fn with_shutdown_state(mut self, shutdown: ShutdownState) -> Self {
+        self.shutdown = shutdown;
+        self
+    }
+
+    /// Returns the shared drain flag.
+    pub fn shutdown_state(&self) -> ShutdownState {
+        self.shutdown.clone()
     }
 
     /// Performs a process liveness check.
@@ -337,9 +363,23 @@ impl HealthService {
     /// Successful database and upstream probes may be reused until TTL
     /// expires. Failures are rechecked immediately. Circuit state is never
     /// success-cached. `/models` success cannot override an unusable default
-    /// route. This method does not call generation endpoints.
+    /// route. Draining overrides cached dependency success. This method
+    /// does not call generation endpoints.
     pub async fn check_readiness(&self) -> Result<ReadinessResponse, HealthError> {
         let timestamp = chrono::Utc::now().to_rfc3339();
+        if self.shutdown.is_draining() {
+            return Ok(ReadinessResponse {
+                status: "not_ready".to_string(),
+                timestamp,
+                draining: true,
+                dependencies: ReadinessDependencies {
+                    database: self.cached_database_status().await,
+                    upstream: self.cached_upstream_status().await,
+                    default_route: self.probe_default_route(),
+                },
+            });
+        }
+
         let (database, upstream) =
             tokio::join!(self.probe_database(), self.probe_upstream());
         let default_route = self.probe_default_route();
@@ -353,12 +393,29 @@ impl HealthService {
                 "not_ready".to_string()
             },
             timestamp,
+            draining: false,
             dependencies: ReadinessDependencies {
                 database,
                 upstream,
                 default_route,
             },
         })
+    }
+
+    async fn cached_database_status(&self) -> DependencyStatus {
+        let cache = self.database_success_at.read().await;
+        match *cache {
+            Some(_) => DependencyStatus::healthy(None),
+            None => DependencyStatus::unhealthy(DATABASE_UNAVAILABLE, None),
+        }
+    }
+
+    async fn cached_upstream_status(&self) -> DependencyStatus {
+        let cache = self.upstream_success_at.read().await;
+        match *cache {
+            Some(_) => DependencyStatus::healthy(None),
+            None => DependencyStatus::unhealthy(UPSTREAM_UNAVAILABLE, None),
+        }
     }
 }
 

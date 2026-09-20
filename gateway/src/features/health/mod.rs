@@ -28,7 +28,7 @@
 //! - Process liveness on `/health`
 //! - Authentication-database schema, selected-column, locking, and
 //!   last_used_at UPDATE access, upstream `/models` reachability, and usable
-//!   default-route targets on `/ready`
+//!   default-route targets on `/ready`. Draining overrides cached success.
 //!
 //! # Error Handling
 //!
