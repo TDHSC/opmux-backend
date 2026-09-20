@@ -12,6 +12,7 @@ use super::persist::{
     ApiKeyKind, AuthStore, AuthStoreError, RevokeOutcome, MAX_KEY_LIST_LIMIT,
 };
 use super::provision::{IssuedKey, ProvisioningService};
+use crate::core::deadline::RequestDeadline;
 use chrono::Utc;
 use std::sync::Arc;
 use uuid::Uuid;
@@ -23,6 +24,8 @@ pub enum AuthenticateError {
     InvalidCredentials,
     /// Database timeout or unavailability. Fail closed; do not treat as invalid.
     StoreUnavailable,
+    /// The protected-request deadline elapsed before authentication finished.
+    DeadlineExceeded,
 }
 
 impl From<AuthenticateError> for AuthError {
@@ -30,6 +33,7 @@ impl From<AuthenticateError> for AuthError {
         match error {
             AuthenticateError::InvalidCredentials => Self::InvalidCredentials,
             AuthenticateError::StoreUnavailable => Self::StoreUnavailable,
+            AuthenticateError::DeadlineExceeded => Self::DeadlineExceeded,
         }
     }
 }
@@ -226,6 +230,7 @@ impl AuthService {
     /// # Errors
     /// - `InvalidCredentials` when the digest is unknown or revoked
     /// - `StoreUnavailable` when the database fails; callers must fail closed
+    /// - `DeadlineExceeded` when `authenticate_with_deadline` expires first
     #[tracing::instrument(level = "debug", skip(self, presented))]
     pub async fn authenticate(
         &self,
@@ -277,6 +282,40 @@ impl AuthService {
             key_id: record.id,
             kind: record.kind,
         })
+    }
+
+    /// Authenticates using the same absolute protected-request deadline.
+    ///
+    /// Database work is cancelled at `deadline` so a blocked row-lock wait
+    /// cannot keep the pool slot until the session statement timeout. A
+    /// dropped in-flight store future detaches the connection instead of
+    /// returning it with an in-flight query. This does not guarantee
+    /// instantaneous remote rollback.
+    ///
+    /// # Parameters
+    /// - `presented` - Raw `X-API-Key` value after header parsing
+    /// - `deadline` - The request's monotonic protected-request deadline
+    ///
+    /// # Returns
+    /// Authenticated context derived only from the stored row
+    ///
+    /// # Errors
+    /// - `DeadlineExceeded` when the deadline elapses during authentication
+    /// - The same credential and datastore errors as [`Self::authenticate`]
+    pub async fn authenticate_with_deadline(
+        &self,
+        presented: &str,
+        deadline: RequestDeadline,
+    ) -> Result<AuthContext, AuthenticateError> {
+        if deadline.is_expired() {
+            return Err(AuthenticateError::DeadlineExceeded);
+        }
+        match tokio::time::timeout_at(deadline.as_instant(), self.authenticate(presented))
+            .await
+        {
+            Ok(result) => result,
+            Err(_) => Err(AuthenticateError::DeadlineExceeded),
+        }
     }
 }
 
@@ -560,6 +599,18 @@ mod tests {
         assert_eq!(denied, AuthenticateError::InvalidCredentials);
         assert_eq!(*store.lookups.lock().expect("lock"), 1);
         assert_eq!(*store.touches.lock().expect("lock"), 0);
+    }
+
+    #[tokio::test]
+    async fn authenticate_with_deadline_fails_when_already_expired() {
+        let svc = AuthService::new(Arc::new(ScriptedStore::unavailable()));
+        let deadline = RequestDeadline::at(tokio::time::Instant::now());
+        tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        let err = svc
+            .authenticate_with_deadline("opmx_v1_any", deadline)
+            .await
+            .expect_err("expired");
+        assert_eq!(err, AuthenticateError::DeadlineExceeded);
     }
 
     #[tokio::test]

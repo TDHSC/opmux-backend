@@ -18,7 +18,8 @@ use axum::{
 /// # Flow
 /// 1. Record one deadline from `protected_request_deadline`
 /// 2. Insert it into request extensions for later layers
-/// 3. Run authentication, extraction, and handlers until that instant
+/// 3. Run authentication, extraction, and handlers until that instant.
+///    Authentication uses this same deadline for database work.
 /// 4. On expiry, return sanitized `504 DEADLINE_EXCEEDED` when a response
 ///    can still be delivered and drop owned inner work
 ///

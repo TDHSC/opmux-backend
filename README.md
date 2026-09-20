@@ -32,15 +32,20 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   rejections, use `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream
   credential, protocol, and oversized failures are sanitized `502` and are never a gateway `401`.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
-  and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
+  and inventory. Creation returns the secret once with `Cache-Control: no-store`. That one-time
+  output is not guaranteed delivery or exactly-once issuance. A timeout or disconnect during
+  creation does not prove rollback; a committed key whose response was lost cannot reveal its
+  plaintext again and may be revoked or replaced from inventory or `opmux-admin`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
-  ownership selectors and invalid paging are rejected.
+  ownership selectors and invalid paging are rejected. Protected-request deadlines still apply to
+  these mutations.
 - `DELETE /api/v1/auth/keys/{id}`: management-only same-tenant revocation. First and repeat DELETE
   return `204`. Other-tenant and unknown IDs return indistinguishable `404`. Self-revocation and
   final-manager revocation are allowed; recover with `opmux-admin key issue`. Subsequent auth is
   denied after commit on every gateway process sharing the database; already admitted requests may
-  finish. Inventory `last_used_at` is the last successful authentication, persisted monotonically
-  before admission (including when later inference fails). Invalid credentials do not update it.
+  finish. A timeout during DELETE does not prove rollback; check inventory and repeat if needed.
+  Inventory `last_used_at` is the last successful authentication, persisted monotonically before
+  admission (including when later inference fails). Invalid credentials do not update it.
 - LLM execution: an OpenAI vendor implementation, with retry, fallback, and circuit-breaker logic in
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a

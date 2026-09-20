@@ -51,6 +51,10 @@ mod tests {
         assert!(source.contains("WHERE client_id = $1"));
         assert!(source.contains("WHERE key_digest = $1"));
         assert!(source.contains("FOR UPDATE"));
+        assert!(
+            source.contains(".detach()"),
+            "cancelled authentication must detach the pool connection"
+        );
         assert!(source.contains("LIMIT $2 OFFSET $3"));
         assert!(
             source.contains("WHERE id = $1 AND client_id = $2 AND revoked_at IS NULL")

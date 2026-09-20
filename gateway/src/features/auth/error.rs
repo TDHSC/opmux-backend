@@ -32,6 +32,10 @@ pub enum AuthError {
     /// The authentication datastore is unreachable or timed out.
     #[error("Authentication dependency unavailable")]
     StoreUnavailable,
+
+    /// The protected-request deadline elapsed during authentication.
+    #[error("The request deadline was exceeded")]
+    DeadlineExceeded,
 }
 
 impl From<AuthStoreError> for AuthError {
@@ -73,6 +77,10 @@ impl AuthError {
             Self::StoreUnavailable => (
                 ErrorCode::AuthDependencyUnavailable,
                 "Authentication dependency unavailable".to_string(),
+            ),
+            Self::DeadlineExceeded => (
+                ErrorCode::DeadlineExceeded,
+                "The request deadline was exceeded".to_string(),
             ),
         }
     }
@@ -160,6 +168,18 @@ mod tests {
             .unwrap()
             .contains("unavailable"));
         assert_ne!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.to_string().contains("postgres://"));
+    }
+
+    #[tokio::test]
+    async fn deadline_exceeded_maps_to_504() {
+        let (status, body) = envelope(AuthError::DeadlineExceeded).await;
+        assert_eq!(status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(body["error"]["code"], "DEADLINE_EXCEEDED");
+        assert_eq!(
+            body["error"]["message"],
+            "The request deadline was exceeded"
+        );
         assert!(!body.to_string().contains("postgres://"));
     }
 }

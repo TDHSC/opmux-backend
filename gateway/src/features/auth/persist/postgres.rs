@@ -8,8 +8,9 @@ use super::models::{
 use super::store::AuthStore;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use sqlx::pool::PoolConnection;
 use sqlx::postgres::PgRow;
-use sqlx::{PgPool, Postgres, Row, Transaction};
+use sqlx::{Acquire, PgPool, Postgres, Row, Transaction};
 use uuid::Uuid;
 
 const CLIENT_COLUMNS: &str = "id, display_name, created_at";
@@ -89,60 +90,10 @@ impl AuthStore for PostgresAuthStore {
         digest: &KeyDigest,
         used_at: DateTime<Utc>,
     ) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
-        let mut tx = self.pool.begin().await.map_err(AuthStoreError::from_sqlx)?;
-        let row = match sqlx::query(&format!(
-            "SELECT {KEY_COLUMNS}
-             FROM opmux_private.api_keys
-             WHERE key_digest = $1
-             FOR UPDATE"
-        ))
-        .bind(digest.as_bytes().as_slice())
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(row) => row,
-            Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
-        };
-        let Some(row) = row else {
-            tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
-            return Ok(None);
-        };
-        let mut record = match api_key_from_row(&row) {
-            Ok(record) => record,
-            Err(err) => return rollback_err(tx, err).await,
-        };
-        if record.is_revoked() {
-            tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
-            return Ok(Some(record));
-        }
-        let updated = match sqlx::query(
-            "UPDATE opmux_private.api_keys
-             SET last_used_at = $3
-             WHERE id = $1
-               AND client_id = $2
-               AND revoked_at IS NULL
-               AND (last_used_at IS NULL OR last_used_at < $3)
-             RETURNING last_used_at",
-        )
-        .bind(record.id)
-        .bind(record.client_id)
-        .bind(used_at)
-        .fetch_optional(&mut *tx)
-        .await
-        {
-            Ok(row) => row,
-            Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
-        };
-        if let Some(updated) = updated {
-            record.last_used_at = match updated.try_get("last_used_at") {
-                Ok(value) => value,
-                Err(err) => {
-                    return rollback_err(tx, AuthStoreError::from_sqlx(err)).await;
-                }
-            };
-        }
-        tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
-        Ok(Some(record))
+        let mut checkout = checkout(&self.pool).await?;
+        let result = authenticate_digest_on(checkout.conn(), digest, used_at).await;
+        checkout.release();
+        result
     }
 
     async fn touch_last_used(
@@ -246,6 +197,113 @@ impl AuthStore for PostgresAuthStore {
             None => Ok(RevokeOutcome::NotFound),
         }
     }
+}
+
+/// Checked-out pool connection that detaches on cancellation.
+///
+/// SQLx returns a dropped in-flight query by pinging the connection, which
+/// waits until PostgreSQL's session `statement_timeout`. Detaching lets the
+/// pool open a replacement immediately. This is not a detached cleanup task
+/// and does not use a zero-millisecond PostgreSQL timeout.
+struct Checkout {
+    conn: Option<PoolConnection<Postgres>>,
+    reusable: bool,
+}
+
+impl Checkout {
+    fn new(conn: PoolConnection<Postgres>) -> Self {
+        Self {
+            conn: Some(conn),
+            reusable: false,
+        }
+    }
+
+    fn conn(&mut self) -> &mut PoolConnection<Postgres> {
+        self.conn.as_mut().expect("connection still checked out")
+    }
+
+    fn release(mut self) {
+        self.reusable = true;
+    }
+}
+
+impl Drop for Checkout {
+    fn drop(&mut self) {
+        let Some(conn) = self.conn.take() else {
+            return;
+        };
+        if self.reusable {
+            drop(conn);
+            return;
+        }
+        let _detached = conn.detach();
+    }
+}
+
+async fn checkout(pool: &PgPool) -> Result<Checkout, AuthStoreError> {
+    let conn = pool.acquire().await.map_err(AuthStoreError::from_sqlx)?;
+    Ok(Checkout::new(conn))
+}
+
+async fn authenticate_digest_on(
+    conn: &mut PoolConnection<Postgres>,
+    digest: &KeyDigest,
+    used_at: DateTime<Utc>,
+) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
+    let mut tx = conn.begin().await.map_err(AuthStoreError::from_sqlx)?;
+    let row = match sqlx::query(&format!(
+        "SELECT {KEY_COLUMNS}
+         FROM opmux_private.api_keys
+         WHERE key_digest = $1
+         FOR UPDATE"
+    ))
+    .bind(digest.as_bytes().as_slice())
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
+    };
+    let Some(row) = row else {
+        tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+        return Ok(None);
+    };
+    let mut record = match api_key_from_row(&row) {
+        Ok(record) => record,
+        Err(err) => return rollback_err(tx, err).await,
+    };
+    if record.is_revoked() {
+        tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+        return Ok(Some(record));
+    }
+    let updated = match sqlx::query(
+        "UPDATE opmux_private.api_keys
+         SET last_used_at = $3
+         WHERE id = $1
+           AND client_id = $2
+           AND revoked_at IS NULL
+           AND (last_used_at IS NULL OR last_used_at < $3)
+         RETURNING last_used_at",
+    )
+    .bind(record.id)
+    .bind(record.client_id)
+    .bind(used_at)
+    .fetch_optional(&mut *tx)
+    .await
+    {
+        Ok(row) => row,
+        Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
+    };
+    if let Some(updated) = updated {
+        record.last_used_at = match updated.try_get("last_used_at") {
+            Ok(value) => value,
+            Err(err) => {
+                return rollback_err(tx, AuthStoreError::from_sqlx(err)).await;
+            }
+        };
+    }
+    tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+    Ok(Some(record))
 }
 
 async fn rollback_err<T>(

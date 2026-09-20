@@ -29,7 +29,9 @@ use uuid::Uuid;
 /// 1. Requires a management credential
 /// 2. Rejects ownership fields and unsupported kinds
 /// 3. Issues a key through the shared provisioning service
-/// 4. Returns 201 with one-time credential and `Cache-Control: no-store`
+/// 4. Returns 201 with one-time credential and `Cache-Control: no-store`.
+///    A timeout does not prove rollback; a committed key cannot reveal its
+///    plaintext again.
 ///
 /// # Parameters
 /// - `state` - Injected application state

@@ -10,7 +10,7 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use gateway::{
-    core::{deadline::RequestDeadline, metrics::MetricsConfig},
+    core::{db::DatabasePoolConfig, deadline::RequestDeadline, metrics::MetricsConfig},
     features::{
         auth::{
             ApiKeyKind, ApiKeyRecord, AuthService, AuthStore, AuthStoreError,
@@ -26,14 +26,26 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use support::{
     cleanup_clients, isolate_provider_environment, production_router_with_settings,
-    provision_inference_key, settings_for_simulator_with, test_pool, OpenAiSimulator,
-    ScriptedResponse, SIMULATED_CONTENT,
+    provision_inference_key, required_database_url, settings_for_simulator_with,
+    test_pool, OpenAiSimulator, ScriptedResponse, SIMULATED_CONTENT,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const ROUTE_JSON: &str = r#"{"prompt":"deadline-fixture","metadata":{}}"#;
 const HTTP_BOUND: Duration = Duration::from_millis(1_500);
+/// Capacity must return well before the pool's 5s statement timeout.
+const POOL_RELEASE_BOUND: Duration = Duration::from_millis(1_500);
+
+fn route_request(credential: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri("/api/v1/route")
+        .header("content-type", "application/json")
+        .header("x-api-key", credential)
+        .body(Body::from(ROUTE_JSON))
+        .unwrap()
+}
 
 struct DelayedAuthStore {
     inner: PostgresAuthStore,
@@ -323,6 +335,89 @@ async fn delayed_database_auth_expires_with_zero_provider_calls() {
     );
     assert_eq!(simulator.generation_count(), 0);
     cleanup_clients(&pool, &[issued.client_id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn timed_out_row_lock_auth_releases_pool_for_unrelated_key() {
+    isolate_provider_environment();
+    let admin_pool = test_pool().await;
+    let key_a = provision_inference_key(&admin_pool).await;
+    let key_b = provision_inference_key(&admin_pool).await;
+    let runtime_pool = DatabasePoolConfig::new(required_database_url())
+        .expect("DATABASE_URL must parse")
+        .with_max_connections(1)
+        .expect("one runtime slot")
+        .with_acquire_timeout(Duration::from_secs(2))
+        .expect("runtime acquire timeout")
+        .connect_with_role("opmux_runtime")
+        .await
+        .unwrap_or_else(|_| {
+            panic!(
+                "failed to connect a one-slot runtime pool; persisted authentication tests require the owned local Supabase and do not skip"
+            )
+        });
+    sqlx::query_scalar::<_, i32>("SELECT 1")
+        .fetch_one(&runtime_pool)
+        .await
+        .expect("warm the one runtime pool slot");
+
+    let simulator = OpenAiSimulator::start().await;
+    let settings = settings_for_simulator_with(&simulator, |settings| {
+        settings.limits.protected_request_deadline = Duration::from_millis(500);
+    });
+    let app = production_router_with_settings(
+        settings,
+        Arc::new(AuthService::new(Arc::new(PostgresAuthStore::new(
+            runtime_pool.clone(),
+        )))),
+        MetricsConfig::disabled(),
+    );
+
+    let mut blocker = admin_pool.begin().await.expect("blocker transaction");
+    sqlx::query("SELECT 1 FROM opmux_private.api_keys WHERE id = $1 FOR UPDATE")
+        .bind(key_a.key_id)
+        .fetch_one(&mut *blocker)
+        .await
+        .expect("hold key A row lock");
+
+    let started = Instant::now();
+    let response_a = app
+        .clone()
+        .oneshot(route_request(&key_a.credential))
+        .await
+        .unwrap();
+    let a_elapsed = started.elapsed();
+    let request_id = response_a
+        .headers()
+        .get("X-Request-ID")
+        .and_then(|value| value.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let status_a = response_a.status();
+    let body_a = body_json(response_a).await;
+    assert_deadline_envelope(status_a, &body_a, &request_id);
+    assert!(
+        a_elapsed < HTTP_BOUND,
+        "blocked-auth deadline took {a_elapsed:?}, bound {HTTP_BOUND:?}"
+    );
+    assert_eq!(simulator.generation_count(), 0);
+
+    let b_started = Instant::now();
+    let response_b = app.oneshot(route_request(&key_b.credential)).await.unwrap();
+    let b_elapsed = b_started.elapsed();
+    assert_eq!(response_b.status(), StatusCode::OK);
+    let body_b = body_json(response_b).await;
+    assert_eq!(body_b["response"]["content"], SIMULATED_CONTENT);
+    assert_eq!(simulator.generation_count(), 1);
+    assert!(
+        b_elapsed < POOL_RELEASE_BOUND,
+        "unrelated key B must reuse the one-slot pool before statement_timeout; took {b_elapsed:?}, bound {POOL_RELEASE_BOUND:?}"
+    );
+
+    blocker.rollback().await.expect("release blocker");
+    runtime_pool.close().await;
+    cleanup_clients(&admin_pool, &[key_a.client_id, key_b.client_id]).await;
 }
 
 #[tokio::test]

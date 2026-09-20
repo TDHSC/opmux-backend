@@ -1,5 +1,6 @@
 //! Authentication middleware - protects endpoints with persisted API key validation.
 
+use crate::core::deadline::RequestDeadline;
 use crate::features::auth::{AuthError, AuthenticateError};
 use crate::AppState;
 use axum::{
@@ -38,7 +39,17 @@ pub async fn auth_middleware(
         }
     };
 
-    let auth_context = match state.auth_service.authenticate(&presented).await {
+    let deadline = request.extensions().get::<RequestDeadline>().copied();
+    let auth_result = match deadline {
+        Some(deadline) => {
+            state
+                .auth_service
+                .authenticate_with_deadline(&presented, deadline)
+                .await
+        }
+        None => state.auth_service.authenticate(&presented).await,
+    };
+    let auth_context = match auth_result {
         Ok(context) => context,
         Err(AuthenticateError::InvalidCredentials) => {
             tracing::debug!(
@@ -55,6 +66,14 @@ pub async fn auth_middleware(
                 "Authentication failed"
             );
             return Err(AuthError::StoreUnavailable);
+        }
+        Err(AuthenticateError::DeadlineExceeded) => {
+            tracing::debug!(
+                success = false,
+                reason = "deadline_exceeded",
+                "Authentication failed"
+            );
+            return Err(AuthError::DeadlineExceeded);
         }
     };
 

@@ -45,6 +45,12 @@ Successful commands print one JSON object to **stdout**, including the newly gen
 copy the secret into logs, tickets, or shell history. Failed commands print no credential and leave
 no partial tenant/key row. Secrets cannot be retrieved later; issue a replacement key to recover.
 
+HTTP key creation and revocation use the same protected-request deadline as inference. A `504` or
+client disconnect during a management mutation does not prove rollback. If creation committed and
+the one-time credential never reached the caller, the plaintext cannot be shown again. List the
+tenant inventory; revoke an unexpected new key or issue a replacement with `opmux-admin`. Do not
+expect commit/response reconciliation or recovery of the same secret.
+
 ```bash
 keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
 chmod 600 "$keyfile"

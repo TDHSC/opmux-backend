@@ -55,7 +55,9 @@ pub trait AuthStore: Send + Sync {
     /// without updating `last_used_at`. Active keys update `last_used_at`
     /// monotonically inside the same bounded transaction, then return the
     /// committed row. Callers must deny revoked records. This is the
-    /// authoritative authentication write, not a detached touch.
+    /// authoritative authentication write, not a detached touch. Cancelling
+    /// the future must not keep a shared pool slot until session statement
+    /// timeout; it does not promise instantaneous remote rollback.
     ///
     /// # Parameters
     /// - `digest` - Pre-hashed credential digest

@@ -59,7 +59,12 @@ Create a management or inference key in the authenticated tenant.
 - Tenant ownership comes from the authenticated key. Request fields `client_id` and `tenant_id` are
   rejected with `400` and do not create a key. `kind` must be `management` or `inference`.
 - HTTP issuance uses the same generation and hashing service as `opmux-admin`. The plaintext
-  credential is returned **once** and cannot be retrieved later.
+  credential is returned **once** and cannot be retrieved later. One-time output is not a delivery
+  or exactly-once guarantee. Protected-request deadlines still apply to this mutation. A timeout or
+  disconnect during commit acknowledgement does not prove rollback. If a key was committed and the
+  creation response was lost, the plaintext cannot be revealed again; list inventory and revoke or
+  replace the key with the existing management API or `opmux-admin`. This MVP does not recover
+  plaintext, add idempotency storage, or reconcile commit with the HTTP response.
 - Headers:
   - `X-API-Key`: required management credential
   - Successful responses include `Cache-Control: no-store`
@@ -100,6 +105,8 @@ Response codes:
 - `401 Unauthorized` missing/invalid API key
 - `403 Forbidden` authenticated inference key
 - `503 Service Unavailable` authentication datastore unavailable
+- `504 Gateway Timeout` protected-request deadline elapsed. This does not prove the insert rolled
+  back.
 
 ## GET /api/v1/auth/keys
 
@@ -164,7 +171,9 @@ Revoke a key in the authenticated tenant. The row is retained with a revocation 
   Other-tenant and well-formed nonexistent UUIDs return indistinguishable `404` status and error
   envelope (`NOT_FOUND`) apart from request correlation.
 - First revocation commits `revoked_at` and returns `204`. Repeating DELETE for the same tenant
-  returns `204` without changing the original timestamp.
+  returns `204` without changing the original timestamp. Protected-request deadlines still apply. A
+  timeout or disconnect during acknowledgement does not prove rollback; check inventory and repeat
+  DELETE if the row is still active.
 - Self-revocation and final-manager revocation are allowed. There is no last-manager lock. Recover
   with `opmux-admin key issue` for the existing client; that issues a replacement and does not
   revive revoked keys.
@@ -181,6 +190,8 @@ Response codes:
 - `403 Forbidden` authenticated inference key
 - `404 Not Found` missing or other-tenant key
 - `503 Service Unavailable` authentication datastore unavailable
+- `504 Gateway Timeout` protected-request deadline elapsed. This does not prove the revoke rolled
+  back.
 
 ## POST /api/v1/route
 
