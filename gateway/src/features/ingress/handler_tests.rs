@@ -282,7 +282,8 @@ mod tests {
             .await
             .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
-        assert!(body_str.contains("unsupported_model"));
+        assert!(body_str.contains("INVALID_REQUEST"));
+        assert!(!body_str.contains("gpt-3.5-turbo"));
     }
 
     #[tokio::test]

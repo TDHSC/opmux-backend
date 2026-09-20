@@ -233,7 +233,7 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
             .unwrap();
 
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
     }
 
     let request = Request::builder()
@@ -251,6 +251,6 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
         .await
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
-    assert!(body_str.contains("\"code\":\"circuit_open\""));
+    assert!(body_str.contains("\"code\":\"CIRCUIT_OPEN\""));
     cleanup_clients(&pool, &[issued.client_id]).await;
 }

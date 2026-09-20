@@ -1,10 +1,8 @@
 //! Error types for Executor Layer.
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Json, Response},
-};
-use serde_json::json;
+use axum::response::{IntoResponse, Response};
+
+use crate::core::http_error::{error_response, ErrorCode};
 
 /// Errors specific to Executor Layer operations.
 ///
@@ -69,100 +67,81 @@ pub enum ExecutorError {
     #[error("Invalid upstream result")]
     InvalidUpstreamResult,
 
+    /// Upstream returned a permanent non-success response.
+    #[error("upstream rejected the request")]
+    UpstreamRejected,
+
+    /// Overall protected-request deadline elapsed during execution.
+    #[error("request deadline exceeded")]
+    DeadlineExceeded,
+
     #[error("Circuit breaker open for vendor '{vendor}'")]
     CircuitOpen { vendor: String, retry_after_ms: u64 },
 }
 
-impl IntoResponse for ExecutorError {
-    /// Converts errors into HTTP JSON responses with appropriate status codes.
-    fn into_response(self) -> Response {
-        let (status, error_code, message) = match &self {
-            // Client errors (4xx)
-            Self::UnsupportedVendor(vendor) => (
-                StatusCode::BAD_REQUEST,
-                "unsupported_vendor",
-                format!("Vendor '{}' is not supported", vendor),
+impl ExecutorError {
+    fn http_mapping(&self) -> (ErrorCode, &'static str, Option<u64>) {
+        match self {
+            Self::UnsupportedVendor(_)
+            | Self::UnsupportedModel(_, _)
+            | Self::InvalidPayload(_) => (
+                ErrorCode::InvalidRequest,
+                "The request payload is invalid",
+                None,
             ),
-            Self::UnsupportedModel(model, vendor) => (
-                StatusCode::BAD_REQUEST,
-                "unsupported_model",
-                format!("Model '{}' is not supported by vendor '{}'", model, vendor),
+            Self::AuthenticationFailed(_) => (
+                ErrorCode::UpstreamAuthentication,
+                "Upstream provider rejected the credentials",
+                None,
             ),
-            Self::InvalidPayload(msg) => (
-                StatusCode::BAD_REQUEST,
-                "invalid_payload",
-                format!("Invalid request payload: {}", msg),
+            Self::RateLimitExceeded { retry_after_ms, .. } => (
+                ErrorCode::UpstreamRateLimit,
+                "Upstream provider rate-limited the request",
+                retry_after_secs(*retry_after_ms),
             ),
-            Self::AuthenticationFailed(vendor) => (
-                StatusCode::UNAUTHORIZED,
-                "authentication_failed",
-                format!("Authentication failed for vendor '{}'", vendor),
+            Self::ApiCallFailed(_)
+            | Self::NetworkError(_)
+            | Self::TimeoutError(_)
+            | Self::UpstreamRejected => (
+                ErrorCode::UpstreamError,
+                "Upstream provider request failed",
+                None,
             ),
-            Self::RateLimitExceeded { vendor, .. } => (
-                StatusCode::TOO_MANY_REQUESTS,
-                "rate_limit_exceeded",
-                format!("Rate limit exceeded for vendor '{}'", vendor),
+            Self::JsonError(_) | Self::InvalidUpstreamResult => (
+                ErrorCode::UpstreamProtocol,
+                "Upstream provider returned an unusable result",
+                None,
             ),
-            Self::CircuitOpen {
-                vendor,
-                retry_after_ms,
-            } => (
-                StatusCode::SERVICE_UNAVAILABLE,
-                "circuit_open",
-                format!(
-                    "Vendor '{}' temporarily unavailable, retry after {}ms",
-                    vendor, retry_after_ms
-                ),
-            ),
-
-            // Server errors (5xx) - return generic message for security
-            Self::ApiCallFailed(_) | Self::NetworkError(_) | Self::TimeoutError(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "execution_failed",
-                "Failed to execute LLM request".to_string(),
-            ),
-            Self::JsonError(_) => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal_error",
-                "An internal error occurred".to_string(),
-            ),
-            Self::NoVendorsConfigured => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "no_vendors_configured",
-                "No LLM vendors are configured".to_string(),
-            ),
-            Self::InvalidConfiguration => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid_configuration",
-                "Executor configuration is invalid".to_string(),
-            ),
-            Self::MissingPricing => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "missing_pricing",
-                "Configured pricing is missing for the selected target".to_string(),
-            ),
-            Self::InvalidUpstreamResult => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "invalid_upstream_result",
-                "Upstream result could not be used".to_string(),
-            ),
-        };
-
-        // Log the actual error for debugging (server-side only)
-        tracing::error!(
-            error = ?self,
-            error_code = error_code,
-            "Executor error occurred"
-        );
-
-        let body = Json(json!({
-            "error": {
-                "code": error_code,
-                "message": message,
+            Self::NoVendorsConfigured
+            | Self::InvalidConfiguration
+            | Self::MissingPricing => {
+                (ErrorCode::InternalError, "An internal error occurred", None)
             }
-        }));
+            Self::DeadlineExceeded => (
+                ErrorCode::DeadlineExceeded,
+                "The request deadline was exceeded",
+                None,
+            ),
+            Self::CircuitOpen { retry_after_ms, .. } => (
+                ErrorCode::CircuitOpen,
+                "No eligible upstream target is currently available",
+                retry_after_secs(Some(*retry_after_ms)),
+            ),
+        }
+    }
+}
 
-        (status, body).into_response()
+fn retry_after_secs(retry_after_ms: Option<u64>) -> Option<u64> {
+    retry_after_ms
+        .filter(|ms| *ms > 0)
+        .map(|ms| ms.div_ceil(1000).max(1))
+}
+
+impl IntoResponse for ExecutorError {
+    /// Converts executor failures into the canonical protected-API envelope.
+    fn into_response(self) -> Response {
+        let (code, message, retry_after_secs) = self.http_mapping();
+        error_response(code, message, retry_after_secs)
     }
 }
 
@@ -200,5 +179,96 @@ impl From<reqwest::Error> for ExecutorError {
 impl From<serde_json::Error> for ExecutorError {
     fn from(_err: serde_json::Error) -> Self {
         Self::JsonError("malformed upstream JSON".to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::body;
+    use axum::http::StatusCode;
+    use axum::response::IntoResponse;
+
+    async fn response_json(error: ExecutorError) -> (StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("body");
+        (
+            status,
+            serde_json::from_slice(&bytes).expect("json envelope"),
+        )
+    }
+
+    #[tokio::test]
+    async fn upstream_authentication_is_bad_gateway_not_gateway_unauthorized() {
+        let (status, body) =
+            response_json(ExecutorError::AuthenticationFailed("openai".into())).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
+        assert_eq!(body["error"]["code"], "UPSTREAM_AUTHENTICATION");
+        assert_eq!(
+            body["error"]["message"],
+            "Upstream provider rejected the credentials"
+        );
+        assert!(body["error"]["request_id"].is_string());
+        let encoded = body.to_string();
+        assert!(!encoded.contains("openai"));
+        assert!(!encoded.contains("Bearer"));
+        assert_ne!(status, StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn provider_protocol_and_rate_limit_use_distinct_sanitized_codes() {
+        let (json_status, json_body) =
+            response_json(ExecutorError::JsonError("malformed upstream JSON".into()))
+                .await;
+        assert_eq!(json_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(json_body["error"]["code"], "UPSTREAM_PROTOCOL");
+        assert!(!json_body.to_string().contains("malformed upstream JSON"));
+
+        let (oversize_status, oversize_body) =
+            response_json(ExecutorError::InvalidUpstreamResult).await;
+        assert_eq!(oversize_status, StatusCode::BAD_GATEWAY);
+        assert_eq!(oversize_body["error"]["code"], "UPSTREAM_PROTOCOL");
+        assert_ne!(oversize_status, StatusCode::PAYLOAD_TOO_LARGE);
+
+        let (limit_status, limit_body) =
+            response_json(ExecutorError::RateLimitExceeded {
+                vendor: "openai".into(),
+                retry_after_ms: Some(2_000),
+            })
+            .await;
+        assert_eq!(limit_status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(limit_body["error"]["code"], "UPSTREAM_RATE_LIMIT");
+        assert!(!limit_body.to_string().contains("openai"));
+        assert_ne!(limit_body["error"]["code"], "UNAUTHORIZED");
+    }
+
+    #[tokio::test]
+    async fn unexpected_internal_and_future_policy_variants_map_deterministically() {
+        let (internal_status, internal_body) =
+            response_json(ExecutorError::MissingPricing).await;
+        assert_eq!(internal_status, StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(internal_body["error"]["code"], "INTERNAL_ERROR");
+        assert_eq!(
+            internal_body["error"]["message"],
+            "An internal error occurred"
+        );
+        assert!(internal_body.get("response").is_none());
+
+        let (circuit_status, circuit_body) = response_json(ExecutorError::CircuitOpen {
+            vendor: "openai".into(),
+            retry_after_ms: 5_000,
+        })
+        .await;
+        assert_eq!(circuit_status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(circuit_body["error"]["code"], "CIRCUIT_OPEN");
+        assert!(!circuit_body.to_string().contains("openai"));
+
+        let (deadline_status, deadline_body) =
+            response_json(ExecutorError::DeadlineExceeded).await;
+        assert_eq!(deadline_status, StatusCode::GATEWAY_TIMEOUT);
+        assert_eq!(deadline_body["error"]["code"], "DEADLINE_EXCEEDED");
     }
 }

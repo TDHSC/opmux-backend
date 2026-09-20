@@ -28,7 +28,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   impossible usage fail as upstream protocol errors without fabricating model, content, usage, role,
   or cost. Provider response bodies are capped by `max_upstream_response_bytes` while the bytes are
   read, including chunked transfer and advertised `Content-Length`. Those protocol faults are not
-  retried as network failures. Canonical 502 mapping is later work.
+  retried as network failures. Protected endpoint errors, including JSON and path extraction
+  rejections, use `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream
+  credential, protocol, and oversized failures are sanitized `502` and are never a gateway `401`.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
@@ -48,9 +50,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
 operator-configured routes only; there is no Memory/Router service and no conversation history. The
 OpenAI adapter speaks Chat Completions against the configured base URL; live-provider verification
-remains deferred. Eligible fallback policy and standardized error envelopes are later work. Planned
-Rewrite/Validation microservices and additional vendors should not be treated as implemented
-capabilities. Explicit `stream`/`rewrite` requests are rejected.
+remains deferred. Eligible fallback policy is later work. Planned Rewrite/Validation microservices
+and additional vendors should not be treated as implemented capabilities. Explicit
+`stream`/`rewrite` requests are rejected.
 
 ## Getting Started
 

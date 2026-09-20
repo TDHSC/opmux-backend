@@ -50,18 +50,14 @@ pub enum YourFeatureError {
 
 impl IntoResponse for YourFeatureError {
     fn into_response(self) -> Response {
-        let (status, message) = match self {
-            // Client errors map to 4xx.
-            Self::InvalidInput(msg) => (StatusCode::BAD_REQUEST, msg),
-
-            // Server-side business failures map to 5xx with a generic message.
+        let (code, message) = match self {
+            Self::InvalidInput(msg) => (ErrorCode::InvalidRequest, msg),
             Self::OperationOneFailed | Self::OperationTwoFailed => (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "An internal error occurred.".to_string(),
+                ErrorCode::InternalError,
+                "An internal error occurred".to_string(),
             ),
         };
-
-        (status, Json(json!({ "error": message }))).into_response()
+        error_response(code, message, None)
     }
 }
 ```
@@ -82,11 +78,15 @@ pub enum AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        tracing::error!("An error occurred: {:?}", self);
         match self {
             AppError::Auth(e) => e.into_response(),
             AppError::Health(e) => e.into_response(),
             AppError::Ingress(e) => e.into_response(),
+            AppError::Internal => error_response(
+                ErrorCode::InternalError,
+                "An internal error occurred",
+                None,
+            ),
         }
     }
 }
@@ -94,7 +94,11 @@ impl IntoResponse for AppError {
 
 ## 4. Rules
 
-- Never expose internal detail (stack traces, upstream messages) in 5xx responses.
-- Log at the boundary (`AppError::into_response` or the handler), not at every layer.
+- Protected API errors use `{"error":{"code","message","request_id"}}` via
+  `core::http_error::error_response`. Literal codes live on `ErrorCode`.
+- Never expose internal detail (stack traces, upstream bodies, SQL, secrets) in public responses.
+- Upstream credential failures are `502` / `UPSTREAM_AUTHENTICATION`, never gateway `401`.
+- Log once at the HTTP envelope boundary, not at every layer.
 - Handlers return the feature error directly; conversion to `AppError` happens only where a single
-  unified type is required.
+  unified type is required. Cross-feature failures stay wrapped
+  (`IngressError::ExecutionFailed(ExecutorError)`).

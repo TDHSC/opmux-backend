@@ -371,11 +371,13 @@ impl ExecutorService {
     /// # Non-Retryable Errors
     /// - AuthenticationFailed - Invalid API key (won't fix with retry)
     /// - InvalidPayload - Bad request format (won't fix with retry)
+    /// - UpstreamRejected - Permanent upstream HTTP rejection
     /// - UnsupportedVendor - Vendor not configured (won't fix with retry)
     /// - UnsupportedModel - Model not supported (won't fix with retry)
     /// - JsonError - Malformed upstream JSON (protocol fault)
     /// - InvalidUpstreamResult - Empty choices, missing fields, or invalid usage
     /// - MissingPricing - Configured prices are absent
+    /// - DeadlineExceeded - Overall request deadline elapsed
     pub(crate) fn is_retryable_error(error: &ExecutorError) -> bool {
         matches!(
             error,

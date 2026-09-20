@@ -432,7 +432,7 @@ fn results_router_with_limit(
 
 fn assert_protocol_http_error(status: StatusCode, body: &serde_json::Value, raw: &str) {
     assert_ne!(status, StatusCode::PAYLOAD_TOO_LARGE);
-    assert!(status.is_server_error(), "protocol faults must not succeed");
+    assert_eq!(status, StatusCode::BAD_GATEWAY);
     assert!(body.get("response").is_none());
     assert!(body.get("model_used").is_none());
     assert!(body.get("cost").is_none());
@@ -440,11 +440,11 @@ fn assert_protocol_http_error(status: StatusCode, body: &serde_json::Value, raw:
     let encoded = body.to_string();
     assert!(!encoded.contains(raw));
     assert!(!encoded.contains(SIMULATED_CONTENT));
-    let code = body["error"]["code"].as_str().unwrap_or_default();
-    assert!(
-        code == "invalid_upstream_result" || code == "internal_error",
-        "unexpected protocol error code {code}"
-    );
+    assert_eq!(body["error"]["code"], "UPSTREAM_PROTOCOL");
+    assert!(!body["error"]["request_id"]
+        .as_str()
+        .unwrap_or("")
+        .is_empty());
 }
 
 async fn route_json(

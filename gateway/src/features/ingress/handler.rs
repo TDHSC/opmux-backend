@@ -4,12 +4,12 @@ use super::{
     error::IngressError, service::IngressResponse, validate::parse_ingress_request,
 };
 use crate::{
-    core::correlation::RequestContext,
+    core::{correlation::RequestContext, extract::ApiJson},
     features::auth::{ApiKeyKind, AuthContext},
     AppState,
 };
 use axum::{
-    extract::{Extension, Json, State},
+    extract::{Extension, State},
     response::Json as ResponseJson,
 };
 use serde_json::Value;
@@ -47,7 +47,7 @@ pub async fn ingress_handler(
     State(state): State<AppState>,
     Extension(request_context): Extension<RequestContext>,
     auth_context: AuthContext,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> Result<ResponseJson<IngressResponse>, IngressError> {
     tracing::info!("Incoming AI routing request");
 
@@ -73,9 +73,6 @@ pub async fn ingress_handler(
             );
             Ok(ResponseJson(response))
         }
-        Err(error) => {
-            tracing::error!(error = ?error, "Request processing failed");
-            Err(error)
-        }
+        Err(error) => Err(error),
     }
 }

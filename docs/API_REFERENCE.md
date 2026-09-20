@@ -162,7 +162,7 @@ Revoke a key in the authenticated tenant. The row is retained with a revocation 
   targeting a key in their own tenant. Missing, unknown, and malformed credentials receive `401`.
 - Tenant ownership comes from the authenticated key. The path `{id}` cannot select another tenant.
   Other-tenant and well-formed nonexistent UUIDs return indistinguishable `404` status and error
-  text (correlation headers may differ).
+  envelope (`NOT_FOUND`) apart from request correlation.
 - First revocation commits `revoked_at` and returns `204`. Repeating DELETE for the same tenant
   returns `204` without changing the original timestamp.
 - Self-revocation and final-manager revocation are allowed. There is no last-manager lock. Recover
@@ -303,19 +303,58 @@ Response `200 OK`:
 
 - Response codes:
   - `200 OK` success
-  - `400 Bad Request` invalid JSON, unknown/unsupported control, or out-of-range parameter
-  - `401 Unauthorized` invalid/missing/ambiguous API key
-  - `403 Forbidden` authenticated management key (generation requires inference)
-  - `500 Internal Server Error` execution failed, including invalid or oversized upstream results
-  - `503 Service Unavailable` authentication datastore unavailable or circuit breaker open
+  - `400 Bad Request` invalid JSON (`INVALID_JSON`), unknown/unsupported control, or out-of-range
+    parameter (`INVALID_REQUEST`). Malformed path parameters use `INVALID_PATH`.
+  - `401 Unauthorized` invalid/missing/ambiguous API key (`UNAUTHORIZED`)
+  - `403 Forbidden` authenticated management key (generation requires inference) (`FORBIDDEN`)
+  - `415 Unsupported Media Type` non-JSON Content-Type (`UNSUPPORTED_MEDIA_TYPE`)
+  - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`)
+  - `502 Bad Gateway` upstream credential, protocol, oversized, or other provider failure
+    (`UPSTREAM_AUTHENTICATION`, `UPSTREAM_PROTOCOL`, `UPSTREAM_ERROR`). Provider 401/403 is never a
+    gateway `401`.
+  - `500 Internal Server Error` unexpected internal fault (`INTERNAL_ERROR`)
+  - `503 Service Unavailable` authentication datastore unavailable (`AUTH_DEPENDENCY_UNAVAILABLE`)
 
-Error payload format:
+Protected route, key-create, key-list, and key-delete errors, including JSON and path extraction
+rejections, use one envelope:
 
 ```json
 {
   "error": {
-    "code": "execution_failed",
-    "message": "Failed to execute LLM request"
+    "code": "UPSTREAM_ERROR",
+    "message": "Upstream provider request failed",
+    "request_id": "11111111-1111-4111-8111-111111111111"
   }
 }
 ```
+
+`error.request_id` equals the `X-Request-ID` response header. A valid `X-Correlation-ID` (non-empty,
+at most 256 bytes, valid header text) is echoed even on early failure. Empty, overlong, or non-UTF-8
+correlation values are ignored and replaced with no correlation header; a request ID is still
+generated. Codes and messages do not copy client correlation IDs, prompts, metadata, SQL, provider
+bodies, secrets, or credential-bearing URLs.
+
+Documented codes:
+
+| Code                          | Status | Meaning                                                |
+| ----------------------------- | ------ | ------------------------------------------------------ |
+| `INVALID_REQUEST`             | 400    | Semantic validation or unknown control                 |
+| `INVALID_JSON`                | 400    | Malformed JSON body                                    |
+| `INVALID_PATH`                | 400    | Path parameter could not be parsed                     |
+| `UNSUPPORTED_MEDIA_TYPE`      | 415    | Content-Type is not `application/json`                 |
+| `UNAUTHORIZED`                | 401    | Missing, malformed, unknown, or revoked gateway key    |
+| `FORBIDDEN`                   | 403    | Authenticated key lacks the required capability        |
+| `NOT_FOUND`                   | 404    | Same-tenant key missing; other-tenant IDs use this too |
+| `AUTH_DEPENDENCY_UNAVAILABLE` | 503    | Authentication datastore unavailable                   |
+| `UPSTREAM_AUTHENTICATION`     | 502    | Upstream rejected provider credentials                 |
+| `UPSTREAM_PROTOCOL`           | 502    | Unusable or oversized upstream success body            |
+| `UPSTREAM_ERROR`              | 502    | Other upstream execution failure                       |
+| `UPSTREAM_RATE_LIMIT`         | 429    | Upstream throttled the request                         |
+| `INTERNAL_ERROR`              | 500    | Unexpected internal fault                              |
+| `DEADLINE_EXCEEDED`           | 504    | Reserved for later deadline enforcement                |
+| `CIRCUIT_OPEN`                | 503    | Reserved for later circuit exhaustion                  |
+| `OVERLOADED`                  | 429    | Reserved for later local admission                     |
+| `PAYLOAD_TOO_LARGE`           | 413    | Reserved for later raw-body limits                     |
+
+Health and readiness probes keep their existing status documents; they are not this protected-API
+envelope.

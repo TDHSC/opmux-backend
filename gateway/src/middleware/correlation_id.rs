@@ -102,11 +102,16 @@ pub async fn correlation_id_middleware(
         "Correlation IDs assigned"
     );
 
-    // 4. Inject into request extensions
-    request.extensions_mut().insert(request_context);
+    // 4. Inject into request extensions and task-local request scope so
+    // error envelopes can copy the same request_id as response headers.
+    request.extensions_mut().insert(request_context.clone());
 
     // 5. Process request through handler chain
-    let mut response = next.run(request).await;
+    let mut response = crate::core::http_error::scope_request_context(
+        request_context,
+        next.run(request),
+    )
+    .await;
 
     // 6. Add response headers (best effort, never fail)
     // Always add X-Request-ID

@@ -145,13 +145,11 @@ impl LLMVendor for OpenAIVendor {
                     vendor: "openai".to_string(),
                     retry_after_ms,
                 },
-                status if status.is_client_error() => {
-                    ExecutorError::InvalidPayload(format!("OpenAI API error {status}"))
-                }
+                status if status.is_client_error() => ExecutorError::UpstreamRejected,
                 status if status.is_server_error() => {
-                    ExecutorError::ApiCallFailed(format!("OpenAI API error {status}"))
+                    ExecutorError::ApiCallFailed("upstream http error".to_string())
                 }
-                _ => ExecutorError::ApiCallFailed(format!("OpenAI API error {status}")),
+                _ => ExecutorError::ApiCallFailed("upstream http error".to_string()),
             });
         }
 
@@ -183,16 +181,8 @@ impl LLMVendor for OpenAIVendor {
         )
         .await
         .map_err(|_| ExecutorError::TimeoutError(timeout_secs * 1000))? // Timeout elapsed
-        .map_err(|e| {
-            // Request failed (not timeout)
-            if e.is_connect() {
-                ExecutorError::NetworkError(format!(
-                    "Failed to connect to OpenAI API: {}",
-                    e
-                ))
-            } else {
-                ExecutorError::NetworkError(e.to_string())
-            }
+        .map_err(|_| {
+            ExecutorError::NetworkError("upstream transport error".to_string())
         })?;
 
         // Check response status

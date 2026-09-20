@@ -10,9 +10,12 @@ use super::{
     persist::{ApiKeyKind, MAX_KEY_LIST_LIMIT},
     AuthContext, AuthError, AuthService, IssuedKey, KeyInventory, KeyListOptions,
 };
-use crate::AppState;
+use crate::{
+    core::extract::{ApiJson, ApiPath},
+    AppState,
+};
 use axum::{
-    extract::{Json, Path, RawQuery, State},
+    extract::{RawQuery, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json as ResponseJson, Response},
 };
@@ -51,7 +54,7 @@ use uuid::Uuid;
 pub async fn create_api_key(
     State(state): State<AppState>,
     auth: AuthContext,
-    Json(body): Json<Value>,
+    ApiJson(body): ApiJson<Value>,
 ) -> Result<Response, AuthError> {
     AuthService::require_management(&auth)?;
     let (name, kind) = parse_create_key_request(&body)?;
@@ -130,7 +133,7 @@ pub async fn list_api_keys(
 pub async fn revoke_api_key(
     State(state): State<AppState>,
     auth: AuthContext,
-    Path(key_id): Path<Uuid>,
+    ApiPath(key_id): ApiPath<Uuid>,
 ) -> Result<StatusCode, AuthError> {
     AuthService::require_management(&auth)?;
     state.auth_service.revoke_key(&auth, key_id).await?;

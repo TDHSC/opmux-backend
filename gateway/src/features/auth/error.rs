@@ -1,15 +1,13 @@
 //! Authentication Feature Error Types
 //!
-//! Errors specific to authentication operations following the business operation model
+//! Errors specific to authentication operations following the business
+//! operation model.
 
-use axum::{
-    http::StatusCode,
-    response::{IntoResponse, Json, Response},
-};
-use serde_json::json;
+use axum::response::{IntoResponse, Response};
 
 use super::persist::{AuthStoreError, MAX_KEY_LIST_LIMIT};
 use super::provision::ProvisionError;
+use crate::core::http_error::{error_response, ErrorCode};
 
 /// Errors specific to authentication operations.
 /// Each variant corresponds to a failed business operation.
@@ -58,93 +56,110 @@ impl From<ProvisionError> for AuthError {
     }
 }
 
-impl IntoResponse for AuthError {
-    fn into_response(self) -> Response {
-        let (status, message) = match self {
-            Self::InvalidCredentials => (
-                StatusCode::UNAUTHORIZED,
-                "Authentication failed".to_string(),
-            ),
+impl AuthError {
+    fn http_mapping(&self) -> (ErrorCode, String) {
+        match self {
+            Self::InvalidCredentials => {
+                (ErrorCode::Unauthorized, "Authentication failed".to_string())
+            }
             Self::CapabilityDenied => (
-                StatusCode::FORBIDDEN,
+                ErrorCode::Forbidden,
                 "You do not have permission to perform this operation.".to_string(),
             ),
-            Self::InvalidInput(message) => (StatusCode::BAD_REQUEST, message),
+            Self::InvalidInput(message) => (ErrorCode::InvalidRequest, message.clone()),
             Self::KeyNotFound => {
-                (StatusCode::NOT_FOUND, "API key was not found".to_string())
+                (ErrorCode::NotFound, "API key was not found".to_string())
             }
             Self::StoreUnavailable => (
-                StatusCode::SERVICE_UNAVAILABLE,
+                ErrorCode::AuthDependencyUnavailable,
                 "Authentication dependency unavailable".to_string(),
             ),
-        };
+        }
+    }
+}
 
-        let body = Json(json!({ "error": message }));
-        (status, body).into_response()
+impl IntoResponse for AuthError {
+    fn into_response(self) -> Response {
+        let (code, message) = self.http_mapping();
+        error_response(code, message, None)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::{body, response::IntoResponse};
+    use axum::{body, http::StatusCode, response::IntoResponse};
+
+    async fn envelope(error: AuthError) -> (StatusCode, serde_json::Value) {
+        let response = error.into_response();
+        let status = response.status();
+        let bytes = body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
 
     #[tokio::test]
     async fn invalid_credentials_map_to_401() {
-        let err = AuthError::InvalidCredentials;
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("Authentication failed"));
-        assert!(!s.contains("digest"));
-        assert!(!s.contains("postgres"));
+        let (status, body) = envelope(AuthError::InvalidCredentials).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(body["error"]["code"], "UNAUTHORIZED");
+        assert_eq!(body["error"]["message"], "Authentication failed");
+        assert!(body["error"]["request_id"].is_string());
+        let encoded = body.to_string();
+        assert!(!encoded.contains("digest"));
+        assert!(!encoded.contains("postgres"));
     }
 
     #[tokio::test]
     async fn capability_denied_maps_to_403() {
-        let err = AuthError::CapabilityDenied;
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::FORBIDDEN);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("permission"));
-        assert!(!s.contains("digest"));
+        let (status, body) = envelope(AuthError::CapabilityDenied).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"]["code"], "FORBIDDEN");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("permission"));
+        assert!(!body.to_string().contains("digest"));
     }
 
     #[tokio::test]
     async fn invalid_input_maps_to_400() {
-        let err = AuthError::InvalidInput("kind must be management or inference".into());
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("kind must be management or inference"));
-        assert!(!s.contains("digest"));
+        let (status, body) = envelope(AuthError::InvalidInput(
+            "kind must be management or inference".into(),
+        ))
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["error"]["code"], "INVALID_REQUEST");
+        assert_eq!(
+            body["error"]["message"],
+            "kind must be management or inference"
+        );
+        assert!(!body.to_string().contains("digest"));
     }
 
     #[tokio::test]
     async fn key_not_found_maps_to_indistinguishable_404() {
-        let err = AuthError::KeyNotFound;
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("API key was not found"));
-        assert!(!s.contains("tenant"));
-        assert!(!s.contains("digest"));
-        assert!(!s.contains("revoked"));
+        let (status, body) = envelope(AuthError::KeyNotFound).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+        assert_eq!(body["error"]["code"], "NOT_FOUND");
+        assert_eq!(body["error"]["message"], "API key was not found");
+        let encoded = body.to_string();
+        assert!(!encoded.contains("tenant"));
+        assert!(!encoded.contains("digest"));
+        assert!(!encoded.contains("revoked"));
     }
 
     #[tokio::test]
     async fn store_unavailable_maps_to_503() {
-        let err = AuthError::StoreUnavailable;
-        let resp = err.into_response();
-        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
-        let bytes = body::to_bytes(resp.into_body(), usize::MAX).await.unwrap();
-        let s = String::from_utf8(bytes.to_vec()).unwrap();
-        assert!(s.contains("unavailable"));
-        assert!(!s.contains("401"));
-        assert!(!s.contains("invalid"));
+        let (status, body) = envelope(AuthError::StoreUnavailable).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(body["error"]["code"], "AUTH_DEPENDENCY_UNAVAILABLE");
+        assert!(body["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("unavailable"));
+        assert_ne!(status, StatusCode::UNAUTHORIZED);
+        assert!(!body.to_string().contains("postgres://"));
     }
 }
