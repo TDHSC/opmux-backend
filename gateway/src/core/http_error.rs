@@ -174,8 +174,9 @@ pub fn current_request_id() -> String {
 /// Serializes the canonical protected-API error envelope.
 ///
 /// Logs once at this HTTP boundary. Client errors are debug; server errors
-/// are error-level. The public body never includes SQL, provider payloads,
-/// secrets, or credential-bearing URLs.
+/// are error-level. Lower layers must not emit a second terminal failure
+/// summary before the error reaches this function. The public body never
+/// includes SQL, provider payloads, secrets, or credential-bearing URLs.
 pub fn error_response(
     code: ErrorCode,
     message: impl Into<String>,

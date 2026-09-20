@@ -322,39 +322,22 @@ impl ExecutorService {
                         };
                         retry_after_ms = rate_limit_retry_after;
                         tracing::warn!(
-                            "Retryable error on attempt {}/{}: vendor={}, target={}, model={}, error={:?}",
                             attempt,
                             max_retries,
-                            plan.vendor_id,
-                            plan.target_id,
-                            plan.model_id,
-                            e
+                            vendor_id = %plan.vendor_id,
+                            target_id = %plan.target_id,
+                            model_id = %plan.model_id,
+                            "Retryable error"
                         );
                         last_error = Some(e);
                         continue;
                     } else {
-                        // Non-retryable error, fail immediately
-                        tracing::error!(
-                            "Non-retryable error: vendor={}, target={}, model={}, error={:?}",
-                            plan.vendor_id,
-                            plan.target_id,
-                            plan.model_id,
-                            e
-                        );
                         return Err(e);
                     }
                 }
             }
         }
 
-        // All retries exhausted
-        tracing::error!(
-            "Max retries exceeded: vendor={}, target={}, model={}, attempts={}",
-            plan.vendor_id,
-            plan.target_id,
-            plan.model_id,
-            max_retries + 1
-        );
         Err(last_error.unwrap_or_else(|| {
             ExecutorError::ApiCallFailed("Max retries exceeded".to_string())
         }))
@@ -430,9 +413,7 @@ impl ExecutorService {
         params: &ExecutionParams,
         primary_error: ExecutorError,
     ) -> Result<ExecutionResult, ExecutorError> {
-        // No fallbacks available, return primary error
         if fallback_plans.is_empty() {
-            tracing::warn!("No fallback plans available, returning primary error");
             return Err(primary_error);
         }
 
@@ -483,13 +464,12 @@ impl ExecutorService {
                         self.record_vendor_failure(&fallback.vendor_id).await;
                     }
                     tracing::warn!(
-                        "Fallback {}/{} failed: vendor={}, target={}, model={}, error={:?}",
-                        index + 1,
-                        fallback_plans.len(),
-                        fallback.vendor_id,
-                        fallback.target_id,
-                        fallback.model_id,
-                        e
+                        fallback_index = index + 1,
+                        fallback_count = fallback_plans.len(),
+                        vendor_id = %fallback.vendor_id,
+                        target_id = %fallback.target_id,
+                        model_id = %fallback.model_id,
+                        "Fallback attempt failed"
                     );
                     // Continue to next fallback
                     continue;
@@ -497,11 +477,6 @@ impl ExecutorService {
             }
         }
 
-        // All fallbacks exhausted, return primary error
-        tracing::error!(
-            "All {} fallback plans failed, returning primary error",
-            fallback_plans.len()
-        );
         Err(primary_error)
     }
 
@@ -629,15 +604,6 @@ impl ExecutorService {
                 if Self::is_retryable_error(&primary_error) {
                     self.record_vendor_failure(&plan.vendor_id).await;
                 }
-                tracing::warn!(
-                    "Primary execution failed: vendor={}, target={}, model={}, error={:?}",
-                    plan.vendor_id,
-                    plan.target_id,
-                    plan.model_id,
-                    primary_error
-                );
-
-                // Try fallback plans
                 self.execute_fallbacks(&plan.fallback_plans, &params, primary_error)
                     .await
             }

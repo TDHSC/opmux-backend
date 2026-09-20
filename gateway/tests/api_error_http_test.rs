@@ -240,6 +240,72 @@ fn omit_sentinels(haystack: &str) {
     }
 }
 
+fn owning_terminal_events(logs: &str) -> Vec<&str> {
+    logs.lines()
+        .filter(|line| line.contains("request failed") && line.contains("error_code"))
+        .collect()
+}
+
+fn assert_one_owning_terminal_event(logs: &str, request_id: &str, error_code: &str) {
+    let events = owning_terminal_events(logs);
+    assert_eq!(
+        events.len(),
+        1,
+        "expected one owning HTTP-boundary terminal event, found {}: {logs}",
+        events.len()
+    );
+    let event = events[0];
+    assert!(
+        event.contains(error_code),
+        "terminal event missing category {error_code}: {event}"
+    );
+    assert!(
+        event.contains(request_id),
+        "terminal event missing request_id: {event}"
+    );
+}
+
+fn assert_no_executor_terminal_summaries(logs: &str) {
+    for needle in [
+        "Non-retryable error",
+        "Max retries exceeded",
+        "No fallback plans available",
+        "returning primary error",
+    ] {
+        assert!(
+            !logs.contains(needle),
+            "executor must not emit redundant terminal summary {needle}: {logs}"
+        );
+    }
+    for needle in [
+        "error=AuthenticationFailed",
+        "error=ApiCallFailed",
+        "error=NetworkError",
+        "error=RateLimitExceeded",
+        "error=TimeoutError",
+        "error=InvalidUpstreamResult",
+        "error=JsonError",
+        "error=UpstreamRejected",
+    ] {
+        assert!(
+            !logs.contains(needle),
+            "executor must not echo whole errors on terminal failure paths: {logs}"
+        );
+    }
+}
+
+fn retry_once_router(
+    simulator: &OpenAiSimulator,
+    auth_service: Arc<AuthService>,
+) -> axum::Router {
+    let mut settings =
+        Settings::for_tests_with_provider(simulator.base_url(), simulator.credential());
+    settings.limits.retries_per_target = 1;
+    Application::from_settings(Arc::new(settings), auth_service)
+        .expect("application should build")
+        .into_router(MetricsConfig::disabled())
+}
+
 fn route_request(api_key: Option<&str>, body: impl Into<String>) -> Request<Body> {
     let mut builder = Request::builder()
         .method("POST")
@@ -825,6 +891,13 @@ async fn unexpected_faults_and_diagnostics_remain_sanitized() {
     assert!(!logs.contains(&fixture.a_inference.credential));
     assert!(!logs.contains(&format!("{digest:?}")));
     assert!(!encoded_headers.contains(&fixture.a_inference.credential));
+    let request_id = body["error"]["request_id"].as_str().unwrap_or_default();
+    assert_one_owning_terminal_event(&logs, request_id, "UPSTREAM_AUTHENTICATION");
+    assert_no_executor_terminal_summaries(&logs);
+    assert!(
+        !logs.contains("Retrying execution"),
+        "nonretryable failure must not start a retry: {logs}"
+    );
 
     let closed = DatabasePoolConfig::new(format!(
         "postgres://opmux:{DB_SECRET_SENTINEL}@127.0.0.1:1/postgres"
@@ -859,5 +932,72 @@ async fn unexpected_faults_and_diagnostics_remain_sanitized() {
     omit_sentinels(&failed_body.to_string());
     omit_sentinels(&failed_headers);
     omit_sentinels(&failed_logs);
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn exhausted_retry_without_fallback_has_one_owning_terminal_error_log() {
+    isolate_provider_environment();
+    let (capture, _guard) = DebugCapture::install();
+    let fixture = TwoTenantFixture::provision().await;
+    let digest = hash_credential(&fixture.a_inference.credential);
+    let simulator = OpenAiSimulator::start().await;
+    for _ in 0..2 {
+        simulator.enqueue_chat(ScriptedResponse::json_status(
+            500,
+            serde_json::json!({
+                "error": { "message": UPSTREAM_BODY_SENTINEL }
+            }),
+        ));
+    }
+    let app = retry_once_router(&simulator, fixture.auth_service());
+    let body = serde_json::json!({
+        "prompt": PROMPT_SENTINEL,
+        "metadata": { "note": METADATA_SENTINEL }
+    })
+    .to_string();
+    let response = send(
+        app,
+        route_request(Some(&fixture.a_inference.credential), body),
+    )
+    .await;
+    let encoded_headers: String = response
+        .headers()
+        .iter()
+        .filter_map(|(name, value)| {
+            value.to_str().ok().map(|text| format!("{name}: {text}"))
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    let status = response.status();
+    let headers = response.headers().clone();
+    let body = json_of(response).await;
+    let logs = capture.take();
+    assert_envelope(
+        status,
+        &headers,
+        &body,
+        StatusCode::BAD_GATEWAY,
+        "UPSTREAM_ERROR",
+    );
+    omit_sentinels(&body.to_string());
+    omit_sentinels(&encoded_headers);
+    omit_sentinels(&logs);
+    assert!(!body.to_string().contains(&fixture.a_inference.credential));
+    assert!(!logs.contains(&fixture.a_inference.credential));
+    assert!(!logs.contains(&format!("{digest:?}")));
+    let request_id = body["error"]["request_id"].as_str().unwrap_or_default();
+    assert_one_owning_terminal_event(&logs, request_id, "UPSTREAM_ERROR");
+    assert_no_executor_terminal_summaries(&logs);
+    assert!(
+        logs.contains("Retryable error"),
+        "exhausted retry should keep attempt-level retry telemetry: {logs}"
+    );
+    assert!(
+        logs.contains("Retrying execution"),
+        "exhausted retry should keep actual backoff/retry telemetry: {logs}"
+    );
+    assert_eq!(simulator.generation_count(), 2);
     fixture.drop_rows().await;
 }

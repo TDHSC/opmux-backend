@@ -98,7 +98,10 @@ impl IntoResponse for AppError {
   `core::http_error::error_response`. Literal codes live on `ErrorCode`.
 - Never expose internal detail (stack traces, upstream bodies, SQL, secrets) in public responses.
 - Upstream credential failures are `502` / `UPSTREAM_AUTHENTICATION`, never gateway `401`.
-- Log once at the HTTP envelope boundary, not at every layer.
+- Log once at the HTTP envelope boundary, not at every layer. Executor retry, backoff,
+  fallback-attempt/recovery, and circuit open/skip events may still record safe bounded fields. Do
+  not add terminal hop or request-failure summaries, or whole-error echoes, on nonretryable,
+  exhausted-retry, or exhausted/no-fallback paths.
 - Handlers return the feature error directly; conversion to `AppError` happens only where a single
   unified type is required. Cross-feature failures stay wrapped
   (`IngressError::ExecutionFailed(ExecutorError)`).
