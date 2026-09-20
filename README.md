@@ -13,11 +13,11 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   configurable metrics endpoint (`/metrics` by default).
 
 **Implementation boundary:** Request authentication still uses a mock repository. A private Supabase
-schema and SQLx store exist for clients and API-key digests, but they are not yet wired into HTTP
-authentication or the operator CLI. Conversation context and routing optimization also use mock
-data. Real upstream LLM execution does not make the entire pipeline production-ready. Planned
-Memory/Router/Rewrite/Validation microservices and additional vendors should not be treated as
-implemented capabilities.
+schema, SQLx store, shared provisioning service, and `opmux-admin` CLI exist for tenants and API-key
+digests, but persisted keys are not yet wired into HTTP authentication. Conversation context and
+routing optimization also use mock data. Real upstream LLM execution does not make the entire
+pipeline production-ready. Planned Memory/Router/Rewrite/Validation microservices and additional
+vendors should not be treated as implemented capabilities.
 
 ## Getting Started
 
@@ -114,10 +114,27 @@ The script uses `DATABASE_URL` when set, otherwise the mission-owned loopback da
 stack). Do not use hosted project linking. Persistence tests fail if the owned database is missing;
 they do not skip.
 
-Gateway startup still does not require `DATABASE_URL`. Persistence tests and later auth wiring do.
-Use a direct or session-mode pooler URL for hosted Postgres (`sslmode=verify-full` plus a CA).
-Transaction-mode poolers are incompatible with SQLx prepared statements. Platform `anon` /
-`service_role` keys are not Opmux API keys and cannot read `opmux_private` digests.
+Gateway startup still does not require `DATABASE_URL`. Persistence tests, `opmux-admin`, and later
+auth wiring do. Use a direct or session-mode pooler URL for hosted Postgres (`sslmode=verify-full`
+plus a CA). Transaction-mode poolers are incompatible with SQLx prepared statements. Platform `anon`
+/ `service_role` keys are not Opmux API keys and cannot read `opmux_private` digests.
+
+`opmux-admin` is the operator CLI, not an HTTP bootstrap. It uses `DATABASE_URL` and
+`SET ROLE opmux_operator` (override with `OPMUX_DB_ROLE`). Schema migrations stay with the database
+owner via `scripts/db-migrate.sh`; `opmux_runtime` cannot create tenants. Successful commands print
+one JSON object to stdout, including the newly generated `opmx_v1_` credential **once**. Redirect
+stdout to a mode-0600 file. Do not log the secret. There is no later retrieval; issue a replacement
+key to recover.
+
+```bash
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  tenant create --name acme > /tmp/acme-management.json
+bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
+  key issue --client-id "$CLIENT_ID" --kind inference --name route > /tmp/acme-inference.json
+```
+
+HTTP generation still accepts the mock repository keys until persisted authentication is wired. Do
+not seed `test-api-key-123` or `dev-api-key-456` into `opmux_private`.
 
 Wrap workspace tests so they receive the owned database URL:
 

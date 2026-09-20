@@ -113,7 +113,9 @@ TLS certificate and hostname verification stay enabled. There is no insecure-TLS
 
 Persistence (SQLx 0.8.6, not required at gateway bind yet):
 
-- `DATABASE_URL` (PostgreSQL URL; persistence tests fail if unset or unreachable)
+- `DATABASE_URL` (PostgreSQL URL; required for `opmux-admin`, migrations, and persistence tests)
+- `OPMUX_DB_ROLE` (optional, default `opmux_operator` for `opmux-admin`; connecting user must be a
+  member of that role)
 - `OPMUX_DB_MAX_CONNECTIONS` (optional, default 10, max 32)
 - `OPMUX_DB_ACQUIRE_TIMEOUT_MS` (optional, default 3000, 100–60000)
 - `OPMUX_DB_STATEMENT_TIMEOUT_MS` (optional, default 5000, 100–60000)

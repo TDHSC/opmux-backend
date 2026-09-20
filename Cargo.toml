@@ -18,3 +18,7 @@ uuid = "1.11"
 axum-prometheus = "0.7"
 chrono = "0.4"
 sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json"] }
+sha2 = "=0.10.9"
+getrandom = "=0.3.4"
+base64 = "=0.22.1"
+clap = { version = "=4.5.53", features = ["derive"] }

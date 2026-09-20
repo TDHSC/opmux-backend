@@ -51,6 +51,8 @@ Read the applicable engineering rules below before acting; do not rely on summar
 - Configuration: `gateway/src/core/config/` (`Settings`, catalog, limits); executor settings in
   `gateway/src/features/executor/config.rs`; metrics in `gateway/src/core/metrics.rs`.
 - HTTP middleware: `gateway/src/middleware/`; API key validation: `gateway/src/features/auth/`.
+- Operator CLI: `gateway/src/bin/opmux-admin.rs`; shared key generation/provisioning:
+  `gateway/src/features/auth/credentials.rs` and `provision.rs`. HTTP auth is still mock-backed.
 - Request orchestration: `gateway/src/features/ingress/service.rs` (`IngressService`), with context
   and routing access in `gateway/src/features/ingress/repository.rs`.
 - LLM retries, fallback, circuit breakers: `gateway/src/features/executor/service.rs`

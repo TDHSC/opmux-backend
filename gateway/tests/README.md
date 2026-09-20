@@ -15,6 +15,8 @@ adapter**, not only `LLMVendor` mocks.
 | `observability_integration_test.rs`                      | Correlation, metrics, health/ready, circuit-open via the shared router                                                                                             |
 | `config_startup_test.rs` / `startup_integration_test.rs` | Binary catalog/logging startup with canonical `OPMUX_CONFIG_FILE`                                                                                                  |
 | `auth_store_test.rs`                                     | Real owned-Supabase schema, grant, constraint, and SQLx store tests. Requires `DATABASE_URL`; does not skip                                                        |
+| `provisioning_test.rs`                                   | Shared provisioning service: two-tenant identity, digest-only storage, rollback, reconnect. Requires `DATABASE_URL`; does not skip                                 |
+| `opmux_admin_test.rs`                                    | Actual `opmux-admin` subprocesses against real Supabase. Captures secrets privately; does not print them                                                           |
 | `support/`                                               | Environment isolation, loopback simulator with request capture and scripted replies                                                                                |
 
 Fixtures bind `127.0.0.1` with an OS-assigned port and abort the owned task on drop. They clear
@@ -45,6 +47,11 @@ bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
 
 If the database is down or the schema is missing, these tests fail with a setup message. They are
 not ignored and they do not skip.
+
+`provisioning_test.rs` and `opmux_admin_test.rs` also require `DATABASE_URL`. They exercise tenant
+create, existing-client key issue, identity resolution, and failed-issuance rollback. Successful CLI
+JSON includes a one-time credential; tests capture it in memory and never print it. Help text covers
+secure stdout handling and `opmux_operator` versus migration privileges.
 
 ## Deferred live-provider tests (unrun)
 
