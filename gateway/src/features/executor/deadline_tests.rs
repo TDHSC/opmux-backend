@@ -129,6 +129,83 @@ impl LLMVendor for ScriptedVendor {
     }
 }
 
+/// Vendor that parks until the shared overall deadline, then returns success.
+///
+/// Used to prove that a ready success at expiry is still `DeadlineExceeded`.
+struct SuccessAtDeadlineVendor {
+    vendor_id: String,
+    models: Vec<String>,
+    calls: Arc<AtomicUsize>,
+    started: Arc<AtomicUsize>,
+    deadline: tokio::time::Instant,
+}
+
+impl SuccessAtDeadlineVendor {
+    fn new(
+        vendor_id: &str,
+        model: &str,
+        deadline: tokio::time::Instant,
+    ) -> (Self, Arc<AtomicUsize>, Arc<AtomicUsize>) {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let started = Arc::new(AtomicUsize::new(0));
+        (
+            Self {
+                vendor_id: vendor_id.to_string(),
+                models: vec![model.to_string()],
+                calls: calls.clone(),
+                started: started.clone(),
+                deadline,
+            },
+            calls,
+            started,
+        )
+    }
+}
+
+#[async_trait]
+impl LLMVendor for SuccessAtDeadlineVendor {
+    async fn execute(
+        &self,
+        model: &str,
+        _target_id: &str,
+        _params: ExecutionParams,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        self.started.fetch_add(1, Ordering::SeqCst);
+        tokio::time::sleep_until(self.deadline).await;
+        Ok(ExecutionResult {
+            content: format!("ok from {}", self.vendor_id),
+            role: "assistant".to_string(),
+            model_used: model.to_string(),
+            prompt_tokens: 1,
+            completion_tokens: 1,
+            total_cost: 0.0,
+            finish_reason: "stop".to_string(),
+        })
+    }
+
+    fn vendor_id(&self) -> &str {
+        &self.vendor_id
+    }
+
+    fn supports_model(&self, model: &str) -> bool {
+        self.models.iter().any(|item| item == model)
+    }
+
+    fn calculate_cost(
+        &self,
+        _prompt_tokens: i64,
+        _completion_tokens: i64,
+        _target_id: &str,
+    ) -> Result<f64, ExecutorError> {
+        Ok(0.0)
+    }
+
+    async fn health_check(&self, _timeout_secs: u64) -> Result<(), ExecutorError> {
+        Ok(())
+    }
+}
+
 fn service_with(
     vendors: Vec<(String, Arc<dyn LLMVendor>)>,
     max_retries: u32,
@@ -350,4 +427,39 @@ async fn independent_execution_succeeds_after_cancelled_work() {
         .expect("independent request should proceed");
     assert_eq!(second.model_used, "model-1");
     assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
+#[tokio::test(start_paused = true)]
+async fn ready_success_at_overall_deadline_is_deadline_exceeded() {
+    let overall = Duration::from_millis(100);
+    let deadline_at = tokio::time::Instant::now() + overall;
+    let (primary, primary_calls, started) =
+        SuccessAtDeadlineVendor::new("openai", "gpt-4", deadline_at);
+    let (fallback, fallback_calls) =
+        ScriptedVendor::success("backup", "gpt-4-turbo", Duration::ZERO);
+    let service = service_with(
+        vec![
+            ("openai".to_string(), Arc::new(primary)),
+            ("backup".to_string(), Arc::new(fallback)),
+        ],
+        0,
+        1_000,
+    );
+    let route = plan(
+        "openai",
+        "gpt-4",
+        vec![plan("backup", "gpt-4-turbo", vec![])],
+    );
+    let deadline = RequestDeadline::at(deadline_at);
+    let handle =
+        tokio::spawn(async move { service.execute(&route, &payload(), deadline).await });
+    wait_for_calls(&started, 1).await;
+    tokio::time::advance(overall).await;
+    tokio::task::yield_now().await;
+    match handle.await.expect("join") {
+        Err(ExecutorError::DeadlineExceeded) => {}
+        other => panic!("expected DeadlineExceeded, got {other:?}"),
+    }
+    assert_eq!(primary_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fallback_calls.load(Ordering::SeqCst), 0);
 }

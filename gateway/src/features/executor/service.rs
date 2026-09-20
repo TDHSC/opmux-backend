@@ -407,6 +407,12 @@ impl ExecutorService {
                 self.repository.call_llm(plan, params, &attempt_ctx),
             )
             .await;
+            // Actual overall expiry wins over every ready outcome, including
+            // success. Inner-future-first timeout polling can complete the
+            // attempt at the same instant the deadline elapses.
+            if deadline.is_expired() {
+                return Err(ExecutorError::DeadlineExceeded);
+            }
             let error = match outcome {
                 Ok(Ok(result)) => {
                     if attempt > 0 {
@@ -431,9 +437,6 @@ impl ExecutorService {
                     }
                 },
             };
-            if deadline.is_expired() {
-                return Err(ExecutorError::DeadlineExceeded);
-            }
             if Self::is_retryable_error(&error) {
                 retry_after_ms = match &error {
                     ExecutorError::RateLimitExceeded {
