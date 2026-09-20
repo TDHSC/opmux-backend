@@ -37,7 +37,10 @@ plans, and unsupported vendors are rejected before bind.
 - `fallbacks` is a flat list of target identifiers. Nested route objects are invalid.
 - Finite zero prices are valid. Negative, NaN/Inf, and overflowing prices are not.
 - See [config/opmux.example.json](../config/opmux.example.json) for a default route with one
-  fallback.
+  fallback and a named `fast` route with a distinct primary model.
+- Clients may send optional `route` and `allow_fallback` on `POST /api/v1/route`. Omitted `route`
+  uses `default_route`. Omitted `allow_fallback` follows the configured chain; `false` keeps the
+  primary target and its retries. Clients cannot choose a vendor, model, or URL.
 
 Optional `limits` may appear on the catalog object. Omitted fields use the defaults below.
 Environment overrides are validated with the same bounds. Canonical `OPMUX_*` variables win over

@@ -175,7 +175,6 @@ impl ExecutorConfig {
                 ),
             );
         }
-        ensure_mock_router_model(&mut supported_models, &mut pricing);
 
         Self {
             openai: Some(OpenAIConfig {
@@ -263,37 +262,23 @@ impl Default for ExecutorConfig {
     }
 }
 
-/// Keeps the current mock ingress model executable until catalog routing lands.
-fn ensure_mock_router_model(
-    supported_models: &mut Vec<String>,
-    pricing: &mut HashMap<String, ModelPricing>,
-) {
-    const MOCK_ROUTE_MODEL: &str = "gpt-4";
-    if !supported_models
-        .iter()
-        .any(|model| model == MOCK_ROUTE_MODEL)
-    {
-        supported_models.push(MOCK_ROUTE_MODEL.to_string());
-        pricing
-            .entry(MOCK_ROUTE_MODEL.to_string())
-            .or_insert_with(|| ModelPricing::new(0.03, 0.06));
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::core::config::Settings;
 
     #[test]
-    fn from_settings_keeps_mock_router_gpt4_executable() {
+    fn from_settings_uses_catalog_models_only() {
         let settings = Settings::for_tests();
         let config = ExecutorConfig::from_settings(&settings);
         let openai = config.openai.expect("openai config");
         assert!(openai
             .supported_models
             .contains(&"example-chat-model".to_string()));
-        assert!(openai.supported_models.contains(&"gpt-4".to_string()));
+        assert!(openai
+            .supported_models
+            .contains(&"example-chat-model-mini".to_string()));
+        assert!(!openai.supported_models.contains(&"gpt-4".to_string()));
         assert_eq!(openai.base_url, "http://127.0.0.1:9/v1");
         assert_eq!(openai.api_key, "test-dummy-openai-key");
     }

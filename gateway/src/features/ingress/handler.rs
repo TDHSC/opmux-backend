@@ -21,10 +21,9 @@ use axum::{
 /// inherit `request_id` and `client_correlation_id` from this span.
 ///
 /// # Flow
-/// 1. Validates request (non-empty prompt)
-/// 2. Extracts user_id from authentication context
-/// 3. Processes request through service layer
-/// 4. Returns JSON response or error
+/// 1. Validates inference capability and prompt/metadata bounds
+/// 2. Processes the request through stateless configured routing
+/// 3. Returns JSON response or error
 ///
 /// # Parameters
 /// - `state` - Application state with shared services (injected via Axum state)
@@ -96,16 +95,7 @@ pub async fn ingress_handler(
 
     tracing::debug!("Request validation passed");
 
-    // Use client_id from authentication context. Metadata cannot replace it.
-    let user_id = auth_context.client_id.to_string();
-
-    // Process the request through service layer
-    // Pass request_context for gRPC metadata construction
-    match state
-        .ingress_service
-        .process_request(request, user_id, &request_context)
-        .await
-    {
+    match state.ingress_service.process_request(request).await {
         Ok(response) => {
             tracing::info!(
                 model = %response.model_used,

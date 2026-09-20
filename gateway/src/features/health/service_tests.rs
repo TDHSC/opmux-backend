@@ -494,10 +494,14 @@ mod tests {
         // Use healthy mock vendor for general tests
         let executor =
             create_mock_executor_service(true).expect("Failed to create executor");
+        let settings = Arc::new(crate::core::config::Settings::for_tests());
         let app_state = AppState {
-            settings: Arc::new(crate::core::config::Settings::for_tests()),
+            settings: settings.clone(),
             ingress_service: Arc::new(
-                crate::features::ingress::service::IngressService::new(executor.clone()),
+                crate::features::ingress::service::IngressService::new(
+                    executor.clone(),
+                    settings,
+                ),
             ),
             executor_service: executor,
             health_service: Arc::new(health_service),
@@ -563,10 +567,14 @@ mod tests {
         use crate::AppState;
         use std::sync::Arc;
 
+        let settings = Arc::new(crate::core::config::Settings::for_tests());
         let app_state = AppState {
-            settings: Arc::new(crate::core::config::Settings::for_tests()),
+            settings: settings.clone(),
             ingress_service: Arc::new(
-                crate::features::ingress::service::IngressService::new(executor.clone()),
+                crate::features::ingress::service::IngressService::new(
+                    executor.clone(),
+                    settings,
+                ),
             ),
             executor_service: executor,
             health_service: Arc::new(service),

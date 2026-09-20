@@ -54,8 +54,8 @@ Read the applicable engineering rules below before acting; do not rely on summar
 - Operator CLI: `gateway/src/bin/opmux-admin.rs`; shared key generation/provisioning:
   `gateway/src/features/auth/credentials.rs` and `provision.rs`. HTTP auth uses persisted keys via
   `AuthService` and `DATABASE_URL`.
-- Request orchestration: `gateway/src/features/ingress/service.rs` (`IngressService`), with context
-  and routing access in `gateway/src/features/ingress/repository.rs`.
+- Request orchestration: `gateway/src/features/ingress/service.rs` (`IngressService`) selects
+  configured routes; `gateway/src/features/ingress/repository.rs` is the executor boundary only.
 - LLM retries, fallback, circuit breakers: `gateway/src/features/executor/service.rs`
   (`ExecutorService`).
 - Vendor registry and dispatch: `gateway/src/features/executor/repository.rs`

@@ -25,6 +25,10 @@
     "default": {
       "primary": "primary",
       "fallbacks": ["secondary"]
+    },
+    "fast": {
+      "primary": "secondary",
+      "fallbacks": []
     }
   }
 }

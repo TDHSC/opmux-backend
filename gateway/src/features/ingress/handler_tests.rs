@@ -110,11 +110,13 @@ mod tests {
 
     fn build_test_app_with_kind(models: Vec<&str>, kind: ApiKeyKind) -> Router {
         let executor_service = create_mock_executor_service(models);
+        let settings = Arc::new(crate::core::config::Settings::for_tests());
         let app_state = AppState {
-            settings: Arc::new(crate::core::config::Settings::for_tests()),
+            settings: settings.clone(),
             ingress_service: Arc::new(
                 crate::features::ingress::service::IngressService::new(
                     executor_service.clone(),
+                    settings,
                 ),
             ),
             executor_service,
@@ -141,7 +143,10 @@ mod tests {
 
     #[tokio::test]
     async fn management_kind_cannot_generate() {
-        let app = build_test_app_with_kind(vec!["gpt-4"], ApiKeyKind::Management);
+        let app = build_test_app_with_kind(
+            vec!["example-chat-model", "example-chat-model-mini"],
+            ApiKeyKind::Management,
+        );
 
         let request = Request::builder()
             .method("POST")
@@ -164,7 +169,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingress_handler_returns_400_for_empty_prompt() {
-        let app = build_test_app(vec!["gpt-4"]);
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
 
         let request = Request::builder()
             .method("POST")
@@ -187,7 +192,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingress_handler_returns_200_for_valid_request() {
-        let app = build_test_app(vec!["gpt-4"]);
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
 
         let request = Request::builder()
             .method("POST")
@@ -206,7 +211,32 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert!(body_str.contains("\"role\":\"assistant\""));
-        assert!(body_str.contains("\"model_used\":\"gpt-4\""));
+        assert!(body_str.contains("\"model_used\":\"example-chat-model\""));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_handler_returns_400_for_unknown_route() {
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "prompt": "Hello", "metadata": {}, "route": "missing" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("Unknown route"));
+        assert!(!body_str.contains("Mock handler response"));
     }
 
     #[tokio::test]
@@ -235,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingress_handler_returns_400_for_prompt_too_long() {
-        let app = build_test_app(vec!["gpt-4"]);
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
         let long_prompt = "a".repeat(4001);
 
         let request = Request::builder()
@@ -259,7 +289,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_ingress_handler_returns_400_for_metadata_too_large() {
-        let app = build_test_app(vec!["gpt-4"]);
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
         let large_value = "x".repeat(1_200);
 
         let request = Request::builder()

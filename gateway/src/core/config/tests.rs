@@ -121,6 +121,9 @@ fn example_catalog_loads_documented_defaults() {
         .expect("default route");
     assert_eq!(route.primary, "primary");
     assert_eq!(route.fallbacks, vec!["secondary".to_string()]);
+    let fast = settings.catalog.routes.get("fast").expect("fast route");
+    assert_eq!(fast.primary, "secondary");
+    assert!(fast.fallbacks.is_empty());
 
     assert_eq!(
         settings.limits.protected_request_deadline_ms(),

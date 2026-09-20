@@ -75,6 +75,9 @@ impl Settings {
     }
 
     /// Local dummy settings for tests that need `AppState` but not catalog I/O.
+    ///
+    /// Includes two named routes with distinct primary models so ingress
+    /// routing tests can select `default` or `fast`.
     pub fn for_tests() -> Self {
         let mut targets = HashMap::new();
         targets.insert(
@@ -89,11 +92,30 @@ impl Settings {
                 },
             },
         );
+        targets.insert(
+            "secondary".to_string(),
+            super::catalog::Target {
+                vendor: super::catalog::VendorKind::Openai,
+                model: "example-chat-model-mini".to_string(),
+                max_output_tokens: 256,
+                pricing: super::catalog::TargetPricing {
+                    input_per_million: 0.25,
+                    output_per_million: 0.5,
+                },
+            },
+        );
         let mut routes = HashMap::new();
         routes.insert(
             "default".to_string(),
             super::catalog::Route {
                 primary: "primary".to_string(),
+                fallbacks: Vec::new(),
+            },
+        );
+        routes.insert(
+            "fast".to_string(),
+            super::catalog::Route {
+                primary: "secondary".to_string(),
                 fallbacks: Vec::new(),
             },
         );

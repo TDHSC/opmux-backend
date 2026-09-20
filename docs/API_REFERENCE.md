@@ -197,13 +197,27 @@ Protected AI routing endpoint.
 ```json
 {
   "prompt": "hello",
-  "metadata": {}
+  "metadata": {},
+  "route": "fast",
+  "allow_fallback": true
 }
 ```
+
+- `prompt` (required): non-empty and <= 4000 characters. Each request sends only this user prompt.
+- `metadata` (required): bounded opaque JSON, serialized size <= 1000 bytes. It is not forwarded
+  upstream, logged, or persisted, and cannot select a route, model, vendor, URL, or tenant.
+- `route` (optional): configured route name. Omitted selects the catalog `default_route`. An unknown
+  name returns `400` before any provider call. Clients cannot inject an arbitrary provider, model,
+  or URL.
+- `allow_fallback` (optional boolean): omitted follows the configured fallback chain; `true` does
+  the same and cannot invent fallbacks a route does not have; `false` limits execution to the
+  primary target without disabling that target's bounded retries. Eligible fallback switching is
+  enforced by the executor in a later milestone.
 
 - Validation:
   - `prompt` must be non-empty and <= 4000 chars
   - serialized `metadata` must be <= 1000 bytes
+  - `route`, when present, must name a configured route
 
 - Response codes:
   - `200 OK` success

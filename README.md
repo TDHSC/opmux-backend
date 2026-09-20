@@ -6,8 +6,12 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 
 ## Current Capabilities
 
-- `POST /api/v1/route`: request orchestration protected by inference API-key authentication.
-  Management credentials receive `403` and do not generate.
+- `POST /api/v1/route`: stateless configured routing protected by inference API-key authentication.
+  Omitted `route` uses the catalog default; a named route selects that route's primary target.
+  Unknown routes return `400` before any provider call. Omitted `allow_fallback` follows the
+  configured chain; `false` limits execution to the primary without disabling its retries.
+  Management credentials receive `403` and do not generate. Metadata stays opaque and is not
+  forwarded, logged, or persisted.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
@@ -24,10 +28,11 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   configurable metrics endpoint (`/metrics` by default).
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
-Provision tenants with `opmux-admin`; former public mock keys are rejected. Conversation context and
-routing optimization still use mock data. Real upstream LLM execution does not make the entire
-pipeline production-ready. Planned Memory/Router/Rewrite/Validation microservices and additional
-vendors should not be treated as implemented capabilities.
+Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
+operator-configured routes only; there is no Memory/Router service and no conversation history.
+Typed generation-parameter validation, faithful OpenAI result mapping, and eligible fallback policy
+are later work. Planned Rewrite/Validation microservices and additional vendors should not be
+treated as implemented capabilities.
 
 ## Getting Started
 
@@ -97,10 +102,10 @@ version control. The provider key is separate from the gateway's `X-API-Key` req
 operator-provisioned credentials, not the former public mock keys.
 
 The example catalog at [config/opmux.example.json](config/opmux.example.json) defines a default
-route, targets, illustrative per-million prices, and a flat fallback list. Those model names and
-prices are samples for configuration tests, not current provider billing or availability. See
-[configuration troubleshooting](docs/CONFIGURATION_TROUBLESHOOTING.md) for the canonical schema,
-documented defaults, and numeric bounds.
+route, a named `fast` route, targets, illustrative per-million prices, and a flat fallback list.
+Those model names and prices are samples for configuration tests, not current provider billing or
+availability. See [configuration troubleshooting](docs/CONFIGURATION_TROUBLESHOOTING.md) for the
+canonical schema, documented defaults, and numeric bounds.
 
 Omitted optional limits default to a 30-second protected-request deadline, 10-second attempt
 maximum, one retry per target, three total provider attempts, at most two fallback targets, and a

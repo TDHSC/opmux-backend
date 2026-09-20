@@ -44,6 +44,7 @@ fn build_test_app(
     );
     let ingress_service = Arc::new(ingress::service::IngressService::new(
         executor_service.clone(),
+        settings.clone(),
     ));
 
     let app_state = AppState {
@@ -208,6 +209,7 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
     );
     let ingress_service = Arc::new(ingress::service::IngressService::new(
         executor_service.clone(),
+        settings.clone(),
     ));
     let app_state = AppState {
         settings,
@@ -218,7 +220,8 @@ async fn test_repeated_ingress_calls_transition_to_circuit_open() {
     };
     let app = build_production_router(app_state, MetricsConfig::disabled());
 
-    let request_body = json!({ "prompt": "load", "metadata": {} }).to_string();
+    let request_body =
+        json!({ "prompt": "load", "metadata": {}, "allow_fallback": false }).to_string();
 
     for _ in 0..3 {
         let request = Request::builder()

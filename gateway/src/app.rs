@@ -56,6 +56,7 @@ impl Application {
         ));
         let ingress_service = Arc::new(ingress::service::IngressService::new(
             executor_service.clone(),
+            settings.clone(),
         ));
 
         Ok(Self {

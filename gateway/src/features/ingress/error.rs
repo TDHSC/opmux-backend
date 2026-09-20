@@ -24,21 +24,9 @@ pub enum IngressError {
     #[error("Insufficient permissions for this operation")]
     AuthorizationFailed,
 
-    /// Context retrieval from Memory Service failed (500 Internal Server Error).
-    #[error("Failed to retrieve conversation context")]
-    ContextRetrievalFailed,
-
-    /// AI request orchestration failed (500 Internal Server Error).
+    /// Configured route lookup failed (500 Internal Server Error).
     #[error("Request orchestration failed")]
     RequestOrchestrationFailed,
-
-    /// Response aggregation failed (500 Internal Server Error).
-    #[error("Response aggregation failed")]
-    ResponseAggregationFailed,
-
-    /// Context update to Memory Service failed (500 Internal Server Error).
-    #[error("Failed to update conversation context")]
-    ContextUpdateFailed,
 
     /// LLM execution failed (wraps ExecutorError).
     #[error(transparent)]
@@ -49,13 +37,9 @@ impl IntoResponse for IngressError {
     /// Converts ingress errors into HTTP JSON responses with appropriate status codes.
     fn into_response(self) -> Response {
         match self {
-            // Delegate ExecutorError to its own IntoResponse implementation
             Self::ExecutionFailed(e) => e.into_response(),
-
-            // Handle other ingress errors
             _ => {
                 let (status, message) = match self {
-                    // Client errors are mapped to 4xx status codes.
                     Self::InvalidRequest(msg) => (StatusCode::BAD_REQUEST, msg),
                     Self::AuthenticationRequired => (
                         StatusCode::UNAUTHORIZED,
@@ -66,19 +50,11 @@ impl IntoResponse for IngressError {
                         "You do not have permission to perform this operation."
                             .to_string(),
                     ),
-
-                    // Server-side business logic failures are mapped to 5xx status codes.
-                    // Return a generic message to the user for security.
-                    Self::ContextRetrievalFailed
-                    | Self::RequestOrchestrationFailed
-                    | Self::ResponseAggregationFailed
-                    | Self::ContextUpdateFailed => (
+                    Self::RequestOrchestrationFailed => (
                         StatusCode::INTERNAL_SERVER_ERROR,
                         "An internal error occurred while processing your request."
                             .to_string(),
                     ),
-
-                    // ExecutionFailed is handled above
                     Self::ExecutionFailed(_) => unreachable!(),
                 };
 

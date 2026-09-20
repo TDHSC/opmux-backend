@@ -95,7 +95,7 @@ async fn run_health_and_generation_fixture() {
     );
     let generation_body = body_string(generation).await;
     assert!(generation_body.contains(SIMULATED_CONTENT));
-    assert!(generation_body.contains("\"model_used\":\"gpt-4\""));
+    assert!(generation_body.contains("\"model_used\":\"example-chat-model\""));
 
     assert!(simulator.generation_count() >= 1);
     assert!(simulator.models_probe_count() >= 1);
@@ -114,7 +114,7 @@ async fn run_health_and_generation_fixture() {
         .as_ref()
         .and_then(|body| body.get("model"))
         .and_then(|value| value.as_str());
-    assert_eq!(model, Some("gpt-4"));
+    assert_eq!(model, Some("example-chat-model"));
     cleanup_clients(&pool, &[issued.client_id]).await;
 }
 

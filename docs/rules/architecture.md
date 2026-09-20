@@ -44,10 +44,9 @@ pub async fn ingress_handler(State(state): State<AppState>, Json(req): Json<Ingr
 
 // service.rs
 impl IngressService {
-    pub async fn process_request(&self, req: IngressRequest, ...) -> Result<IngressResponse, IngressError> {
-        let ctx = self.repository.get_context(&user_id).await?;
-        let response = self.repository.execute_llm_call(&req, &ctx).await?;
-        self.repository.update_context(&user_id, &req, &response).await?;
+    pub async fn process_request(&self, req: IngressRequest) -> Result<IngressResponse, IngressError> {
+        let plan = resolve_route(&self.settings.catalog, req.route.as_deref(), req.allow_fallback)?;
+        let response = self.repository.execute_llm_call(&plan, &payload).await?;
         Ok(response)
     }
 }
