@@ -102,6 +102,12 @@ using `curl -k`. Building the image does not need production database or provide
 bash scripts/check-container.sh
 ```
 
+The documented developer stack is `bash scripts/local-stack.sh up`. It publishes gateway
+`127.0.0.1:38080` and simulator `127.0.0.1:38081`, joins `opmux-mvp-20260919-loopback`, and reuses
+`supabase_db_opmux-mvp-20260919`. It does not start a second database or a paid upstream.
+`scripts/check-local-stack.sh` inspects those host bindings, then stop/start recovery of persisted
+keys. Do not overlap the shared 38080/38081 mission processes when that check runs.
+
 ## Additional Task 13 artifacts
 
 - End-to-end integration coverage for resilience behavior in `observability_integration_test.rs`

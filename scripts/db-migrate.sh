@@ -16,12 +16,14 @@ fi
 
 if [ -n "${SUPABASE_CLI:-}" ]; then
   CLI=$SUPABASE_CLI
+elif [ -x "$REPO/node_modules/.bin/supabase" ]; then
+  CLI="$REPO/node_modules/.bin/supabase"
 elif [ -x /tmp/opmux-mvp-readiness-20260919/tools/node_modules/.bin/supabase ]; then
   CLI=/tmp/opmux-mvp-readiness-20260919/tools/node_modules/.bin/supabase
 elif command -v supabase >/dev/null 2>&1; then
   CLI="$(command -v supabase)"
 else
-  echo "supabase CLI 2.117.0 is required to apply migrations" >&2
+  echo "supabase CLI 2.117.0 is required to apply migrations (npm ci installs the pinned CLI)" >&2
   exit 1
 fi
 

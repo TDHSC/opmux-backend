@@ -8,4 +8,5 @@ gateway/tests
 docs
 specs
 .github
-scripts
+scripts/*
+!scripts/openai-simulator.py

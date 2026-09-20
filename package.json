@@ -13,6 +13,7 @@
   },
   "devDependencies": {
     "prettier": "^3.0.0",
-    "prettier-plugin-toml": "^2.0.1"
+    "prettier-plugin-toml": "^2.0.1",
+    "supabase": "^2.117.0"
   }
 }

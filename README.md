@@ -100,7 +100,9 @@ capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 - Rust stable and Cargo, with rustfmt and Clippy for development.
 - Node.js and npm for non-Rust formatting.
-- Docker with Compose, if using the container setup.
+- Docker with Compose, if using the documented local container stack.
+- `npm ci` installs Prettier and the pinned Supabase CLI **2.117.0** used by
+  `scripts/db-migrate.sh`. Do not run `supabase start` from this repository.
 
 From the repository root:
 
@@ -296,30 +298,58 @@ checks the non-root UID, `/health` and `/ready`, persisted-auth generation throu
 invalid-key `401` with zero upstream calls, untrusted TLS `502`, and `docker stop` graceful
 shutdown. `opmux-admin` is included in the image for operator provisioning.
 
-### Docker Compose
+### Local container stack
+
+The documented local stack is the locked gateway image plus the in-repo OpenAI simulator, attached
+to the **existing** database-only Supabase container `supabase_db_opmux-mvp-20260919`. It does not
+start a second Postgres, Auth, Studio, REST, or other Supabase services. Host publishes are
+loopback-only in the approved ranges: database `127.0.0.1:55432`, gateway `127.0.0.1:38080`
+(`/health`, `/ready`, `/metrics`), simulator `127.0.0.1:38081`. Docker-internal listeners may use
+`0.0.0.0`; that is not host publication. The default upstream is the local simulator with dummy
+credentials, not `api.openai.com`.
+
+Do not run `docker compose up` without the wrapper: Compose needs a private container-network
+`DATABASE_URL` for the owned database. `scripts/local-stack.sh` verifies the loopback database
+binding, writes gitignored `.env.opmux-local`, and starts only the gateway and simulator.
 
 ```bash
-docker compose up --build
+bash scripts/local-stack.sh up
+bash scripts/local-stack.sh status
+bash scripts/local-stack.sh bindings
+curl --noproxy '*' -i http://127.0.0.1:38080/health
+curl --noproxy '*' -i http://127.0.0.1:38080/ready
+curl --noproxy '*' -i http://127.0.0.1:38080/metrics
 ```
 
-The Compose file publishes `127.0.0.1:3000`. Without overrides,
-[docker-compose.yml](docker-compose.yml) mounts the example catalog, uses a dummy provider key, and
-uses `http://host.docker.internal:9/v1` as the upstream. Set `DATABASE_URL` for persisted
-authentication; an empty URL fails closed before protected work. Expect readiness failure unless
-that endpoint actually serves a compatible API; starting a container is not proof of LLM
-availability. For the locked-image smoke path against the owned database and simulator, use
-`scripts/check-container.sh` rather than Compose.
-
-For real upstream access, set **both** values so the Compose dummy URL is not retained:
+Provision through the image so the operator CLI uses the same private database URL:
 
 ```bash
-OPENAI_API_KEY='<your-provider-key>' OPENAI_BASE_URL=https://api.openai.com/v1 \
-docker compose up --build
+keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$keyfile"
+bash scripts/local-stack.sh admin tenant create --name acme > "$keyfile"
 ```
 
-Unlike the Rust binary, Compose can read a root `.env` file for variable substitution. Only settings
-passed through the service configuration become container environment variables. Treat Compose as a
-development helper, not a hardened production deployment.
+Stop/start of the application stack removes only `opmux-local-gateway` and `opmux-local-simulator`.
+The owned database container, volume, and rows remain. After `up` again, `/ready` returns 200 and
+persisted inference keys still authenticate.
+
+```bash
+bash scripts/local-stack.sh down
+bash scripts/local-stack.sh up
+```
+
+`scripts/check-local-stack.sh` is the acceptance check for those bindings, reuse, and restart
+behavior. It does not stop unrelated containers. `/metrics` stays on the loopback gateway listener;
+production must restrict scrape access at the network layer rather than adding metrics
+authentication.
+
+Hosted Postgres is a connection-string/TLS documentation path only. Use a direct or session-mode
+pooler URL with `sslmode=verify-full` and a CA. Do not link this repository to a hosted Supabase
+project, do not run hosted mutations from local tooling, and do not treat local `sslmode=disable` as
+hosted TLS proof.
+
+For a paid compatible upstream, replace **both** the dummy key and simulator URL so the local
+Compose default is not retained. That path is optional and is not the documented local stack.
 
 ## Development Checks
 

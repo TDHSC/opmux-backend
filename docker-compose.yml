@@ -1,21 +1,78 @@
+# Documented local stack: built gateway image + OpenAI simulator.
+# Reuses the owned database-only Supabase container and loopback network.
+# Do not add Postgres, Auth, Studio, REST, or other Supabase services.
+# Host publishes are 127.0.0.1 in 38080-38089. Docker-internal 0.0.0.0 is
+# not host publication. Default upstream is the local simulator, not OpenAI.
+# Run through scripts/local-stack.sh so DATABASE_URL is injected privately.
+
+name: opmux-local
+
 services:
+  simulator:
+    build:
+      context: .
+      dockerfile: simulator/Dockerfile
+    image: opmux-simulator:local
+    pull_policy: never
+    container_name: opmux-local-simulator
+    init: true
+    user: "65534:65534"
+    command:
+      - python3
+      - /app/openai-simulator.py
+      - --host
+      - 0.0.0.0
+      - --port
+      - "38081"
+      - --credential
+      - ${OPMUX_LOCAL_PROVIDER_KEY:-local-stack-dummy-only}
+    environment:
+      PYTHONUNBUFFERED: "1"
+      PYTHONDONTWRITEBYTECODE: "1"
+    ports:
+      - "127.0.0.1:${OPMUX_LOCAL_SIMULATOR_PORT:-38081}:38081"
+    networks:
+      - opmux
+    read_only: true
+    tmpfs:
+      - /tmp
+    restart: "no"
+
   gateway:
     build:
       context: .
       dockerfile: gateway/Dockerfile
+    image: opmux-gateway:mvp
+    pull_policy: never
+    container_name: opmux-local-gateway
+    depends_on:
+      - simulator
+    user: "65532:65532"
     ports:
-      - "127.0.0.1:3000:3000"
+      - "127.0.0.1:${OPMUX_LOCAL_GATEWAY_PORT:-38080}:3000"
     environment:
       SERVER_HOST: 0.0.0.0
-      SERVER_PORT: 3000
-      RUST_LOG: ${RUST_LOG:-info}
-      LOG_FORMAT: ${LOG_FORMAT:-json}
-      LOG_VERBOSE_DEBUG: ${LOG_VERBOSE_DEBUG:-false}
+      SERVER_PORT: "3000"
+      SERVER_SHUTDOWN_TIMEOUT: ${SERVER_SHUTDOWN_TIMEOUT:-30}
+      AUTH_DEVELOPMENT_MODE: "false"
+      OPMUX_CONFIG_FILE: /app/config/opmux.example.json
+      OPENAI_API_KEY: ${OPMUX_LOCAL_PROVIDER_KEY:-local-stack-dummy-only}
+      OPENAI_BASE_URL: http://simulator:38081/v1
+      OPENAI_TIMEOUT_MS: ${OPENAI_TIMEOUT_MS:-10000}
       METRICS_ENABLED: "true"
       METRICS_PATH: /metrics
-      OPMUX_CONFIG_FILE: /app/config/opmux.example.json
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-dummy-key}
-      OPENAI_BASE_URL: ${OPENAI_BASE_URL:-http://host.docker.internal:9/v1}
-      DATABASE_URL: ${DATABASE_URL:-}
-    volumes:
-      - ./config/opmux.example.json:/app/config/opmux.example.json:ro
+      LOG_FORMAT: ${LOG_FORMAT:-json}
+      RUST_LOG: ${RUST_LOG:-info}
+      TOKIO_WORKER_THREADS: "2"
+      NO_PROXY: "*"
+      no_proxy: "*"
+      DATABASE_URL: ${OPMUX_LOCAL_DATABASE_URL:?run bash scripts/local-stack.sh up}
+    networks:
+      - opmux
+    stop_grace_period: 35s
+    restart: "no"
+
+networks:
+  opmux:
+    name: opmux-mvp-20260919-loopback
+    external: true

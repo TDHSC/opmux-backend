@@ -23,8 +23,11 @@ scrape_configs:
   - job_name: gateway
     metrics_path: /metrics
     static_configs:
-      - targets: ['127.0.0.1:3000']
+      - targets: ['127.0.0.1:38080']
 ```
+
+The documented local container stack scrapes `127.0.0.1:38080`. A native `cargo run` using
+`SERVER_PORT=3000` would instead target `127.0.0.1:3000`.
 
 Do not scrape this endpoint from the public Internet.
 

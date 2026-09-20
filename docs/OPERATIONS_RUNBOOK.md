@@ -143,11 +143,22 @@ at runtime; do not bake them into the image. `docker stop --time N` should be at
 ```bash
 docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
 bash scripts/check-container.sh
+bash scripts/local-stack.sh up
+bash scripts/local-stack.sh bindings
+bash scripts/check-local-stack.sh
+bash scripts/local-stack.sh down
 ```
 
 `scripts/check-container.sh` reuses the owned local Supabase, owned loopback simulators, and a
-test-only untrusted TLS fixture. Plain HTTP simulator URLs and `sslmode=disable` are local-only, not
-hosted or provider TLS proof. Certificate and hostname verification stay enabled.
+test-only untrusted TLS fixture. `scripts/local-stack.sh` is the documented Compose stack: gateway
+`127.0.0.1:38080`, simulator `127.0.0.1:38081`, database `127.0.0.1:55432`. It does not start a
+second database or publish all interfaces. Application-stack stop/start keeps the owned database
+records. Plain HTTP simulator URLs and `sslmode=disable` are local-only, not hosted or provider TLS
+proof. Certificate and hostname verification stay enabled. Hosted guidance is a direct or
+session-mode URL with `sslmode=verify-full`; do not mutate hosted projects from this repository.
+
+`/metrics` is loopback-local on the gateway publish. Production must restrict scrape access at the
+network layer; do not add a metrics authentication system.
 
 ## Incident triage
 
