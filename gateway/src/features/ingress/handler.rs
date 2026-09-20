@@ -5,7 +5,11 @@ use super::{
     error::IngressError,
     service::{IngressRequest, IngressResponse},
 };
-use crate::{core::correlation::RequestContext, features::auth::AuthContext, AppState};
+use crate::{
+    core::correlation::RequestContext,
+    features::auth::{ApiKeyKind, AuthContext},
+    AppState,
+};
 use axum::{
     extract::{Extension, Json, State},
     response::Json as ResponseJson,
@@ -47,6 +51,14 @@ pub async fn ingress_handler(
     Json(request): Json<IngressRequest>,
 ) -> Result<ResponseJson<IngressResponse>, IngressError> {
     tracing::info!("Incoming AI routing request");
+
+    if auth_context.kind != ApiKeyKind::Inference {
+        tracing::debug!(
+            reason = "capability_denied",
+            "Generation requires an inference key"
+        );
+        return Err(IngressError::AuthorizationFailed);
+    }
 
     let prompt_len = request.prompt.trim().chars().count();
 

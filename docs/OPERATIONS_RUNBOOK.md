@@ -29,10 +29,11 @@ Local privileges are separate:
 
 ## Operator provisioning
 
-`opmux-admin` creates tenants and issues keys through the same generation/hashing service the HTTP
-API will use. It is not an unauthenticated HTTP endpoint. Tenant creation inserts one client and one
-management key atomically. Existing-client issuance adds one key of an explicit `management` or
-`inference` kind.
+`opmux-admin` creates tenants and issues keys through the same generation/hashing service as
+`POST /api/v1/auth/keys`. It is not an unauthenticated HTTP endpoint. Tenant creation inserts one
+client and one management key atomically. Existing-client issuance adds one key of an explicit
+`management` or `inference` kind. Authenticated managers may also issue keys for their own tenant
+over HTTP; ownership cannot be taken from the request body.
 
 Successful commands print one JSON object to **stdout**, including the newly generated
 `opmx_v1_<base64url>` credential exactly once. Write stdout to a fresh private file created with

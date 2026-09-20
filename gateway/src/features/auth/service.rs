@@ -1,12 +1,14 @@
 //! Service Layer - Authentication Business Logic
 //!
 //! Resolves presented credentials against the persisted store, derives tenant
-//! identity and kind, and records last-used on successful authentication.
+//! identity and kind, records last-used on successful authentication, and
+//! issues tenant-scoped keys through the shared provisioning service.
 
 use super::credentials::hash_credential;
 use super::error::AuthError;
-use super::models::AuthContext;
-use super::persist::{AuthStore, AuthStoreError};
+use super::models::{ApiKeyMetadata, AuthContext, KeyInventory};
+use super::persist::{ApiKeyKind, AuthStore, AuthStoreError, MAX_KEY_LIST_LIMIT};
+use super::provision::{IssuedKey, ProvisioningService};
 use chrono::Utc;
 use std::sync::Arc;
 
@@ -39,18 +41,93 @@ impl From<AuthStoreError> for AuthenticateError {
 /// Successful authentication updates `last_used_at` before the request is
 /// admitted. That write is part of authentication, not a detached task, and
 /// happens even if later inference fails. There is no in-process key map:
-/// every request hashes then queries the store.
+/// every request hashes then queries the store. HTTP key issuance reuses
+/// [`ProvisioningService`] so CLI and API share generation and hashing.
 pub struct AuthService {
     store: Arc<dyn AuthStore>,
+    provisioning: ProvisioningService,
 }
 
 impl AuthService {
     /// Builds a service around a persistence implementation.
     ///
     /// # Parameters
-    /// - `store` - Digest lookup and last-used writer
+    /// - `store` - Digest lookup, last-used writer, and key inventory
     pub fn new(store: Arc<dyn AuthStore>) -> Self {
-        Self { store }
+        Self {
+            provisioning: ProvisioningService::new(store.clone()),
+            store,
+        }
+    }
+
+    /// Requires a management credential for key administration.
+    ///
+    /// # Parameters
+    /// - `actor` - Authenticated context from the persisted key
+    ///
+    /// # Errors
+    /// Returns `CapabilityDenied` for inference keys.
+    pub fn require_management(actor: &AuthContext) -> Result<(), AuthError> {
+        if actor.kind != ApiKeyKind::Management {
+            return Err(AuthError::CapabilityDenied);
+        }
+        Ok(())
+    }
+
+    /// Issues a key for the authenticated tenant.
+    ///
+    /// Tenant ownership is taken from `actor.client_id`. Request body fields
+    /// cannot select another client. Generation and hashing use the same
+    /// [`ProvisioningService`] as `opmux-admin`.
+    ///
+    /// # Parameters
+    /// - `actor` - Authenticated management context
+    /// - `name` - Key name, 1–128 characters
+    /// - `kind` - Immutable management or inference kind
+    ///
+    /// # Returns
+    /// Safe metadata plus the one-time credential
+    ///
+    /// # Errors
+    /// - `CapabilityDenied` when the actor is not a management key
+    /// - `InvalidInput` when the name is invalid
+    /// - `StoreUnavailable` when persistence fails
+    pub async fn create_key(
+        &self,
+        actor: &AuthContext,
+        name: &str,
+        kind: ApiKeyKind,
+    ) -> Result<IssuedKey, AuthError> {
+        Self::require_management(actor)?;
+        self.provisioning
+            .issue_key(actor.client_id, kind, name)
+            .await
+            .map_err(AuthError::from)
+    }
+
+    /// Lists safe key metadata for the authenticated tenant.
+    ///
+    /// # Parameters
+    /// - `actor` - Authenticated management context
+    ///
+    /// # Returns
+    /// Same-tenant inventory without credentials or digests
+    ///
+    /// # Errors
+    /// - `CapabilityDenied` when the actor is not a management key
+    /// - `StoreUnavailable` when persistence fails
+    pub async fn list_keys(
+        &self,
+        actor: &AuthContext,
+    ) -> Result<KeyInventory, AuthError> {
+        Self::require_management(actor)?;
+        let records = self
+            .store
+            .list_keys_for_client(actor.client_id, MAX_KEY_LIST_LIMIT)
+            .await?;
+        Ok(KeyInventory {
+            keys: records.into_iter().map(ApiKeyMetadata::from).collect(),
+        })
     }
 
     /// Validates a presented credential and returns persisted identity.
@@ -152,6 +229,7 @@ mod tests {
         ApiKeyKind, ApiKeyRecord, AuthStoreError, ClientRecord, KeyDigest, NewApiKey,
         NewClient, RevokeOutcome, KEY_DIGEST_LEN,
     };
+    use crate::features::auth::AuthContext;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
@@ -162,6 +240,7 @@ mod tests {
         records: Mutex<HashMap<KeyDigest, ApiKeyRecord>>,
         lookups: Mutex<u32>,
         touches: Mutex<u32>,
+        inserts: Mutex<u32>,
         fail_lookup: bool,
         fail_touch: bool,
     }
@@ -174,6 +253,7 @@ mod tests {
                 records: Mutex::new(records),
                 lookups: Mutex::new(0),
                 touches: Mutex::new(0),
+                inserts: Mutex::new(0),
                 fail_lookup: false,
                 fail_touch: false,
             }
@@ -184,6 +264,7 @@ mod tests {
                 records: Mutex::new(HashMap::new()),
                 lookups: Mutex::new(0),
                 touches: Mutex::new(0),
+                inserts: Mutex::new(0),
                 fail_lookup: true,
                 fail_touch: false,
             }
@@ -202,9 +283,25 @@ mod tests {
 
         async fn insert_key(
             &self,
-            _key: NewApiKey,
+            key: NewApiKey,
         ) -> Result<ApiKeyRecord, AuthStoreError> {
-            Err(AuthStoreError::Unavailable)
+            *self.inserts.lock().expect("lock") += 1;
+            let record = ApiKeyRecord {
+                id: key.id,
+                client_id: key.client_id,
+                digest: key.digest,
+                display_id: key.display_id,
+                name: key.name,
+                kind: key.kind,
+                created_at: key.created_at,
+                last_used_at: None,
+                revoked_at: None,
+            };
+            self.records
+                .lock()
+                .expect("lock")
+                .insert(record.digest, record.clone());
+            Ok(record)
         }
 
         async fn find_key_by_digest(
@@ -233,10 +330,17 @@ mod tests {
 
         async fn list_keys_for_client(
             &self,
-            _client_id: Uuid,
+            client_id: Uuid,
             _limit: i64,
         ) -> Result<Vec<ApiKeyRecord>, AuthStoreError> {
-            Ok(Vec::new())
+            Ok(self
+                .records
+                .lock()
+                .expect("lock")
+                .values()
+                .filter(|record| record.client_id == client_id)
+                .cloned()
+                .collect())
         }
 
         async fn revoke_key(
@@ -353,6 +457,54 @@ mod tests {
         let logs = String::from_utf8(buf.lock().expect("lock").clone()).expect("utf8");
         assert!(!logs.contains(&presented));
         assert!(!logs.contains(&digest_hex));
+    }
+
+    #[tokio::test]
+    async fn create_key_requires_management_and_uses_actor_tenant() {
+        let (_, stored) = record(ApiKeyKind::Management, false);
+        let store = Arc::new(ScriptedStore::with_record(stored.clone()));
+        let svc = AuthService::new(store.clone());
+        let actor = AuthContext {
+            client_id: stored.client_id,
+            key_id: stored.id,
+            kind: ApiKeyKind::Management,
+        };
+        let issued = svc
+            .create_key(&actor, "new-inference", ApiKeyKind::Inference)
+            .await
+            .expect("create");
+        assert_eq!(issued.client_id, actor.client_id);
+        assert_eq!(issued.kind, "inference");
+        assert_eq!(issued.name, "new-inference");
+        assert_eq!(*store.inserts.lock().expect("lock"), 1);
+        assert!(issued.credential().starts_with("opmx_v1_"));
+
+        let inference_actor = AuthContext {
+            client_id: stored.client_id,
+            key_id: stored.id,
+            kind: ApiKeyKind::Inference,
+        };
+        let denied = svc
+            .create_key(
+                &inference_actor,
+                "should-not-create",
+                ApiKeyKind::Management,
+            )
+            .await
+            .expect_err("denied");
+        assert!(matches!(denied, AuthError::CapabilityDenied));
+        assert_eq!(*store.inserts.lock().expect("lock"), 1);
+
+        let listed = svc.list_keys(&actor).await.expect("list");
+        assert!(listed
+            .keys
+            .iter()
+            .any(|item| item.key_id == issued.key_id && item.kind == "inference"));
+        let list_denied = svc
+            .list_keys(&inference_actor)
+            .await
+            .expect_err("list denied");
+        assert!(matches!(list_denied, AuthError::CapabilityDenied));
     }
 
     struct VecWriter(std::sync::Arc<Mutex<Vec<u8>>>);

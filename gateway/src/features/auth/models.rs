@@ -2,7 +2,9 @@
 //!
 //! Contains all data structures used in the authentication system
 
-use super::persist::ApiKeyKind;
+use super::persist::{ApiKeyKind, ApiKeyRecord};
+use chrono::{DateTime, Utc};
+use serde::Serialize;
 use uuid::Uuid;
 
 /// Authentication context injected into requests after successful authentication.
@@ -37,4 +39,47 @@ where
             .cloned()
             .ok_or(axum::http::StatusCode::INTERNAL_SERVER_ERROR)
     }
+}
+
+/// Safe public key metadata. Omits credential and digest.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct ApiKeyMetadata {
+    /// Owning tenant identifier from the stored row.
+    pub client_id: Uuid,
+    /// Persisted key identifier.
+    pub key_id: Uuid,
+    /// Safe public display identifier.
+    pub display_id: String,
+    /// Operator-assigned key name.
+    pub name: String,
+    /// Immutable `management` or `inference` kind.
+    pub kind: String,
+    /// Creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// Last successful authentication, if any.
+    pub last_used_at: Option<DateTime<Utc>>,
+    /// Revocation timestamp, if revoked.
+    pub revoked_at: Option<DateTime<Utc>>,
+}
+
+impl From<ApiKeyRecord> for ApiKeyMetadata {
+    fn from(record: ApiKeyRecord) -> Self {
+        Self {
+            client_id: record.client_id,
+            key_id: record.id,
+            display_id: record.display_id,
+            name: record.name,
+            kind: record.kind.as_str().to_string(),
+            created_at: record.created_at,
+            last_used_at: record.last_used_at,
+            revoked_at: record.revoked_at,
+        }
+    }
+}
+
+/// Tenant-scoped inventory of safe key metadata.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct KeyInventory {
+    /// Keys owned by the authenticated tenant, newest first.
+    pub keys: Vec<ApiKeyMetadata>,
 }

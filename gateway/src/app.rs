@@ -9,13 +9,13 @@ use crate::{
         metrics::{create_metrics, MetricsConfig},
     },
     features::{
-        auth::AuthService,
+        auth::{self, AuthService},
         executor::{
             config::ExecutorConfig, error::ExecutorError, service::ExecutorService,
         },
         health, ingress,
     },
-    middleware::{auth, correlation_id},
+    middleware::correlation_id,
     AppState,
 };
 use axum::{
@@ -97,9 +97,13 @@ impl Application {
 pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Router {
     let protected_routes = Router::new()
         .route("/api/v1/route", post(ingress::ingress_handler))
+        .route(
+            "/api/v1/auth/keys",
+            post(auth::create_api_key).get(auth::list_api_keys),
+        )
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            auth::auth_middleware,
+            crate::middleware::auth::auth_middleware,
         ))
         .with_state(state.clone());
 

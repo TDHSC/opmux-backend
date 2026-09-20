@@ -18,6 +18,7 @@ adapter**, not only `LLMVendor` mocks.
 | `provisioning_test.rs`                                   | Shared provisioning service: two-tenant identity, digest-only storage, rollback, reconnect. Requires owned `DATABASE_URL`; does not skip                           |
 | `opmux_admin_test.rs`                                    | Actual `opmux-admin` subprocesses against real Supabase. Captures secrets privately; does not print them                                                           |
 | `auth_http_test.rs`                                      | Production-router persisted auth, secret-safe debug captures, and same-instance database outage recovery through a loopback TCP proxy                              |
+| `key_management_http_test.rs`                            | Production-router management/inference capability matrix, HTTP key creation, one-time secret, and ownership/kind rejection against real Supabase                   |
 | `owned_database_guard_test.rs`                           | Fake-Docker wrapper, mutating-helper URL rejection, and documented private CLI output recipe. Does not need a real database                                        |
 | `support/`                                               | Environment isolation, loopback simulator, recoverable loopback DB proxy, owned-database URL guard                                                                 |
 

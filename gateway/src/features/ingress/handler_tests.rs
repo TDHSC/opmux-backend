@@ -105,6 +105,10 @@ mod tests {
     }
 
     fn build_test_app(models: Vec<&str>) -> Router {
+        build_test_app_with_kind(models, ApiKeyKind::Inference)
+    }
+
+    fn build_test_app_with_kind(models: Vec<&str>, kind: ApiKeyKind) -> Router {
         let executor_service = create_mock_executor_service(models);
         let app_state = AppState {
             settings: Arc::new(crate::core::config::Settings::for_tests()),
@@ -126,13 +130,36 @@ mod tests {
             .layer(Extension(AuthContext {
                 client_id: uuid::Uuid::nil(),
                 key_id: uuid::Uuid::nil(),
-                kind: ApiKeyKind::Inference,
+                kind,
             }))
             .layer(Extension(RequestContext::new(
                 "req-handler-1".to_string(),
                 Some("corr-1".to_string()),
             )))
             .with_state(app_state)
+    }
+
+    #[tokio::test]
+    async fn management_kind_cannot_generate() {
+        let app = build_test_app_with_kind(vec!["gpt-4"], ApiKeyKind::Management);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "prompt": "Hello", "metadata": {} }).to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("permission"));
+        assert!(!body_str.contains("Mock handler response"));
     }
 
     #[tokio::test]
