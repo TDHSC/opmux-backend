@@ -343,6 +343,7 @@ mod tests {
                 primary_error.clone(),
                 generous_deadline(),
                 &mut budget,
+                "primary",
             )
             .await;
 

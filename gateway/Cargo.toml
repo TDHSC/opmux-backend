@@ -32,6 +32,7 @@ reqwest = { version = "0.11", features = ["json"] }
 tower-http = { workspace = true, features = ["trace", "request-id"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 axum-prometheus = { workspace = true }
+metrics = "0.23"
 sqlx = { workspace = true }
 sha2 = { workspace = true }
 getrandom = { workspace = true }

@@ -176,9 +176,17 @@ curl -i http://127.0.0.1:3000/metrics
 
 ## Monitoring guide
 
-- Use `/metrics` as scrape endpoint.
+- Use `/metrics` as the scrape endpoint. It has no application authentication. Keep it loopback-only
+  locally and network-restricted in production.
 - Track at minimum:
-  - request volume and failure ratio,
+  - request volume and failure ratio (`gateway_http_requests_total`),
   - readiness status transitions,
   - latency and pending request trends,
-  - circuit-open error frequency.
+  - execution attempts/outcomes, retries, and fallbacks,
+  - `gateway_circuit_state` / `gateway_circuit_transitions_total`,
+  - `gateway_deadline_exceeded_total` and `gateway_overload_rejected_total`,
+  - successful prompt/completion token counts (successful responses only).
+- Local overload (`OVERLOADED`) is `gateway_overload_rejected_total`. Provider throttling is
+  `gateway_execution_attempts_total{outcome="rate_limit"}`.
+- Metric labels are bounded. Do not expect tenant, key, request, or model-name series. See
+  [PROMETHEUS.md](PROMETHEUS.md).

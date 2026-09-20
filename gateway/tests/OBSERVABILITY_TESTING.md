@@ -61,7 +61,11 @@ Expected:
 
 - `HTTP/1.1 200 OK`
 - Prometheus payload includes `gateway_http_requests_total`
+- Payload may include `gateway_execution_attempts_total`, retry/fallback/circuit/deadline/overload
+  and successful-usage series after generation traffic
+- Labels are route templates and configured target IDs, not request IDs, key UUIDs, or model names
 - `X-Request-ID` exists in response headers
+- Treat `/metrics` as internal: loopback locally, network-restrict in production
 
 ## 5) Protected ingress route behavior
 

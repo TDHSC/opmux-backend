@@ -72,11 +72,15 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, process liveness on `/health`,
   dependency readiness on `/ready`, and a configurable metrics endpoint (`/metrics` by default).
-  `/ready` requires authentication-database schema, selected-column, locking, and `last_used_at`
-  UPDATE access, upstream `/models` reachability, and at least one usable default-route target.
-  `/models` is not a generation call and cannot override circuit-open default-route targets.
-  Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds); failures are never
-  cached.
+  `/metrics` is an internal scrape surface (loopback locally; network-restrict in production) and
+  exposes HTTP counts/duration plus bounded execution attempts, retries, fallback, circuit,
+  deadline, overload, and successful-usage series. Labels are route templates, configured target
+  IDs, and finite outcome classes, never credentials, prompts, tenant/key/request IDs, raw URLs, or
+  provider-returned model strings. `/ready` requires authentication-database schema,
+  selected-column, locking, and `last_used_at` UPDATE access, upstream `/models` reachability, and
+  at least one usable default-route target. `/models` is not a generation call and cannot override
+  circuit-open default-route targets. Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS`
+  (default 5 seconds); failures are never cached.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects

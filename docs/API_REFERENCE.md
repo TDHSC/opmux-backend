@@ -55,11 +55,17 @@ Example response (`503`):
 
 ## GET /metrics
 
-Prometheus metrics endpoint.
+Prometheus metrics endpoint for HTTP counts/duration and bounded execution observations (attempts,
+retries, fallback, circuits, deadlines, local overload, and successful usage).
 
-- Auth: none
+- Auth: none. This is an internal scrape surface. Local processes bind loopback; production must
+  restrict access at the network layer. Do not add a metrics authentication system.
 - Controlled by `METRICS_ENABLED` and `METRICS_PATH`
-- Response: `200 OK` when enabled
+- Response: `200 OK` when enabled, with `X-Request-ID` and echoed `X-Correlation-ID` when the client
+  sent a valid correlation header
+- Labels are route templates, configured target IDs, and finite outcome classes. Credentials,
+  prompts, tenant/key/request IDs, raw URLs, and provider-returned model strings are not labels. See
+  [PROMETHEUS.md](PROMETHEUS.md).
 
 ## POST /api/v1/auth/keys
 

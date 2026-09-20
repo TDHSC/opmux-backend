@@ -15,6 +15,9 @@
 //! ignored.
 
 use super::config::ExecutorConfig;
+#[cfg(test)]
+use crate::core::metrics::NoopExecutionMetrics;
+use crate::core::metrics::{CircuitStateLabel, ExecutionMetrics};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -174,10 +177,12 @@ pub(crate) struct TargetCircuitRegistry {
     threshold: u32,
     cooldown: Duration,
     clock: Arc<dyn InstantClock>,
+    metrics: Arc<dyn ExecutionMetrics>,
 }
 
 impl TargetCircuitRegistry {
     /// Creates a registry with an injected clock.
+    #[cfg(test)]
     pub(crate) fn new(
         threshold: u32,
         cooldown: Duration,
@@ -188,20 +193,28 @@ impl TargetCircuitRegistry {
             threshold: threshold.max(1),
             cooldown,
             clock,
+            metrics: Arc::new(NoopExecutionMetrics),
         }
     }
 
     /// Creates a registry using the system clock.
+    #[cfg(test)]
     pub(crate) fn with_system_clock(threshold: u32, cooldown: Duration) -> Self {
         Self::new(threshold, cooldown, Arc::new(SystemClock))
     }
 
-    /// Creates a registry from executor policy.
-    pub(crate) fn from_config(config: &ExecutorConfig) -> Self {
-        Self::with_system_clock(
-            config.circuit_failure_threshold,
-            Duration::from_millis(config.circuit_cooldown_ms),
-        )
+    /// Creates a registry that records circuit transitions.
+    pub(crate) fn from_config_with_metrics(
+        config: &ExecutorConfig,
+        metrics: Arc<dyn ExecutionMetrics>,
+    ) -> Self {
+        Self {
+            inner: Arc::new(Mutex::new(HashMap::new())),
+            threshold: config.circuit_failure_threshold.max(1),
+            cooldown: Duration::from_millis(config.circuit_cooldown_ms),
+            clock: Arc::new(SystemClock),
+            metrics,
+        }
     }
 
     /// True when the target is closed and can accept generation.
@@ -222,7 +235,7 @@ impl TargetCircuitRegistry {
         let mut map = self.lock();
         let now = self.clock.now();
         let state = map.entry(target_id.to_string()).or_default();
-        self.set_open(state, now);
+        self.set_open(target_id, state, now);
     }
 
     /// Closes a target for tests without a recovery probe.
@@ -230,7 +243,7 @@ impl TargetCircuitRegistry {
     pub(crate) fn force_close(&self, target_id: &str) {
         let mut map = self.lock();
         let state = map.entry(target_id.to_string()).or_default();
-        Self::close_circuit(state);
+        self.close_circuit(target_id, state);
     }
 
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CircuitState>> {
@@ -276,21 +289,27 @@ impl TargetCircuitRegistry {
         }
     }
 
-    fn start_probe(state: &mut CircuitState) {
+    fn start_probe(&self, target_id: &str, state: &mut CircuitState) {
         state.generation = state.generation.wrapping_add(1);
         state.phase = CircuitPhase::HalfOpen { in_flight: true };
+        self.metrics
+            .record_circuit_transition(target_id, CircuitStateLabel::HalfOpen);
     }
 
-    fn set_open(&self, state: &mut CircuitState, now: Instant) {
+    fn set_open(&self, target_id: &str, state: &mut CircuitState, now: Instant) {
         state.generation = state.generation.wrapping_add(1);
         state.phase = CircuitPhase::Open {
             opened_until: now + self.cooldown,
         };
+        self.metrics
+            .record_circuit_transition(target_id, CircuitStateLabel::Open);
     }
 
-    fn close_circuit(state: &mut CircuitState) {
+    fn close_circuit(&self, target_id: &str, state: &mut CircuitState) {
         state.generation = state.generation.wrapping_add(1);
         state.phase = CircuitPhase::Closed { failures: 0 };
+        self.metrics
+            .record_circuit_transition(target_id, CircuitStateLabel::Closed);
     }
 
     /// Decides whether this target may start an upstream call.
@@ -308,14 +327,14 @@ impl TargetCircuitRegistry {
                 }
             }
             CircuitPhase::Open { .. } => {
-                Self::start_probe(entry);
+                self.start_probe(target_id, entry);
                 CircuitAdmission::Probe(self.probe_permit(target_id, entry.generation))
             }
             CircuitPhase::HalfOpen { in_flight: true } => CircuitAdmission::Reject {
                 retry_after_ms: self.cooldown_retry_after_ms(),
             },
             CircuitPhase::HalfOpen { in_flight: false } => {
-                Self::start_probe(entry);
+                self.start_probe(target_id, entry);
                 CircuitAdmission::Probe(self.probe_permit(target_id, entry.generation))
             }
         }
@@ -357,7 +376,7 @@ impl TargetCircuitRegistry {
                         open_duration_ms = self.cooldown_retry_after_ms(),
                         "Circuit breaker opened for target"
                     );
-                    self.set_open(state, now);
+                    self.set_open(target_id, state, now);
                 } else {
                     state.phase = CircuitPhase::Closed { failures: next };
                 }
@@ -367,14 +386,14 @@ impl TargetCircuitRegistry {
                 CircuitPhase::HalfOpen { .. },
                 CompletionOutcome::Success | CompletionOutcome::Permanent,
             ) => {
-                Self::close_circuit(state);
+                self.close_circuit(target_id, state);
             }
             (
                 PermitKind::Probe,
                 CircuitPhase::HalfOpen { .. },
                 CompletionOutcome::TransientFailure,
             ) => {
-                self.set_open(state, now);
+                self.set_open(target_id, state, now);
             }
             _ => {}
         }

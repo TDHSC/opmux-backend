@@ -8,7 +8,7 @@ use crate::{
     core::{
         admission::AdmissionLimiter,
         config::Settings,
-        metrics::{create_metrics, MetricsConfig},
+        metrics::{create_metrics, execution_metrics_sink, MetricsConfig},
     },
     features::{
         auth::{self, AuthService},
@@ -39,6 +39,9 @@ pub struct Application {
 impl Application {
     /// Builds executor, health, ingress, and auth services from injected settings.
     ///
+    /// Execution metrics are discarded. Use [`Self::from_settings_and_metrics`]
+    /// when the production metrics endpoint is enabled.
+    ///
     /// # Parameters
     /// - `settings` - Validated operator configuration
     /// - `auth_service` - Persisted API-key authenticator
@@ -52,8 +55,31 @@ impl Application {
         settings: Arc<Settings>,
         auth_service: Arc<AuthService>,
     ) -> Result<Self, ExecutorError> {
+        Self::from_settings_and_metrics(settings, auth_service, MetricsConfig::disabled())
+    }
+
+    /// Builds services and records execution metrics when export is enabled.
+    ///
+    /// # Parameters
+    /// - `settings` - Validated operator configuration
+    /// - `auth_service` - Persisted API-key authenticator
+    /// - `metrics` - Metrics enablement used to select Prometheus or no-op
+    ///
+    /// # Returns
+    /// Application holding shared `AppState`
+    ///
+    /// # Errors
+    /// Returns `ExecutorError` when the vendor client cannot be constructed.
+    pub fn from_settings_and_metrics(
+        settings: Arc<Settings>,
+        auth_service: Arc<AuthService>,
+        metrics: MetricsConfig,
+    ) -> Result<Self, ExecutorError> {
         let executor_config = ExecutorConfig::from_settings(&settings);
-        let executor_service = Arc::new(ExecutorService::from_config(executor_config)?);
+        let executor_service = Arc::new(ExecutorService::from_config_with_metrics(
+            executor_config,
+            execution_metrics_sink(metrics.enabled),
+        )?);
         let health_service = Arc::new(health::HealthService::with_dependencies(
             executor_service.clone(),
             auth_service.clone(),

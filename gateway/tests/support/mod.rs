@@ -69,7 +69,7 @@ pub fn production_router_with_settings(
     auth_service: Arc<AuthService>,
     metrics: MetricsConfig,
 ) -> axum::Router {
-    Application::from_settings(settings, auth_service)
+    Application::from_settings_and_metrics(settings, auth_service, metrics.clone())
         .expect("application should build from fixture settings")
         .into_router(metrics)
 }

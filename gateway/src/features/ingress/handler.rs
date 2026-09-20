@@ -73,6 +73,7 @@ pub async fn ingress_handler(
                 reason = "generation_saturated",
                 "Generation admission is saturated"
             );
+            state.executor_service.metrics().record_overload_rejected();
             return Err(IngressError::Overloaded);
         }
     };

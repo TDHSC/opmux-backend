@@ -63,7 +63,11 @@ async fn main() {
     }
 
     tracing::info!("Initializing application services...");
-    let application = match Application::from_settings(settings, auth_service) {
+    let application = match Application::from_settings_and_metrics(
+        settings,
+        auth_service,
+        metrics_config.clone(),
+    ) {
         Ok(application) => application,
         Err(error) => {
             tracing::error!("Fatal: Failed to initialize application: {error}");

@@ -35,6 +35,10 @@ enhanced health check endpoints.
 - Automatic HTTP metrics collection (latency, throughput, error rates)
 - `/metrics` endpoint for Prometheus scraping
 - Using `axum-prometheus` for seamless integration
+- Bounded execution metrics: attempts/outcomes, retries, fallback, circuit state/transitions,
+  deadlines, local overload, and successful usage. Labels are route templates, configured target
+  IDs, and finite outcome classes. `/metrics` is an internal scrape surface (network restriction,
+  not a metrics auth system).
 
 ✅ **Enhanced Health Check (Hybrid Approach)**
 
@@ -57,9 +61,8 @@ enhanced health check endpoints.
 
 ⏸️ **Custom Business Metrics**
 
-- LLM execution metrics (cost, tokens, cache hits)
-- Executor retry/fallback metrics
-- Custom Prometheus metrics
+- Remaining items such as cache-hit series and billing-grade cost totals are not part of this MVP.
+  Attempt/retry/fallback/usage counters are delivered.
 
 ⏸️ **Advanced Monitoring**
 

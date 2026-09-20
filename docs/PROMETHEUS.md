@@ -4,6 +4,13 @@
 
 By default, metrics are exposed at `GET /metrics` when `METRICS_ENABLED=true`.
 
+`/metrics` is an **internal operational scrape surface**. It has no application authentication.
+Local deployment binds the gateway on loopback. Production must restrict scrape access at the
+network layer (private network, host firewall, or reverse-proxy allowlist). Do not add a separate
+metrics authentication system.
+
+Correlation still applies: a scrape may send `X-Correlation-ID` and always receives `X-Request-ID`.
+
 ## Environment configuration
 
 - `METRICS_ENABLED=true`
@@ -16,17 +23,63 @@ scrape_configs:
   - job_name: gateway
     metrics_path: /metrics
     static_configs:
-      - targets: ['localhost:3000']
+      - targets: ['127.0.0.1:3000']
 ```
 
-## Useful metric names
+Do not scrape this endpoint from the public Internet.
 
-- `gateway_http_requests_total`
-- `gateway_http_requests_pending`
-- `gateway_http_requests_duration_seconds`
+## HTTP metrics
 
-## Basic alert examples
+Collected by `axum-prometheus` with prefix `gateway`:
 
-- High 5xx ratio on `/ready`
-- No scrape data for gateway target
-- Elevated request duration on critical endpoints
+- `gateway_http_requests_total` (labels: `method`, `endpoint`, `status`)
+- `gateway_http_requests_pending` (labels: `method`, `endpoint`)
+- `gateway_http_requests_duration_seconds` (labels: `method`, `endpoint`, `status`)
+
+Auth failures are included. `endpoint` is a matched route template or a bounded fallback (`/`,
+`/health`, `/ready`, `/metrics`, `/api/v1/route`, `/api/v1/auth/keys`, `/api/v1/auth/keys/{id}`, or
+`unmatched`). Raw paths, query strings, and key UUIDs are not labels.
+
+## Execution metrics
+
+Recorded only for started provider calls and local admission outcomes:
+
+| Metric                                       | Labels                     | Meaning                                               |
+| -------------------------------------------- | -------------------------- | ----------------------------------------------------- |
+| `gateway_execution_attempts_total`           | `target`, `outcome`        | One increment per started provider attempt            |
+| `gateway_execution_retries_total`            | `target`                   | Extra call on the same target after a prior attempt   |
+| `gateway_execution_fallbacks_total`          | `from_target`, `to_target` | Execution moved to a later configured target          |
+| `gateway_circuit_transitions_total`          | `target`, `to_state`       | Circuit phase change (`closed`, `half_open`, `open`)  |
+| `gateway_circuit_state`                      | `target`                   | Gauge: 0 closed, 1 half-open, 2 open                  |
+| `gateway_deadline_exceeded_total`            | none                       | Overall protected-request deadline expiry             |
+| `gateway_overload_rejected_total`            | none                       | Local generation admission `429 OVERLOADED`           |
+| `gateway_successful_prompt_tokens_total`     | `target`                   | Validated prompt tokens from successful responses     |
+| `gateway_successful_completion_tokens_total` | `target`                   | Validated completion tokens from successful responses |
+
+`target` / `from_target` / `to_target` are operator-configured catalog target IDs (or `unknown` if a
+value is not a safe identifier). `outcome` is one of: `success`, `retryable`, `timeout`,
+`rate_limit`, `quota`, `upstream_auth`, `protocol`, `rejected`, `deadline`, `circuit_open`,
+`internal`.
+
+Rejected requests (missing/invalid credentials, unknown routes, local overload) are not execution
+attempts. Failed-attempt usage is not counted. Local overload and provider throttling
+(`outcome="rate_limit"` / `UPSTREAM_RATE_LIMIT`) stay distinct.
+
+## Label policy
+
+Allowed label sources:
+
+- HTTP method, status class, and the bounded endpoint templates above
+- Configured catalog target IDs
+- Finite protocol/outcome and circuit-state classes
+
+Never used as labels: credentials, prompts, metadata, tenant/key IDs, request or correlation IDs,
+raw paths/queries, URLs, provider-returned model strings, or raw error bodies.
+
+## Useful alerts
+
+- High 5xx ratio on `/ready` or `/api/v1/route`
+- Rising `gateway_overload_rejected_total` while `/health` stays 200
+- `gateway_circuit_state` stuck at 2 for a target
+- Elevated `gateway_deadline_exceeded_total`
+- No scrape data for the gateway target

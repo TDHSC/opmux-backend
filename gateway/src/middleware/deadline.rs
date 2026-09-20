@@ -41,10 +41,13 @@ pub async fn deadline_middleware(
 
     match tokio::time::timeout_at(deadline.as_instant(), next.run(request)).await {
         Ok(response) => response,
-        Err(_) => error_response(
-            ErrorCode::DeadlineExceeded,
-            "The request deadline was exceeded",
-            None,
-        ),
+        Err(_) => {
+            state.executor_service.metrics().record_deadline_exceeded();
+            error_response(
+                ErrorCode::DeadlineExceeded,
+                "The request deadline was exceeded",
+                None,
+            )
+        }
     }
 }

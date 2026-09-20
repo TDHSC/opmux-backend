@@ -15,6 +15,7 @@ use super::{
 use crate::core::config::Catalog;
 use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
+use crate::core::metrics::{AttemptOutcome, ExecutionMetrics, NoopExecutionMetrics};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -29,6 +30,8 @@ pub struct ExecutorService {
     pub(crate) config: ExecutorConfig,
     /// Target-scoped circuit breakers with single-flight half-open probes
     pub(crate) circuits: TargetCircuitRegistry,
+    /// Bounded execution/circuit/deadline/usage observations.
+    metrics: Arc<dyn ExecutionMetrics>,
 }
 
 impl ExecutorService {
@@ -43,20 +46,63 @@ impl ExecutorService {
     /// # Errors
     /// Returns `NoVendorsConfigured` if no vendors are configured
     pub fn from_config(config: ExecutorConfig) -> Result<Self, ExecutorError> {
+        Self::from_config_with_metrics(config, Arc::new(NoopExecutionMetrics))
+    }
+
+    /// Creates ExecutorService that records bounded execution metrics.
+    ///
+    /// # Parameters
+    /// - `config` - Executor configuration with vendor settings
+    /// - `metrics` - Execution metric sink; no-op when metrics export is off
+    ///
+    /// # Returns
+    /// ExecutorService instance with initialized repository
+    ///
+    /// # Errors
+    /// Returns `NoVendorsConfigured` if no vendors are configured
+    pub fn from_config_with_metrics(
+        config: ExecutorConfig,
+        metrics: Arc<dyn ExecutionMetrics>,
+    ) -> Result<Self, ExecutorError> {
         let repository = ExecutorRepository::from_config(config.clone())?;
-        Ok(Self::from_repository(repository, config))
+        Ok(Self::from_repository_with_metrics(
+            repository, config, metrics,
+        ))
     }
 
     /// Builds a service around an already-constructed repository.
+    #[cfg(test)]
     pub(crate) fn from_repository(
         repository: ExecutorRepository,
         config: ExecutorConfig,
     ) -> Self {
+        Self::from_repository_with_metrics(
+            repository,
+            config,
+            Arc::new(NoopExecutionMetrics),
+        )
+    }
+
+    /// Builds a service around a repository and metric sink.
+    pub(crate) fn from_repository_with_metrics(
+        repository: ExecutorRepository,
+        config: ExecutorConfig,
+        metrics: Arc<dyn ExecutionMetrics>,
+    ) -> Self {
         Self {
-            circuits: TargetCircuitRegistry::from_config(&config),
+            circuits: TargetCircuitRegistry::from_config_with_metrics(
+                &config,
+                metrics.clone(),
+            ),
             repository: Arc::new(repository),
             config,
+            metrics,
         }
+    }
+
+    /// Returns the execution metric sink.
+    pub(crate) fn metrics(&self) -> &dyn ExecutionMetrics {
+        self.metrics.as_ref()
     }
 
     /// Returns the number of registered vendors.
@@ -249,7 +295,7 @@ impl ExecutorService {
         budget: &mut AttemptBudget,
     ) -> Result<ExecutionResult, ExecutorError> {
         if deadline.is_expired() {
-            return Err(ExecutorError::DeadlineExceeded);
+            return Err(self.deadline_exceeded());
         }
         if budget.remaining() == 0 {
             return Err(ExecutorError::ApiCallFailed(
@@ -286,9 +332,7 @@ impl ExecutorService {
                         guard.success();
                         Ok(result)
                     }
-                    Err(ExecutorError::DeadlineExceeded) => {
-                        Err(ExecutorError::DeadlineExceeded)
-                    }
+                    Err(error @ ExecutorError::DeadlineExceeded) => Err(error),
                     Err(error) if Self::is_circuit_failure(&error) => {
                         guard.transient_failure();
                         Err(error)
@@ -314,9 +358,7 @@ impl ExecutorService {
                         permit.success();
                         Ok(result)
                     }
-                    Err(ExecutorError::DeadlineExceeded) => {
-                        Err(ExecutorError::DeadlineExceeded)
-                    }
+                    Err(error @ ExecutorError::DeadlineExceeded) => Err(error),
                     Err(error) => {
                         if Self::is_circuit_failure(&error) {
                             permit.transient_failure();
@@ -353,7 +395,7 @@ impl ExecutorService {
 
         for attempt in 0..=max_retries {
             if deadline.is_expired() {
-                return Err(ExecutorError::DeadlineExceeded);
+                return Err(self.deadline_exceeded());
             }
             if budget.remaining() == 0 {
                 break;
@@ -386,7 +428,7 @@ impl ExecutorService {
                         .await
                         .is_err()
                         {
-                            return Err(ExecutorError::DeadlineExceeded);
+                            return Err(self.deadline_exceeded());
                         }
                     }
                     Err(DelayError::ProviderDelayCannotFit { retry_after }) => {
@@ -412,11 +454,11 @@ impl ExecutorService {
                         });
                     }
                     Err(DelayError::DeadlineExceeded) => {
-                        return Err(ExecutorError::DeadlineExceeded);
+                        return Err(self.deadline_exceeded());
                     }
                 }
                 if deadline.is_expired() {
-                    return Err(ExecutorError::DeadlineExceeded);
+                    return Err(self.deadline_exceeded());
                 }
             }
 
@@ -425,8 +467,11 @@ impl ExecutorService {
             }
 
             let Some(attempt_timeout) = deadline.cap(max_attempt) else {
-                return Err(ExecutorError::DeadlineExceeded);
+                return Err(self.deadline_exceeded());
             };
+            if attempt > 0 {
+                self.metrics.record_retry(&plan.target_id);
+            }
             let cutoff = tokio::time::Instant::now() + attempt_timeout;
             let attempt_ctx = AttemptContext::new(cutoff);
             let outcome = tokio::time::timeout_at(
@@ -438,7 +483,9 @@ impl ExecutorService {
             // success. Inner-future-first timeout polling can complete the
             // attempt at the same instant the deadline elapses.
             if deadline.is_expired() {
-                return Err(ExecutorError::DeadlineExceeded);
+                self.metrics
+                    .record_attempt(&plan.target_id, AttemptOutcome::Deadline);
+                return Err(self.deadline_exceeded());
             }
             let error = match outcome {
                 Ok(Ok(result)) => {
@@ -451,19 +498,24 @@ impl ExecutorService {
                             "Execution succeeded after retry"
                         );
                     }
+                    self.record_success(&plan.target_id, &result);
                     return Ok(result);
                 }
                 Ok(Err(error)) => error,
                 Err(_elapsed) => match attempt_ctx.observed() {
                     Some(observed) => observed,
                     None if deadline.is_expired() => {
-                        return Err(ExecutorError::DeadlineExceeded);
+                        self.metrics
+                            .record_attempt(&plan.target_id, AttemptOutcome::Deadline);
+                        return Err(self.deadline_exceeded());
                     }
                     None => {
                         ExecutorError::TimeoutError(attempt_timeout.as_millis() as u64)
                     }
                 },
             };
+            self.metrics
+                .record_attempt(&plan.target_id, attempt_outcome(&error));
             if Self::is_retryable_error(&error) {
                 retry_after_ms = match &error {
                     ExecutorError::RateLimitExceeded {
@@ -483,7 +535,7 @@ impl ExecutorService {
                         remaining_ms = deadline.remaining().as_millis() as u64,
                         "Provider retry delay cannot fit remaining deadline"
                     );
-                    return Err(terminal);
+                    return Err(self.observe_terminal(terminal));
                 }
                 tracing::warn!(
                     attempt,
@@ -640,9 +692,10 @@ impl ExecutorService {
         primary_error: ExecutorError,
         deadline: RequestDeadline,
         budget: &mut AttemptBudget,
+        primary_target_id: &str,
     ) -> Result<ExecutionResult, ExecutorError> {
         if deadline.is_expired() {
-            return Err(ExecutorError::DeadlineExceeded);
+            return Err(self.deadline_exceeded());
         }
         if fallback_plans.is_empty() {
             return Err(primary_error);
@@ -655,7 +708,7 @@ impl ExecutorService {
 
         for (index, fallback) in fallback_plans.iter().enumerate() {
             if deadline.is_expired() {
-                return Err(ExecutorError::DeadlineExceeded);
+                return Err(self.deadline_exceeded());
             }
             if !Self::hop_supports_params(fallback, params) {
                 tracing::info!(
@@ -677,6 +730,8 @@ impl ExecutorService {
                 model_id = %fallback.model_id,
                 "Attempting configured fallback target"
             );
+            self.metrics
+                .record_fallback(primary_target_id, &fallback.target_id);
 
             match self.execute_hop(fallback, params, deadline, budget).await {
                 Ok(result) => {
@@ -690,14 +745,14 @@ impl ExecutorService {
                     );
                     return Ok(result);
                 }
-                Err(ExecutorError::DeadlineExceeded) => {
-                    return Err(ExecutorError::DeadlineExceeded);
+                Err(error @ ExecutorError::DeadlineExceeded) => {
+                    return Err(error);
                 }
                 Err(e) => {
                     if let Some(terminal) =
                         Self::terminate_for_provider_minimum(&e, deadline)
                     {
-                        return Err(terminal);
+                        return Err(self.observe_terminal(terminal));
                     }
                     tracing::warn!(
                         fallback_index = index + 1,
@@ -715,7 +770,7 @@ impl ExecutorService {
         }
 
         if deadline.is_expired() {
-            return Err(ExecutorError::DeadlineExceeded);
+            return Err(self.deadline_exceeded());
         }
         Err(primary_error)
     }
@@ -802,7 +857,7 @@ impl ExecutorService {
         deadline: RequestDeadline,
     ) -> Result<ExecutionResult, ExecutorError> {
         if deadline.is_expired() {
-            return Err(ExecutorError::DeadlineExceeded);
+            return Err(self.deadline_exceeded());
         }
 
         let mut budget = AttemptBudget::new(self.config.max_total_attempts);
@@ -827,12 +882,12 @@ impl ExecutorService {
                 );
                 Ok(result)
             }
-            Err(ExecutorError::DeadlineExceeded) => Err(ExecutorError::DeadlineExceeded),
+            Err(error @ ExecutorError::DeadlineExceeded) => Err(error),
             Err(primary_error) => {
                 if let Some(terminal) =
                     Self::terminate_for_provider_minimum(&primary_error, deadline)
                 {
-                    return Err(terminal);
+                    return Err(self.observe_terminal(terminal));
                 }
                 if !Self::is_fallback_eligible(&primary_error) {
                     return Err(primary_error);
@@ -843,9 +898,56 @@ impl ExecutorService {
                     primary_error,
                     deadline,
                     &mut budget,
+                    &plan.target_id,
                 )
                 .await
             }
         }
+    }
+
+    fn deadline_exceeded(&self) -> ExecutorError {
+        self.metrics.record_deadline_exceeded();
+        ExecutorError::DeadlineExceeded
+    }
+
+    fn observe_terminal(&self, error: ExecutorError) -> ExecutorError {
+        if matches!(error, ExecutorError::DeadlineExceeded) {
+            self.metrics.record_deadline_exceeded();
+        }
+        error
+    }
+
+    fn record_success(&self, target_id: &str, result: &ExecutionResult) {
+        self.metrics
+            .record_attempt(target_id, AttemptOutcome::Success);
+        self.metrics.record_successful_usage(
+            target_id,
+            result.prompt_tokens,
+            result.completion_tokens,
+        );
+    }
+}
+
+fn attempt_outcome(error: &ExecutorError) -> AttemptOutcome {
+    match error {
+        ExecutorError::NetworkError(_) | ExecutorError::ApiCallFailed(_) => {
+            AttemptOutcome::Retryable
+        }
+        ExecutorError::TimeoutError(_) => AttemptOutcome::Timeout,
+        ExecutorError::RateLimitExceeded { .. } => AttemptOutcome::RateLimit,
+        ExecutorError::QuotaExceeded => AttemptOutcome::Quota,
+        ExecutorError::AuthenticationFailed(_) => AttemptOutcome::UpstreamAuth,
+        ExecutorError::JsonError(_) | ExecutorError::InvalidUpstreamResult => {
+            AttemptOutcome::Protocol
+        }
+        ExecutorError::UpstreamRejected => AttemptOutcome::Rejected,
+        ExecutorError::DeadlineExceeded => AttemptOutcome::Deadline,
+        ExecutorError::CircuitOpen { .. } => AttemptOutcome::CircuitOpen,
+        ExecutorError::UnsupportedVendor(_)
+        | ExecutorError::UnsupportedModel(_, _)
+        | ExecutorError::InvalidPayload(_)
+        | ExecutorError::NoVendorsConfigured
+        | ExecutorError::InvalidConfiguration
+        | ExecutorError::MissingPricing => AttemptOutcome::Internal,
     }
 }
