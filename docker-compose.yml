@@ -4,7 +4,7 @@ services:
       context: .
       dockerfile: gateway/Dockerfile
     ports:
-      - "3000:3000"
+      - "127.0.0.1:3000:3000"
     environment:
       SERVER_HOST: 0.0.0.0
       SERVER_PORT: 3000

@@ -119,6 +119,8 @@ mod tests {
             .split("#[cfg(test)]")
             .next()
             .expect("production source");
+        assert!(!production.contains("danger_accept_invalid_certs"));
+        assert!(!production.contains("danger_accept_invalid_hostnames"));
         assert!(!production.contains("danger_accept_invalid"));
         assert!(production.contains("tls_built_in_root_certs(true)"));
         assert!(!production.contains("Client::new()"));

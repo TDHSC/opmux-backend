@@ -272,18 +272,43 @@ Logging defaults to JSON at `info` level. Set `LOG_FORMAT=pretty` for readable l
 `RUST_LOG=gateway=debug` for more detail. `RUST_LOG` overrides legacy `LOG_LEVEL`; `LOG_FORMAT`
 overrides legacy `LOG_JSON`. Set `LOG_VERBOSE_DEBUG=true` to include line numbers and thread IDs.
 
+### Container image
+
+The image in [gateway/Dockerfile](gateway/Dockerfile) builds with the verified Rust 1.89.0 Bookworm
+toolchain and `cargo build --locked --release`. The runtime is Debian Bookworm slim with CA
+certificates and OpenSSL (`libssl3`), and the process runs as UID `65532`. Building the image does
+not require `DATABASE_URL` or a provider credential. The image does not bake connection strings, API
+keys, or `AUTH_DEVELOPMENT_MODE`.
+
+Certificate-chain and hostname verification stay enabled in the Reqwest adapter. Do not pass
+insecure TLS flags or use `curl -k` against the gateway. Local simulators and local Postgres may use
+plain HTTP and `sslmode=disable`; those choices are local-only and are not hosted or provider TLS
+proof.
+
+```bash
+docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
+bash scripts/check-container.sh
+```
+
+`scripts/check-container.sh` builds the image, publishes the API on `127.0.0.1:38086` only, joins
+the owned local Supabase network, and uses owned loopback HTTP and untrusted-TLS simulators. It
+checks the non-root UID, `/health` and `/ready`, persisted-auth generation through the real adapter,
+invalid-key `401` with zero upstream calls, untrusted TLS `502`, and `docker stop` graceful
+shutdown. `opmux-admin` is included in the image for operator provisioning.
+
 ### Docker Compose
 
 ```bash
 docker compose up --build
 ```
 
-The gateway is available at `http://127.0.0.1:3000`. Without overrides,
+The Compose file publishes `127.0.0.1:3000`. Without overrides,
 [docker-compose.yml](docker-compose.yml) mounts the example catalog, uses a dummy provider key, and
 uses `http://host.docker.internal:9/v1` as the upstream. Set `DATABASE_URL` for persisted
 authentication; an empty URL fails closed before protected work. Expect readiness failure unless
 that endpoint actually serves a compatible API; starting a container is not proof of LLM
-availability.
+availability. For the locked-image smoke path against the owned database and simulator, use
+`scripts/check-container.sh` rather than Compose.
 
 For real upstream access, set **both** values so the Compose dummy URL is not retained:
 
@@ -293,8 +318,8 @@ docker compose up --build
 ```
 
 Unlike the Rust binary, Compose can read a root `.env` file for variable substitution. Only settings
-passed through the service configuration become container environment variables. The Compose setup
-publishes port 3000; treat it as a development setup, not a hardened production deployment.
+passed through the service configuration become container environment variables. Treat Compose as a
+development helper, not a hardened production deployment.
 
 ## Development Checks
 

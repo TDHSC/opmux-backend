@@ -135,6 +135,20 @@ closes its listener. Cancellation does not reverse computation already started o
 kill -TERM "$GATEWAY_PID"
 ```
 
+Container runtimes should send SIGTERM on stop (`docker stop`). The image runs UID `65532` and
+includes `gateway` and `opmux-admin`. Inject `DATABASE_URL`, `OPENAI_API_KEY`, and `OPENAI_BASE_URL`
+at runtime; do not bake them into the image. `docker stop --time N` should be at least
+`SERVER_SHUTDOWN_TIMEOUT`. Publish host ports on loopback only.
+
+```bash
+docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
+bash scripts/check-container.sh
+```
+
+`scripts/check-container.sh` reuses the owned local Supabase, owned loopback simulators, and a
+test-only untrusted TLS fixture. Plain HTTP simulator URLs and `sslmode=disable` are local-only, not
+hosted or provider TLS proof. Certificate and hostname verification stay enabled.
+
 ## Incident triage
 
 ### Symptom: `/ready` returns `503`

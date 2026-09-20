@@ -186,6 +186,12 @@ migrations may set `DATABASE_URL` and run `scripts/db-migrate.sh` without the wr
 not localhost-restricted. Do not migrate from every replica and do not `supabase start` a second
 database from this repository.
 
+The Reqwest adapter keeps certificate-chain and hostname verification enabled. There is no
+accept-invalid TLS setting, custom production CA feature, or `curl -k` path. An untrusted local TLS
+simulator must fail as a sanitized upstream error. Local plain-HTTP simulators and `sslmode=disable`
+database URLs are local-only fixtures, not hosted or provider TLS proof. The container image
+includes CA roots and OpenSSL runtime libraries for that verification.
+
 ## Troubleshooting quick reference
 
 ### Startup fails before the process listens
