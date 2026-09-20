@@ -134,8 +134,16 @@ maximum, one retry per target, three total provider attempts, at most two fallba
 `max_upstream_response_bytes` (default 1 MiB) is enforced while reading provider success bodies. The
 protected-request deadline covers authentication, body extraction, and execution as one monotonic
 budget; expiry returns sanitized `504 DEADLINE_EXCEEDED` and does not start later provider attempts.
-Health and metrics stay outside that deadline. Fallback, circuit, concurrency, and inbound raw-size
-enforcement are later features and are not active yet.
+Health and metrics stay outside that deadline. Each provider attempt uses
+`min(max_attempt_timeout, remaining deadline)`. Default single-target policy allows one retry (two
+actual calls); a higher per-target retry setting still cannot exceed `max_total_attempts` across
+primary and fallback hops, and considering a fallback does not reset that counter. Backoff is
+full-jitter exponential capped at `backoff_cap_ms` (default 2 seconds). A valid `Retry-After`
+delta-seconds or HTTP-date is never shortened by that cap; if the provider minimum cannot finish
+before the deadline, the response is sanitized `429 UPSTREAM_RATE_LIMIT` rather than a false
+`504 DEADLINE_EXCEEDED`. Malformed `Retry-After` uses the capped jitter instead of an unbounded
+sleep. Fallback switching, target circuits, concurrency, and inbound raw-size enforcement are later
+features and are not active yet.
 
 The Rust binary reads **process environment variables** and does not automatically load `.env`.
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the

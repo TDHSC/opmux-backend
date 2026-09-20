@@ -154,12 +154,7 @@ mod tests {
 
         let executor = Arc::new(ExecutorService {
             repository: Arc::new(ExecutorRepository { vendors }),
-            config: ExecutorConfig {
-                openai: None,
-                anthropic_api_key: None,
-                timeout_ms: 30000,
-                max_retries: 0,
-            },
+            config: ExecutorConfig::mock_policy(0, 30_000),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_open_duration: Duration::from_secs(30),

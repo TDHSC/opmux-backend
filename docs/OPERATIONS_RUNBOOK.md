@@ -127,7 +127,9 @@ curl -i http://127.0.0.1:3000/metrics
 - Slow clients, delayed authentication, or a slow upstream can exhaust it; retries do not start
   after expiry.
 - `/health` and `/metrics` are not gated by that deadline.
-- Per-attempt timeout, retry, and Retry-After policy still apply within the remaining budget.
+- Per-attempt timeout is the lesser of the configured attempt maximum and remaining time. The global
+  actual-attempt budget is not reset on fallback. A `Retry-After` that cannot finish before the
+  deadline returns `429 UPSTREAM_RATE_LIMIT`, not a false `504`.
 
 ### Symptom: `/api/v1/route` returns `503 circuit_open`
 

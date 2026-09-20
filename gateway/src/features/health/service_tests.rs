@@ -125,12 +125,9 @@ mod tests {
 
         Some(Arc::new(ExecutorService {
             repository: Arc::new(repository),
-            config: crate::features::executor::config::ExecutorConfig {
-                openai: None,
-                anthropic_api_key: None,
-                timeout_ms: 30000,
-                max_retries: 3,
-            },
+            config: crate::features::executor::config::ExecutorConfig::mock_policy(
+                3, 30_000,
+            ),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_open_duration: Duration::from_secs(30),
@@ -370,12 +367,9 @@ mod tests {
         let repository = ExecutorRepository { vendors };
         let executor = Arc::new(ExecutorService {
             repository: Arc::new(repository),
-            config: crate::features::executor::config::ExecutorConfig {
-                openai: None,
-                anthropic_api_key: None,
-                timeout_ms: 30000,
-                max_retries: 3,
-            },
+            config: crate::features::executor::config::ExecutorConfig::mock_policy(
+                3, 30_000,
+            ),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_open_duration: Duration::from_secs(30),

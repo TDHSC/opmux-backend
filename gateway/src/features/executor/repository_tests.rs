@@ -85,9 +85,7 @@ mod tests {
     fn create_test_repository() -> ExecutorRepository {
         let config = ExecutorConfig {
             openai: Some(OpenAIConfig::for_tests()),
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
+            ..ExecutorConfig::mock_policy(3, 30_000)
         };
         ExecutorRepository::from_config(config).expect("Failed to create test repository")
     }
@@ -110,9 +108,7 @@ mod tests {
     fn test_from_config_success() {
         let config = ExecutorConfig {
             openai: Some(OpenAIConfig::for_tests()),
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
+            ..ExecutorConfig::mock_policy(3, 30_000)
         };
 
         let result = ExecutorRepository::from_config(config);
@@ -124,12 +120,7 @@ mod tests {
 
     #[test]
     fn test_from_config_no_vendors() {
-        let config = ExecutorConfig {
-            openai: None,
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
-        };
+        let config = ExecutorConfig::mock_policy(3, 30_000);
 
         let result = ExecutorRepository::from_config(config);
         assert!(result.is_err());

@@ -143,11 +143,10 @@ fn service_with(
         repository: Arc::new(ExecutorRepository {
             vendors: vendor_map,
         }),
-        config: ExecutorConfig {
-            openai: None,
-            anthropic_api_key: None,
-            max_retries,
-            timeout_ms,
+        config: {
+            let mut config = ExecutorConfig::mock_policy(max_retries, timeout_ms);
+            config.max_total_attempts = 16;
+            config
         },
         circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
         circuit_breaker_failure_threshold: 3,

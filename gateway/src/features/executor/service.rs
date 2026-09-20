@@ -1,6 +1,9 @@
 // Service Layer - Business logic for LLM execution (retry, fallback, parameter extraction)
 
 use super::{
+    budget::{
+        evaluate_retry_delay, plan_retry_delay, AttemptBudget, DelayError, SystemJitter,
+    },
     config::ExecutorConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult},
@@ -10,7 +13,7 @@ use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 use tokio::sync::RwLock;
 
 const DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD: u32 = 3;
@@ -236,14 +239,11 @@ impl ExecutorService {
         }
     }
 
-    /// Executes LLM call with retry logic and exponential backoff.
+    #[cfg(test)]
+    /// Executes one hop with retry logic, capped jitter, and a fresh attempt budget.
     ///
-    /// This is a CHILD SPAN. It automatically inherits `request_id` from parent.
-    ///
-    /// # Flow
-    /// 1. Validate model support via repository
-    /// 2. Attempt execution with retry loop
-    /// 3. Apply exponential backoff between retries (1s, 2s, 4s, 8s...)
+    /// Production `execute` shares one budget across primary and fallback hops.
+    /// Tests use this helper when they only exercise a single hop.
     ///
     /// # Parameters
     /// - `plan` - Selected hop, including catalog target identity and wire model
@@ -255,14 +255,22 @@ impl ExecutorService {
     /// Execution result with AI response and metrics
     ///
     /// # Errors
-    /// Returns error if:
-    /// - Vendor not found
-    /// - Model not supported
-    /// - All retry attempts exhausted
-    /// - Non-retryable error occurs
-    /// - The shared deadline elapsed or the future was cancelled
+    /// Returns error if retries are exhausted, a non-retryable error occurs,
+    /// the shared deadline elapsed, or provider Retry-After cannot fit.
+    pub(crate) async fn execute_with_retry(
+        &self,
+        plan: &RoutePlan,
+        params: &ExecutionParams,
+        deadline: RequestDeadline,
+    ) -> Result<ExecutionResult, ExecutorError> {
+        let mut budget = AttemptBudget::new(self.config.max_total_attempts);
+        self.execute_attempts(plan, params, deadline, &mut budget)
+            .await
+    }
+
+    /// Runs bounded attempts for one hop against the shared request budget.
     #[tracing::instrument(
-        skip(self, params, deadline),
+        skip(self, params, deadline, budget),
         fields(
             vendor_id = %plan.vendor_id,
             target_id = %plan.target_id,
@@ -270,52 +278,90 @@ impl ExecutorService {
             max_retries = self.config.max_retries,
         )
     )]
-    pub(crate) async fn execute_with_retry(
+    async fn execute_attempts(
         &self,
         plan: &RoutePlan,
         params: &ExecutionParams,
         deadline: RequestDeadline,
+        budget: &mut AttemptBudget,
     ) -> Result<ExecutionResult, ExecutorError> {
         let max_retries = self.config.max_retries;
         let mut last_error = None;
         let mut retry_after_ms: Option<u64> = None;
         let max_attempt = Duration::from_millis(self.config.timeout_ms);
+        let backoff_cap = Duration::from_millis(self.config.backoff_cap_ms);
 
         for attempt in 0..=max_retries {
             if deadline.is_expired() {
                 return Err(ExecutorError::DeadlineExceeded);
             }
+            if budget.remaining() == 0 {
+                break;
+            }
 
             if attempt > 0 {
-                let backoff_ms = Self::jittered_backoff_ms(attempt);
-                let delay_ms = retry_after_ms
-                    .take()
-                    .map(|ms| ms.max(backoff_ms))
-                    .unwrap_or(backoff_ms);
-                tracing::info!(
-                    "Retrying execution: attempt {}/{}, vendor={}, target={}, model={}, backoff={}ms",
+                let provider_delay = retry_after_ms.take().map(Duration::from_millis);
+                let planned = plan_retry_delay(
                     attempt,
-                    max_retries,
-                    plan.vendor_id,
-                    plan.target_id,
-                    plan.model_id,
-                    delay_ms
+                    backoff_cap,
+                    provider_delay,
+                    &mut SystemJitter,
                 );
-                if delay_ms > 0 {
-                    let delay = Duration::from_millis(delay_ms);
-                    if tokio::time::timeout_at(
-                        deadline.as_instant(),
-                        tokio::time::sleep(delay),
-                    )
-                    .await
-                    .is_err()
-                    {
+                match evaluate_retry_delay(planned, deadline.remaining()) {
+                    Ok(wait) if wait.is_zero() => {}
+                    Ok(wait) => {
+                        tracing::info!(
+                            attempt,
+                            max_retries,
+                            vendor_id = %plan.vendor_id,
+                            target_id = %plan.target_id,
+                            model_id = %plan.model_id,
+                            delay_ms = wait.as_millis() as u64,
+                            "Retrying execution"
+                        );
+                        if tokio::time::timeout_at(
+                            deadline.as_instant(),
+                            tokio::time::sleep(wait),
+                        )
+                        .await
+                        .is_err()
+                        {
+                            return Err(ExecutorError::DeadlineExceeded);
+                        }
+                    }
+                    Err(DelayError::ProviderDelayCannotFit { retry_after }) => {
+                        tracing::info!(
+                            vendor_id = %plan.vendor_id,
+                            target_id = %plan.target_id,
+                            model_id = %plan.model_id,
+                            retry_after_ms = retry_after.as_millis() as u64,
+                            remaining_ms = deadline.remaining().as_millis() as u64,
+                            "Provider retry delay cannot fit remaining deadline"
+                        );
+                        return Err(match last_error.take() {
+                            Some(error @ ExecutorError::RateLimitExceeded { .. }) => {
+                                error
+                            }
+                            _ => ExecutorError::RateLimitExceeded {
+                                vendor: plan.vendor_id.clone(),
+                                retry_after_ms: Some(
+                                    u64::try_from(retry_after.as_millis())
+                                        .unwrap_or(u64::MAX),
+                                ),
+                            },
+                        });
+                    }
+                    Err(DelayError::DeadlineExceeded) => {
                         return Err(ExecutorError::DeadlineExceeded);
                     }
                 }
                 if deadline.is_expired() {
                     return Err(ExecutorError::DeadlineExceeded);
                 }
+            }
+
+            if !budget.try_start() {
+                break;
             }
 
             let Some(attempt_timeout) = deadline.cap(max_attempt) else {
@@ -330,25 +376,24 @@ impl ExecutorService {
                 Ok(Ok(result)) => {
                     if attempt > 0 {
                         tracing::info!(
-                            "Execution succeeded after {} retries: vendor={}, target={}, model={}",
                             attempt,
-                            plan.vendor_id,
-                            plan.target_id,
-                            plan.model_id
+                            vendor_id = %plan.vendor_id,
+                            target_id = %plan.target_id,
+                            model_id = %plan.model_id,
+                            "Execution succeeded after retry"
                         );
                     }
                     return Ok(result);
                 }
                 Ok(Err(e)) => {
                     if Self::is_retryable_error(&e) {
-                        let rate_limit_retry_after = match &e {
+                        retry_after_ms = match &e {
                             ExecutorError::RateLimitExceeded {
                                 retry_after_ms: Some(ms),
                                 ..
                             } => Some(*ms),
                             _ => None,
                         };
-                        retry_after_ms = rate_limit_retry_after;
                         tracing::warn!(
                             attempt,
                             max_retries,
@@ -416,23 +461,6 @@ impl ExecutorService {
         )
     }
 
-    fn jittered_backoff_ms(attempt: u32) -> u64 {
-        let exp = attempt.saturating_sub(1);
-        let base_ms = 1000_u64.saturating_mul(2_u64.saturating_pow(exp));
-        Self::pseudo_random_ms(base_ms)
-    }
-
-    fn pseudo_random_ms(upper_ms: u64) -> u64 {
-        if upper_ms == 0 {
-            return 0;
-        }
-        let nanos = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap_or_default()
-            .subsec_nanos() as u64;
-        nanos % (upper_ms + 1)
-    }
-
     /// Executes fallback plans sequentially.
     ///
     /// # Flow
@@ -447,6 +475,7 @@ impl ExecutorService {
     /// - `params` - Execution parameters (shared across all attempts)
     /// - `primary_error` - Error from primary execution attempt
     /// - `deadline` - Shared protected-request deadline
+    /// - `budget` - Shared actual-attempt counter; fallback does not reset it
     ///
     /// # Returns
     /// Execution result from first successful fallback
@@ -460,6 +489,7 @@ impl ExecutorService {
         params: &ExecutionParams,
         primary_error: ExecutorError,
         deadline: RequestDeadline,
+        budget: &mut AttemptBudget,
     ) -> Result<ExecutionResult, ExecutorError> {
         if deadline.is_expired() {
             return Err(ExecutorError::DeadlineExceeded);
@@ -498,7 +528,10 @@ impl ExecutorService {
                 fallback.model_id
             );
 
-            match self.execute_with_retry(fallback, params, deadline).await {
+            match self
+                .execute_attempts(fallback, params, deadline, budget)
+                .await
+            {
                 Ok(result) => {
                     self.record_vendor_success(&fallback.vendor_id).await;
                     tracing::info!(
@@ -622,6 +655,8 @@ impl ExecutorService {
             return Err(ExecutorError::DeadlineExceeded);
         }
 
+        let mut budget = AttemptBudget::new(self.config.max_total_attempts);
+
         if let Some(retry_after_ms) =
             self.circuit_open_retry_after_ms(&plan.vendor_id).await
         {
@@ -642,6 +677,7 @@ impl ExecutorService {
                     &params,
                     circuit_open_error,
                     deadline,
+                    &mut budget,
                 )
                 .await;
         }
@@ -655,7 +691,10 @@ impl ExecutorService {
             plan.model_id
         );
 
-        match self.execute_with_retry(plan, &params, deadline).await {
+        match self
+            .execute_attempts(plan, &params, deadline, &mut budget)
+            .await
+        {
             Ok(result) => {
                 self.record_vendor_success(&plan.vendor_id).await;
                 tracing::info!(
@@ -678,6 +717,7 @@ impl ExecutorService {
                     &params,
                     primary_error,
                     deadline,
+                    &mut budget,
                 )
                 .await
             }

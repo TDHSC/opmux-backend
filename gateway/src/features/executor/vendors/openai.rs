@@ -9,6 +9,7 @@
 
 use crate::features::executor::{
     bounded_body::read_bounded_response_body,
+    budget::retry_after_header_ms,
     config::OpenAIConfig,
     error::ExecutorError,
     models::{ExecutionParams, ExecutionResult, Message},
@@ -19,7 +20,7 @@ use crate::features::executor::{
 use async_trait::async_trait;
 use reqwest::{header, Client, StatusCode};
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 /// OpenAI Chat Completions API request.
 #[derive(Debug, Deserialize, Serialize)]
@@ -130,8 +131,7 @@ impl LLMVendor for OpenAIVendor {
                     .headers()
                     .get(header::RETRY_AFTER)
                     .and_then(|value| value.to_str().ok())
-                    .and_then(|value| value.parse::<u64>().ok())
-                    .map(|seconds| seconds.saturating_mul(1000))
+                    .and_then(|value| retry_after_header_ms(value, SystemTime::now()))
             } else {
                 None
             };

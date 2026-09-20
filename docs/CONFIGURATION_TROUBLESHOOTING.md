@@ -63,8 +63,16 @@ the provider response, including when `Content-Length` is missing or chunked.
 `protected_request_deadline_ms` is one monotonic budget for authentication, body extraction, and
 execution; later layers receive remaining time rather than a reset timeout. Expiry returns
 `504 DEADLINE_EXCEEDED` and does not start additional provider attempts. `/health` and `/metrics`
-are outside that deadline. Fallback execution, target circuits, concurrency admission, and inbound
-raw-body enforcement are later milestones.
+are outside that deadline. Per-attempt timeout is `min(max_attempt_timeout_ms, remaining deadline)`.
+`retries_per_target` bounds extra calls on one target after the first; `max_total_attempts` bounds
+actual started provider calls across the whole request and does not replenish when execution moves
+to a fallback. Exponential backoff uses full jitter (`0..=min(1000 * 2^(retry-1), backoff_cap_ms)`),
+default cap 2000ms. Sleeps consume the overall deadline. A valid provider `Retry-After`
+(delta-seconds or HTTP-date) is the minimum wait and is not shortened by the backoff cap; if that
+wait cannot finish in the remaining time, the gateway returns `429 UPSTREAM_RATE_LIMIT` without an
+extra attempt and without claiming deadline expiry. Malformed `Retry-After` values use the capped
+jitter, not an unbounded sleep. Fallback execution, target circuits, concurrency admission, and
+inbound raw-body enforcement are later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |

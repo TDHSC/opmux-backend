@@ -146,10 +146,14 @@ pub struct ExecutorConfig {
     pub openai: Option<OpenAIConfig>,
     /// Anthropic API key (future)
     pub anthropic_api_key: Option<String>,
-    /// Request timeout in milliseconds
+    /// Per-attempt timeout in milliseconds, capped by remaining deadline
     pub timeout_ms: u64,
-    /// Maximum number of retries
+    /// Maximum retries after the first attempt on one target
     pub max_retries: u32,
+    /// Maximum actual provider calls across primary and fallback hops
+    pub max_total_attempts: u32,
+    /// Exponential full-jitter cap in milliseconds
+    pub backoff_cap_ms: u64,
 }
 
 impl fmt::Debug for ExecutorConfig {
@@ -162,6 +166,8 @@ impl fmt::Debug for ExecutorConfig {
             )
             .field("timeout_ms", &self.timeout_ms)
             .field("max_retries", &self.max_retries)
+            .field("max_total_attempts", &self.max_total_attempts)
+            .field("backoff_cap_ms", &self.backoff_cap_ms)
             .finish()
     }
 }
@@ -196,6 +202,23 @@ impl ExecutorConfig {
             anthropic_api_key: None,
             timeout_ms: settings.limits.max_attempt_timeout_ms(),
             max_retries: settings.limits.retries_per_target,
+            max_total_attempts: settings.limits.max_total_attempts,
+            backoff_cap_ms: settings.limits.backoff_cap_ms(),
+        }
+    }
+
+    /// Policy used by mock executor services in unit tests.
+    ///
+    /// `max_total_attempts` allows the configured per-target retries so those
+    /// tests are not silently capped by the production global budget.
+    pub(crate) fn mock_policy(max_retries: u32, timeout_ms: u64) -> Self {
+        Self {
+            openai: None,
+            anthropic_api_key: None,
+            timeout_ms,
+            max_retries,
+            max_total_attempts: max_retries.saturating_add(1).max(1),
+            backoff_cap_ms: 2_000,
         }
     }
 
@@ -220,11 +243,23 @@ impl ExecutorConfig {
             .and_then(|v| v.parse().ok())
             .unwrap_or(3); // Default: 3 retries
 
+        let max_total_attempts = env::var("OPMUX_MAX_TOTAL_ATTEMPTS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(3);
+
+        let backoff_cap_ms = env::var("OPMUX_BACKOFF_CAP_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2_000);
+
         Self {
             openai,
             anthropic_api_key,
             timeout_ms,
             max_retries,
+            max_total_attempts,
+            backoff_cap_ms,
         }
     }
 
@@ -257,17 +292,14 @@ impl ExecutorConfig {
 
         tracing::info!("Executor timeout: {}ms", self.timeout_ms);
         tracing::info!("Executor max retries: {}", self.max_retries);
+        tracing::info!("Executor max total attempts: {}", self.max_total_attempts);
+        tracing::info!("Executor backoff cap: {}ms", self.backoff_cap_ms);
     }
 }
 
 impl Default for ExecutorConfig {
     fn default() -> Self {
-        Self {
-            openai: None,
-            anthropic_api_key: None,
-            timeout_ms: 30000,
-            max_retries: 3,
-        }
+        Self::mock_policy(3, 30_000)
     }
 }
 
@@ -308,6 +340,10 @@ mod tests {
             openai.max_response_bytes,
             settings.limits.max_upstream_response_bytes
         );
+        assert_eq!(config.timeout_ms, 10_000);
+        assert_eq!(config.max_retries, 1);
+        assert_eq!(config.max_total_attempts, 3);
+        assert_eq!(config.backoff_cap_ms, 2_000);
     }
 
     #[test]

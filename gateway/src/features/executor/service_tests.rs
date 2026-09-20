@@ -154,9 +154,7 @@ mod tests {
     fn create_test_service() -> ExecutorService {
         let config = ExecutorConfig {
             openai: Some(OpenAIConfig::for_tests()),
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
+            ..ExecutorConfig::mock_policy(3, 30_000)
         };
         ExecutorService::from_config(config).expect("Failed to create test service")
     }
@@ -170,12 +168,7 @@ mod tests {
             vendor_map.insert(id, vendor);
         }
 
-        let config = ExecutorConfig {
-            openai: None,
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
-        };
+        let config = ExecutorConfig::mock_policy(3, 30_000);
 
         let repository = ExecutorRepository {
             vendors: vendor_map,
@@ -194,9 +187,7 @@ mod tests {
     fn test_from_config_success() {
         let config = ExecutorConfig {
             openai: Some(OpenAIConfig::for_tests()),
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
+            ..ExecutorConfig::mock_policy(3, 30_000)
         };
 
         let result = ExecutorService::from_config(config);
@@ -208,12 +199,7 @@ mod tests {
 
     #[test]
     fn test_from_config_no_vendors() {
-        let config = ExecutorConfig {
-            openai: None,
-            anthropic_api_key: None,
-            max_retries: 3,
-            timeout_ms: 30000,
-        };
+        let config = ExecutorConfig::mock_policy(3, 30_000);
 
         let result = ExecutorService::from_config(config);
         assert!(result.is_err());
@@ -318,8 +304,15 @@ mod tests {
         };
         let primary_error = ExecutorError::ApiCallFailed("Primary failed".to_string());
 
+        let mut budget = crate::features::executor::budget::AttemptBudget::new(3);
         let result = service
-            .execute_fallbacks(&[], &params, primary_error.clone(), generous_deadline())
+            .execute_fallbacks(
+                &[],
+                &params,
+                primary_error.clone(),
+                generous_deadline(),
+                &mut budget,
+            )
             .await;
 
         assert!(result.is_err());
@@ -699,12 +692,7 @@ mod tests {
         let repository = ExecutorRepository { vendors };
         let service = ExecutorService {
             repository: Arc::new(repository),
-            config: ExecutorConfig {
-                openai: None,
-                anthropic_api_key: None,
-                timeout_ms: 30000,
-                max_retries: 3,
-            },
+            config: ExecutorConfig::mock_policy(3, 30_000),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_open_duration: Duration::from_secs(30),
@@ -781,12 +769,7 @@ mod tests {
         let repository = ExecutorRepository { vendors };
         let service = ExecutorService {
             repository: Arc::new(repository),
-            config: ExecutorConfig {
-                openai: None,
-                anthropic_api_key: None,
-                timeout_ms: 30000,
-                max_retries: 3,
-            },
+            config: ExecutorConfig::mock_policy(3, 30_000),
             circuit_breakers: Arc::new(RwLock::new(HashMap::new())),
             circuit_breaker_failure_threshold: 3,
             circuit_breaker_open_duration: Duration::from_secs(30),
