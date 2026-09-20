@@ -14,6 +14,7 @@ adapter**, not only `LLMVendor` mocks.
 | `openai_adapter_http_test.rs`                            | Actual OpenAI adapter success, scripted 500, inherited env/proxy isolation                                                                                         |
 | `observability_integration_test.rs`                      | Correlation, metrics, health/ready, circuit-open via the shared router                                                                                             |
 | `config_startup_test.rs` / `startup_integration_test.rs` | Binary catalog/logging startup with canonical `OPMUX_CONFIG_FILE`                                                                                                  |
+| `auth_store_test.rs`                                     | Real owned-Supabase schema, grant, constraint, and SQLx store tests. Requires `DATABASE_URL`; does not skip                                                        |
 | `support/`                                               | Environment isolation, loopback simulator with request capture and scripted replies                                                                                |
 
 Fixtures bind `127.0.0.1` with an OS-assigned port and abort the owned task on drop. They clear
@@ -28,6 +29,22 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_P
 ```
 
 Do not treat these simulator results as live OpenAI verification.
+
+## Persistence tests (owned local Supabase)
+
+`auth_store_test.rs` talks to the owned Postgres on `127.0.0.1:55432`. Apply migrations first, then
+inject `DATABASE_URL` without printing it:
+
+```bash
+bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' \
+  cargo test -p gateway --test auth_store_test
+```
+
+If the database is down or the schema is missing, these tests fail with a setup message. They are
+not ignored and they do not skip.
 
 ## Deferred live-provider tests (unrun)
 

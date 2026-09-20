@@ -17,3 +17,4 @@ tower-http = "0.6"
 uuid = "1.11"
 axum-prometheus = "0.7"
 chrono = "0.4"
+sqlx = { version = "=0.8.6", default-features = false, features = ["runtime-tokio", "tls-rustls-ring", "postgres", "uuid", "chrono", "json"] }

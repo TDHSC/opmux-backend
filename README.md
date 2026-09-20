@@ -12,10 +12,12 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
   configurable metrics endpoint (`/metrics` by default).
 
-**Implementation boundary:** API key lookup currently uses a mock repository; conversation context
-and routing optimization also use mock data. Real upstream LLM execution does not make the entire
-pipeline production-ready. Planned Memory/Router/Rewrite/Validation microservices and additional
-vendors should not be treated as implemented capabilities.
+**Implementation boundary:** Request authentication still uses a mock repository. A private Supabase
+schema and SQLx store exist for clients and API-key digests, but they are not yet wired into HTTP
+authentication or the operator CLI. Conversation context and routing optimization also use mock
+data. Real upstream LLM execution does not make the entire pipeline production-ready. Planned
+Memory/Router/Rewrite/Validation microservices and additional vendors should not be treated as
+implemented capabilities.
 
 ## Getting Started
 
@@ -95,6 +97,35 @@ The Rust binary reads **process environment variables** and does not automatical
 Copying [.env.example](.env.example) to `.env` alone will not configure `cargo run`; export the
 needed variables or explicitly load them with your local tooling. The template includes
 planned-service settings, so its presence is not evidence that those integrations are implemented.
+
+### Local persistence (Supabase)
+
+API-key persistence uses SQLx 0.8.6 against Postgres. Schema lives in
+[supabase/migrations](supabase/migrations) and is tracked by Supabase CLI 2.117.x, not a SQLx
+`_sqlx_migrations` ledger. Apply migrations as an explicit setup step; running replicas must not
+migrate on startup.
+
+```bash
+bash scripts/db-migrate.sh
+```
+
+The script uses `DATABASE_URL` when set, otherwise the mission-owned loopback database at
+`127.0.0.1:55432`. Do not run `supabase start` from this repository (that would create a second
+stack). Do not use hosted project linking. Persistence tests fail if the owned database is missing;
+they do not skip.
+
+Gateway startup still does not require `DATABASE_URL`. Persistence tests and later auth wiring do.
+Use a direct or session-mode pooler URL for hosted Postgres (`sslmode=verify-full` plus a CA).
+Transaction-mode poolers are incompatible with SQLx prepared statements. Platform `anon` /
+`service_role` keys are not Opmux API keys and cannot read `opmux_private` digests.
+
+Wrap workspace tests so they receive the owned database URL:
+
+```bash
+bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
+  -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
+  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' cargo test
+```
 
 Logging defaults to JSON at `info` level. Set `LOG_FORMAT=pretty` for readable local logs and
 `RUST_LOG=gateway=debug` for more detail. `RUST_LOG` overrides legacy `LOG_LEVEL`; `LOG_FORMAT`
@@ -193,7 +224,8 @@ opmux-backend/
 ├── common/             # Shared crate
 ├── gateway/            # Axum service crate
 │   ├── src/            # Startup, core, middleware, and feature modules
-│   └── tests/          # HTTP fixtures, observability, startup, deferred live tests
+│   └── tests/          # HTTP fixtures, persistence, observability, deferred live tests
+├── supabase/           # Versioned SQL migrations (Supabase history, not SQLx)
 ├── docs/               # API and operations documentation
 │   └── rules/          # Engineering rules
 ├── specs/              # Requirements, designs, and implementation tasks

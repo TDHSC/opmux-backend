@@ -24,8 +24,10 @@ reqwest = { version = "0.11", features = ["json"] }
 tower-http = { workspace = true, features = ["trace", "request-id"] }
 uuid = { workspace = true, features = ["v4", "serde"] }
 axum-prometheus = { workspace = true }
+sqlx = { workspace = true }
 
 [dev-dependencies]
 tower = { version = "0.4", features = ["util"] }
 tokio = { workspace = true, features = ["test-util"] }
 serial_test = "3.2.0"
+sqlx = { workspace = true }

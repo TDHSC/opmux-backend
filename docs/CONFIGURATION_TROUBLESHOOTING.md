@@ -2,7 +2,9 @@
 
 The gateway reads **process environment** plus a non-secret JSON catalog selected by
 `OPMUX_CONFIG_FILE`. Copying `.env` is not configuration. Credentials and database URLs stay in the
-environment; the catalog is not a secret store. `DATABASE_URL` is not required in this milestone.
+environment; the catalog is not a secret store. `DATABASE_URL` is required for persistence tests and
+migration apply. Gateway startup still uses mock authentication and does not yet require a database
+URL.
 
 Example catalog prices and model names are illustrative samples. They are not current provider
 billing or model-availability facts. Estimated cost for a successful response is calculated later
@@ -108,6 +110,18 @@ Observability/performance:
 - `INGRESS_SLOW_REQUEST_THRESHOLD_MS` (default `1000`)
 
 TLS certificate and hostname verification stay enabled. There is no insecure-TLS setting.
+
+Persistence (SQLx 0.8.6, not required at gateway bind yet):
+
+- `DATABASE_URL` (PostgreSQL URL; persistence tests fail if unset or unreachable)
+- `OPMUX_DB_MAX_CONNECTIONS` (optional, default 10, max 32)
+- `OPMUX_DB_ACQUIRE_TIMEOUT_MS` (optional, default 3000, 100–60000)
+- `OPMUX_DB_STATEMENT_TIMEOUT_MS` (optional, default 5000, 100–60000)
+
+Local loopback may use `sslmode=disable`. Hosted connections should use a direct or session-mode
+pooler URL with `sslmode=verify-full`. Transaction-mode poolers are not supported. Apply schema with
+`bash scripts/db-migrate.sh`; do not migrate from every replica and do not `supabase start` a second
+database from this repository.
 
 ## Troubleshooting quick reference
 
