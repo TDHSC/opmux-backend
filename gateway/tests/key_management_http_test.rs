@@ -1,5 +1,5 @@
-//! Production-router HTTP tests for management/inference capabilities and
-//! same-tenant key creation.
+//! Production-router HTTP tests for management/inference capabilities,
+//! same-tenant key creation, and bounded tenant inventory.
 //!
 //! Capture issued credentials privately. Do not print secrets, digests, or
 //! bodies that contain them.
@@ -10,11 +10,13 @@ use axum::{
     body::Body,
     http::{Request, StatusCode},
 };
+use chrono::{Duration, Utc};
 use gateway::{
     core::metrics::MetricsConfig,
     features::auth::{
-        hash_credential, parse_credential_payload, ApiKeyKind, AuthService,
-        PostgresAuthStore, ProvisioningService, CREDENTIAL_PREFIX, SECRET_PAYLOAD_LEN,
+        hash_credential, parse_credential_payload, ApiKeyKind, AuthService, AuthStore,
+        KeyDigest, NewApiKey, PostgresAuthStore, ProvisioningService, CREDENTIAL_PREFIX,
+        KEY_DIGEST_LEN, MAX_KEY_LIST_LIMIT, SECRET_PAYLOAD_LEN,
     },
 };
 use serial_test::serial;
@@ -174,14 +176,109 @@ fn keys_request(
     api_key: Option<&str>,
     body: Option<String>,
 ) -> Request<Body> {
+    keys_request_uri(method, "/api/v1/auth/keys", api_key, body)
+}
+
+fn keys_request_uri(
+    method: &str,
+    uri: &str,
+    api_key: Option<&str>,
+    body: Option<String>,
+) -> Request<Body> {
     let mut builder = Request::builder()
         .method(method)
-        .uri("/api/v1/auth/keys")
+        .uri(uri)
         .header("content-type", "application/json");
     if let Some(key) = api_key {
         builder = builder.header("x-api-key", key);
     }
     builder.body(Body::from(body.unwrap_or_default())).unwrap()
+}
+
+fn keys_get(api_key: Option<&str>, query: &str) -> Request<Body> {
+    let uri = if query.is_empty() {
+        "/api/v1/auth/keys".to_string()
+    } else {
+        format!("/api/v1/auth/keys?{query}")
+    };
+    keys_request_uri("GET", &uri, api_key, None)
+}
+
+fn unique_digest() -> KeyDigest {
+    let mut bytes = [0_u8; KEY_DIGEST_LEN];
+    let id = Uuid::new_v4();
+    bytes[..16].copy_from_slice(id.as_bytes());
+    bytes[16..].copy_from_slice(Uuid::new_v4().as_bytes());
+    KeyDigest::from_bytes(bytes)
+}
+
+async fn insert_named_key(
+    store: &PostgresAuthStore,
+    client_id: Uuid,
+    name: &str,
+    kind: ApiKeyKind,
+    created_at: chrono::DateTime<Utc>,
+) -> (Uuid, KeyDigest) {
+    let digest = unique_digest();
+    let record = store
+        .insert_key(NewApiKey {
+            id: Uuid::new_v4(),
+            client_id,
+            digest,
+            display_id: format!("opk_{}", Uuid::new_v4().simple()),
+            name: name.to_string(),
+            kind,
+            created_at,
+        })
+        .await
+        .expect("insert named key");
+    (record.id, digest)
+}
+
+fn parse_inventory(body: &str) -> (Vec<serde_json::Value>, bool) {
+    let json: serde_json::Value = serde_json::from_str(body).expect("inventory json");
+    let keys = json
+        .get("keys")
+        .and_then(|value| value.as_array())
+        .cloned()
+        .unwrap_or_default();
+    let has_more = json
+        .get("has_more")
+        .and_then(|value| value.as_bool())
+        .expect("has_more");
+    (keys, has_more)
+}
+
+fn listed_ids(keys: &[serde_json::Value]) -> HashSet<Uuid> {
+    keys.iter()
+        .filter_map(|item| item.get("key_id").and_then(|value| value.as_str()))
+        .filter_map(|value| Uuid::parse_str(value).ok())
+        .collect()
+}
+
+fn assert_safe_inventory_item(item: &serde_json::Value) {
+    let object = item.as_object().expect("key object");
+    assert!(object.contains_key("client_id"));
+    assert!(object.contains_key("key_id"));
+    assert!(object.contains_key("display_id"));
+    assert!(object.contains_key("name"));
+    assert!(object.contains_key("kind"));
+    assert!(object.contains_key("created_at"));
+    assert!(object.contains_key("last_used_at"));
+    assert!(object.contains_key("revoked_at"));
+    assert!(!object.contains_key("credential"));
+    assert!(!object.contains_key("digest"));
+    assert!(!object.contains_key("key_digest"));
+    let kind = object
+        .get("kind")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    assert!(kind == "management" || kind == "inference");
+    let display_id = object
+        .get("display_id")
+        .and_then(|value| value.as_str())
+        .unwrap_or("");
+    assert!(display_id.starts_with("opk_"));
 }
 
 fn digest_hex(digest: &[u8; 32]) -> String {
@@ -581,7 +678,7 @@ async fn same_tenant_http_issuance_returns_usable_secret_once() {
 
 #[tokio::test]
 #[serial]
-async fn create_rejects_ownership_override_and_invalid_kinds() {
+async fn ownership_injection_and_invalid_kinds_cannot_redirect_creation_or_listing() {
     isolate_provider_environment();
     let fixture = TwoTenantFixture::provision().await;
     let simulator = OpenAiSimulator::start().await;
@@ -630,6 +727,44 @@ async fn create_rejects_ownership_override_and_invalid_kinds() {
     assert_eq!(inference_claim.status(), StatusCode::FORBIDDEN);
     let _ = body_string(inference_claim).await;
 
+    let list_selectors = [
+        format!("client_id={}", fixture.b_management.client_id),
+        format!("tenant_id={}", fixture.b_management.client_id),
+        "kind=admin".to_string(),
+        "limit=0".to_string(),
+        "limit=-1".to_string(),
+        format!("limit={}", MAX_KEY_LIST_LIMIT + 1),
+        "limit=abc".to_string(),
+        "offset=-1".to_string(),
+        "offset=nope".to_string(),
+        "unknown=1".to_string(),
+        "limit=1&limit=2".to_string(),
+    ];
+    for query in list_selectors {
+        let response = app
+            .clone()
+            .oneshot(keys_get(Some(&fixture.a_management.credential), &query))
+            .await
+            .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "list query {query} must fail"
+        );
+        let _ = body_string(response).await;
+    }
+
+    let inference_list_inject = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_inference.credential),
+            &format!("client_id={}", fixture.b_management.client_id),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(inference_list_inject.status(), StatusCode::FORBIDDEN);
+    let _ = body_string(inference_list_inject).await;
+
     assert_eq!(
         key_count(&fixture.pool, fixture.a_management.client_id).await,
         before_a
@@ -638,6 +773,235 @@ async fn create_rejects_ownership_override_and_invalid_kinds() {
         key_count(&fixture.pool, fixture.b_management.client_id).await,
         before_b
     );
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn inventory_is_bounded_tenant_scoped_and_secret_free() {
+    isolate_provider_environment();
+    let fixture = TwoTenantFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = production_router_with_auth(
+        &simulator,
+        fixture.auth_service(),
+        MetricsConfig::disabled(),
+    );
+    let store = PostgresAuthStore::new(fixture.pool.clone());
+
+    let empty = fixture
+        .service
+        .create_tenant(&format!("keys-empty-{}", Uuid::new_v4().simple()))
+        .await
+        .expect("empty tenant");
+    let empty_client = empty.key.client_id;
+    let empty_manager_id = empty.key.key_id;
+    let empty_secret = empty.key.credential().to_string();
+
+    let empty_all = app
+        .clone()
+        .oneshot(keys_get(Some(&empty_secret), ""))
+        .await
+        .unwrap();
+    assert_eq!(empty_all.status(), StatusCode::OK);
+    let empty_all_body = body_string(empty_all).await;
+    let (empty_all_keys, empty_all_more) = parse_inventory(&empty_all_body);
+    assert_eq!(empty_all_keys.len(), 1);
+    assert!(!empty_all_more);
+    assert_eq!(
+        listed_ids(&empty_all_keys),
+        HashSet::from([empty_manager_id])
+    );
+    assert_safe_inventory_item(&empty_all_keys[0]);
+    assert!(!empty_all_body.contains("credential"));
+    assert!(!empty_all_body.contains("digest"));
+    assert!(!empty_all_body.contains("key_digest"));
+    assert!(!empty_all_body.contains("postgres://"));
+    assert!(!empty_all_body.contains(&empty_secret));
+
+    let empty_inference = app
+        .clone()
+        .oneshot(keys_get(Some(&empty_secret), "kind=inference"))
+        .await
+        .unwrap();
+    assert_eq!(empty_inference.status(), StatusCode::OK);
+    let empty_inference_body = body_string(empty_inference).await;
+    let (empty_inference_keys, empty_inference_more) =
+        parse_inventory(&empty_inference_body);
+    assert!(empty_inference_keys.is_empty());
+    assert!(!empty_inference_more);
+    assert!(!empty_inference_body.contains(&empty_secret));
+
+    let a_list = app
+        .clone()
+        .oneshot(keys_get(Some(&fixture.a_management.credential), ""))
+        .await
+        .unwrap();
+    assert_eq!(a_list.status(), StatusCode::OK);
+    let a_body = body_string(a_list).await;
+    let (a_keys, a_more) = parse_inventory(&a_body);
+    assert!(!a_more);
+    for item in &a_keys {
+        assert_safe_inventory_item(item);
+        assert_eq!(
+            item.get("client_id").and_then(|value| value.as_str()),
+            Some(fixture.a_management.client_id.to_string()).as_deref()
+        );
+    }
+    let a_ids = listed_ids(&a_keys);
+    assert_eq!(
+        a_ids,
+        HashSet::from([fixture.a_management.key_id, fixture.a_inference.key_id])
+    );
+    assert!(!a_ids.contains(&fixture.b_management.key_id));
+    assert!(!a_ids.contains(&fixture.b_inference.key_id));
+    assert!(!a_body.contains(&fixture.a_management.credential));
+    assert!(!a_body.contains(&fixture.b_management.credential));
+
+    let b_list = app
+        .clone()
+        .oneshot(keys_get(Some(&fixture.b_management.credential), ""))
+        .await
+        .unwrap();
+    assert_eq!(b_list.status(), StatusCode::OK);
+    let b_body = body_string(b_list).await;
+    let (b_keys, b_more) = parse_inventory(&b_body);
+    assert!(!b_more);
+    let b_ids = listed_ids(&b_keys);
+    assert_eq!(
+        b_ids,
+        HashSet::from([fixture.b_management.key_id, fixture.b_inference.key_id])
+    );
+    assert!(!b_ids.contains(&fixture.a_management.key_id));
+    assert!(!b_ids.contains(&fixture.a_inference.key_id));
+
+    let a_inference_only = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_management.credential),
+            "kind=inference",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(a_inference_only.status(), StatusCode::OK);
+    let a_inference_body = body_string(a_inference_only).await;
+    let (a_inference_keys, a_inference_more) = parse_inventory(&a_inference_body);
+    assert!(!a_inference_more);
+    assert_eq!(
+        listed_ids(&a_inference_keys),
+        HashSet::from([fixture.a_inference.key_id])
+    );
+
+    let page = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_management.credential),
+            "limit=1&offset=0",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(page.status(), StatusCode::OK);
+    let page_body = body_string(page).await;
+    let (page_keys, page_more) = parse_inventory(&page_body);
+    assert_eq!(page_keys.len(), 1);
+    assert!(page_more);
+    let first_id = listed_ids(&page_keys);
+    let next = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_management.credential),
+            "limit=1&offset=1",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(next.status(), StatusCode::OK);
+    let next_body = body_string(next).await;
+    let (next_keys, next_more) = parse_inventory(&next_body);
+    assert_eq!(next_keys.len(), 1);
+    assert!(!next_more);
+    let second_id = listed_ids(&next_keys);
+    assert!(first_id.is_disjoint(&second_id));
+    assert_eq!(
+        first_id.union(&second_id).copied().collect::<HashSet<_>>(),
+        a_ids
+    );
+
+    let extra_count = (MAX_KEY_LIST_LIMIT + 1) as usize;
+    let base = Utc::now();
+    let mut extra_ids = Vec::with_capacity(extra_count);
+    let mut extra_digests = Vec::with_capacity(extra_count);
+    for index in 0..extra_count {
+        let (id, digest) = insert_named_key(
+            &store,
+            fixture.a_management.client_id,
+            &format!("bound-{index}"),
+            ApiKeyKind::Inference,
+            base + Duration::milliseconds(index as i64),
+        )
+        .await;
+        extra_ids.push(id);
+        extra_digests.push(digest);
+    }
+    let newest_bound: HashSet<Uuid> = extra_ids[1..].iter().copied().collect();
+    let bound_list = app
+        .clone()
+        .oneshot(keys_get(Some(&fixture.a_management.credential), ""))
+        .await
+        .unwrap();
+    assert_eq!(bound_list.status(), StatusCode::OK);
+    let bound_body = body_string(bound_list).await;
+    let (bound_keys, bound_more) = parse_inventory(&bound_body);
+    assert_eq!(bound_keys.len(), MAX_KEY_LIST_LIMIT as usize);
+    assert!(bound_more);
+    assert_eq!(listed_ids(&bound_keys), newest_bound);
+    assert!(!listed_ids(&bound_keys).contains(&extra_ids[0]));
+    assert!(!listed_ids(&bound_keys).contains(&fixture.b_management.key_id));
+    for item in &bound_keys {
+        assert_safe_inventory_item(item);
+    }
+    for digest in &extra_digests {
+        assert!(omits_secret_and_digest(
+            &bound_body,
+            &fixture.a_management.credential,
+            digest.as_bytes()
+        ));
+    }
+    assert!(!bound_body.contains("credential"));
+    assert!(!bound_body.contains("postgres://"));
+
+    let remainder = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_management.credential),
+            &format!("limit={MAX_KEY_LIST_LIMIT}&offset={MAX_KEY_LIST_LIMIT}"),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(remainder.status(), StatusCode::OK);
+    let remainder_body = body_string(remainder).await;
+    let (remainder_keys, remainder_more) = parse_inventory(&remainder_body);
+    assert_eq!(remainder_keys.len(), 3);
+    assert!(!remainder_more);
+    let remainder_ids = listed_ids(&remainder_keys);
+    assert!(remainder_ids.contains(&extra_ids[0]));
+    assert!(remainder_ids.contains(&fixture.a_management.key_id));
+    assert!(remainder_ids.contains(&fixture.a_inference.key_id));
+
+    let past_end = app
+        .clone()
+        .oneshot(keys_get(
+            Some(&fixture.a_management.credential),
+            "offset=1000",
+        ))
+        .await
+        .unwrap();
+    assert_eq!(past_end.status(), StatusCode::OK);
+    let past_end_body = body_string(past_end).await;
+    let (past_end_keys, past_end_more) = parse_inventory(&past_end_body);
+    assert!(past_end_keys.is_empty());
+    assert!(!past_end_more);
+
+    cleanup_clients(&fixture.pool, &[empty_client]).await;
     fixture.drop_rows().await;
 }
 

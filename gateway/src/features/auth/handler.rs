@@ -2,18 +2,21 @@
 //!
 //! Management credentials may create and list keys for the authenticated
 //! tenant. Inference credentials receive 403. Ownership and kind come from
-//! `AuthContext`, never from request fields.
+//! `AuthContext`, never from request body or query fields. Inventory paging
+//! uses documented `limit`/`offset`/`kind` query parameters.
 
 use super::{
-    persist::ApiKeyKind, AuthContext, AuthError, AuthService, IssuedKey, KeyInventory,
+    persist::{ApiKeyKind, MAX_KEY_LIST_LIMIT},
+    AuthContext, AuthError, AuthService, IssuedKey, KeyInventory, KeyListOptions,
 };
 use crate::AppState;
 use axum::{
-    extract::{Json, State},
+    extract::{Json, RawQuery, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json as ResponseJson, Response},
 };
 use serde_json::Value;
+use std::collections::HashSet;
 
 /// Creates a management or inference key in the authenticated tenant.
 ///
@@ -62,15 +65,18 @@ pub async fn create_api_key(
 /// # Parameters
 /// - `state` - Injected application state
 /// - `auth` - Authenticated tenant, key, and kind
+/// - `query` - Optional `limit`, `offset`, and `kind`; ownership selectors
+///   are rejected
 ///
 /// # Returns
-/// Bounded same-tenant inventory
+/// Bounded same-tenant inventory with continuation flag
 ///
 /// # Errors
 /// - `401` from authentication middleware for missing/unknown credentials
 /// - `403` when the caller is not a management key
+/// - `400` for ownership selectors, unknown parameters, or invalid paging
 #[tracing::instrument(
-    skip(state, auth),
+    skip(state, auth, query),
     fields(
         endpoint = "/api/v1/auth/keys",
         client_id = %auth.client_id,
@@ -80,8 +86,13 @@ pub async fn create_api_key(
 pub async fn list_api_keys(
     State(state): State<AppState>,
     auth: AuthContext,
+    RawQuery(query): RawQuery,
 ) -> Result<ResponseJson<KeyInventory>, AuthError> {
-    Ok(ResponseJson(state.auth_service.list_keys(&auth).await?))
+    AuthService::require_management(&auth)?;
+    let options = parse_list_keys_query(query.as_deref())?;
+    Ok(ResponseJson(
+        state.auth_service.list_keys(&auth, options).await?,
+    ))
 }
 
 fn created_key_response(issued: IssuedKey) -> Response {
@@ -129,6 +140,79 @@ fn parse_create_key_request(body: &Value) -> Result<(String, ApiKeyKind), AuthEr
     Ok((name.to_string(), kind))
 }
 
+/// Parses inventory query parameters.
+///
+/// Ownership fields (`client_id`, `tenant_id`), unknown names, duplicates,
+/// and invalid paging/kind values are rejected. Tenant scope is not read
+/// from the query string.
+fn parse_list_keys_query(raw: Option<&str>) -> Result<KeyListOptions, AuthError> {
+    let mut options = KeyListOptions::default();
+    let Some(raw) = raw.filter(|value| !value.is_empty()) else {
+        return Ok(options);
+    };
+    let mut seen = HashSet::new();
+    for pair in raw.split('&') {
+        if pair.is_empty() {
+            continue;
+        }
+        let (key, value) = pair.split_once('=').unwrap_or((pair, ""));
+        if !seen.insert(key) {
+            return Err(AuthError::InvalidInput(
+                "duplicate query parameter is not allowed".to_string(),
+            ));
+        }
+        match key {
+            "client_id" | "tenant_id" => {
+                return Err(AuthError::InvalidInput(
+                    "key ownership cannot be set in the query".to_string(),
+                ));
+            }
+            "limit" => {
+                let limit = parse_i64_query(value, "limit")?;
+                if !(1..=MAX_KEY_LIST_LIMIT).contains(&limit) {
+                    return Err(AuthError::InvalidInput(format!(
+                        "limit must be between 1 and {MAX_KEY_LIST_LIMIT}"
+                    )));
+                }
+                options.limit = limit;
+            }
+            "offset" => {
+                let offset = parse_i64_query(value, "offset")?;
+                if offset < 0 {
+                    return Err(AuthError::InvalidInput(
+                        "offset must be greater than or equal to 0".to_string(),
+                    ));
+                }
+                options.offset = offset;
+            }
+            "kind" => {
+                options.kind = Some(parse_kind_query(value)?);
+            }
+            _ => {
+                return Err(AuthError::InvalidInput(
+                    "unknown query parameter is not allowed".to_string(),
+                ));
+            }
+        }
+    }
+    Ok(options)
+}
+
+fn parse_i64_query(raw: &str, field: &str) -> Result<i64, AuthError> {
+    raw.parse::<i64>()
+        .map_err(|_| AuthError::InvalidInput(format!("{field} must be an integer")))
+}
+
+fn parse_kind_query(raw: &str) -> Result<ApiKeyKind, AuthError> {
+    match raw {
+        "management" => Ok(ApiKeyKind::Management),
+        "inference" => Ok(ApiKeyKind::Inference),
+        _ => Err(AuthError::InvalidInput(
+            "kind must be management or inference".to_string(),
+        )),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -169,5 +253,39 @@ mod tests {
         }))
         .expect_err("admin");
         assert!(matches!(admin, AuthError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn parse_list_query_defaults_and_accepts_paging() {
+        let defaults = parse_list_keys_query(None).expect("empty");
+        assert_eq!(defaults.limit, MAX_KEY_LIST_LIMIT);
+        assert_eq!(defaults.offset, 0);
+        assert_eq!(defaults.kind, None);
+
+        let page =
+            parse_list_keys_query(Some("limit=2&offset=4&kind=inference")).expect("page");
+        assert_eq!(page.limit, 2);
+        assert_eq!(page.offset, 4);
+        assert_eq!(page.kind, Some(ApiKeyKind::Inference));
+    }
+
+    #[test]
+    fn parse_list_query_rejects_ownership_and_malformed_paging() {
+        for raw in [
+            "client_id=11111111-1111-1111-1111-111111111111",
+            "tenant_id=11111111-1111-1111-1111-111111111111",
+            "kind=admin",
+            "limit=0",
+            "limit=-1",
+            "limit=101",
+            "limit=abc",
+            "offset=-1",
+            "offset=nope",
+            "unknown=1",
+            "limit=1&limit=2",
+        ] {
+            let err = parse_list_keys_query(Some(raw)).expect_err(raw);
+            assert!(matches!(err, AuthError::InvalidInput(_)), "{raw}");
+        }
     }
 }

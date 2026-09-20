@@ -418,14 +418,14 @@ async fn lookup_touch_list_and_revoke_are_tenant_scoped() {
         .expect("cross-tenant touch"));
 
     let listed_a = store
-        .list_keys_for_client(tenant_a.id, MAX_KEY_LIST_LIMIT)
+        .list_keys_for_client(tenant_a.id, MAX_KEY_LIST_LIMIT, 0, None)
         .await
         .expect("list a");
     assert_eq!(listed_a.len(), 2);
     assert!(listed_a.iter().all(|key| key.client_id == tenant_a.id));
     assert!(!listed_a.iter().any(|key| key.id == key_b.id));
     let listed_b = store
-        .list_keys_for_client(tenant_b.id, 10)
+        .list_keys_for_client(tenant_b.id, 10, 0, None)
         .await
         .expect("list b");
     assert_eq!(listed_b.len(), 1);
@@ -500,16 +500,133 @@ async fn closed_pool_propagates_unavailable_instead_of_none() {
 
 #[tokio::test]
 #[serial]
+async fn list_returns_at_most_max_limit_newest_first_for_one_tenant() {
+    let pool = test_pool().await;
+    let store = PostgresAuthStore::new(pool.clone());
+    let tenant_a = new_client();
+    let tenant_b = new_client();
+    let key_a = new_key(tenant_a.id, ApiKeyKind::Management);
+    let key_b = new_key(tenant_b.id, ApiKeyKind::Management);
+    store
+        .provision_client_with_key(tenant_a.clone(), key_a.clone())
+        .await
+        .expect("tenant a");
+    store
+        .provision_client_with_key(tenant_b.clone(), key_b.clone())
+        .await
+        .expect("tenant b");
+
+    let extra = (MAX_KEY_LIST_LIMIT + 1) as usize;
+    let base = created_at() + Duration::seconds(1);
+    let mut extra_ids = Vec::with_capacity(extra);
+    for index in 0..extra {
+        let mut key = new_key(tenant_a.id, ApiKeyKind::Inference);
+        key.name = format!("bound-{index}");
+        key.created_at = base + Duration::milliseconds(index as i64);
+        extra_ids.push(key.id);
+        store.insert_key(key).await.expect("extra key");
+    }
+
+    let listed = store
+        .list_keys_for_client(tenant_a.id, MAX_KEY_LIST_LIMIT, 0, None)
+        .await
+        .expect("bound list");
+    assert_eq!(listed.len(), MAX_KEY_LIST_LIMIT as usize);
+    assert!(listed.iter().all(|key| key.client_id == tenant_a.id));
+    assert!(!listed.iter().any(|key| key.id == key_b.id));
+    assert!(!listed.iter().any(|key| key.id == extra_ids[0]));
+    assert_eq!(listed[0].id, extra_ids[extra - 1]);
+    assert!(listed.windows(2).all(|pair| {
+        pair[0].created_at > pair[1].created_at
+            || (pair[0].created_at == pair[1].created_at && pair[0].id > pair[1].id)
+    }));
+
+    cleanup(&pool, &[tenant_a.id, tenant_b.id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn list_applies_offset_and_kind_without_crossing_tenants() {
+    let pool = test_pool().await;
+    let store = PostgresAuthStore::new(pool.clone());
+    let tenant_a = new_client();
+    let tenant_b = new_client();
+    let mut key_a_mgmt = new_key(tenant_a.id, ApiKeyKind::Management);
+    let mut key_a_infer = new_key(tenant_a.id, ApiKeyKind::Inference);
+    let key_b = new_key(tenant_b.id, ApiKeyKind::Inference);
+    key_a_mgmt.created_at = created_at();
+    key_a_infer.created_at = created_at() + Duration::seconds(1);
+    store
+        .provision_client_with_key(tenant_a.clone(), key_a_mgmt.clone())
+        .await
+        .expect("tenant a");
+    store
+        .insert_key(key_a_infer.clone())
+        .await
+        .expect("a inference");
+    store
+        .provision_client_with_key(tenant_b.clone(), key_b.clone())
+        .await
+        .expect("tenant b");
+
+    let newest = store
+        .list_keys_for_client(tenant_a.id, 1, 0, None)
+        .await
+        .expect("newest");
+    assert_eq!(newest.len(), 1);
+    assert_eq!(newest[0].id, key_a_infer.id);
+
+    let older = store
+        .list_keys_for_client(tenant_a.id, 1, 1, None)
+        .await
+        .expect("offset");
+    assert_eq!(older.len(), 1);
+    assert_eq!(older[0].id, key_a_mgmt.id);
+
+    let inference_only = store
+        .list_keys_for_client(
+            tenant_a.id,
+            MAX_KEY_LIST_LIMIT,
+            0,
+            Some(ApiKeyKind::Inference),
+        )
+        .await
+        .expect("kind");
+    assert_eq!(inference_only.len(), 1);
+    assert_eq!(inference_only[0].id, key_a_infer.id);
+    assert!(!inference_only.iter().any(|key| key.id == key_b.id));
+
+    let empty = store
+        .list_keys_for_client(tenant_a.id, MAX_KEY_LIST_LIMIT, 50, None)
+        .await
+        .expect("past end");
+    assert!(empty.is_empty());
+
+    cleanup(&pool, &[tenant_a.id, tenant_b.id]).await;
+}
+
+#[tokio::test]
+#[serial]
 async fn store_trait_object_is_send_sync_and_list_limit_is_enforced() {
     let pool = test_pool().await;
     let store: Arc<dyn AuthStore> = Arc::new(PostgresAuthStore::new(pool.clone()));
     fn assert_send_sync<T: Send + Sync>(_: &T) {}
     assert_send_sync(&store);
     let err = store
-        .list_keys_for_client(Uuid::new_v4(), 0)
+        .list_keys_for_client(Uuid::new_v4(), 0, 0, None)
         .await
         .expect_err("zero limit");
     assert_eq!(err, AuthStoreError::InvalidLimit);
+    let too_large = store
+        .list_keys_for_client(Uuid::new_v4(), MAX_KEY_LIST_LIMIT + 1, 0, None)
+        .await
+        .expect_err("above max");
+    assert_eq!(too_large, AuthStoreError::InvalidLimit);
+    let negative_offset = store
+        .list_keys_for_client(Uuid::new_v4(), 1, -1, None)
+        .await
+        .expect_err("negative offset");
+    assert_eq!(negative_offset, AuthStoreError::InvalidLimit);
 }
 
 #[test]

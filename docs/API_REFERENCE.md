@@ -107,10 +107,21 @@ List keys for the authenticated tenant.
 
 - Auth: required management `X-API-Key`. Inference credentials receive `403`. Missing, unknown, and
   malformed credentials receive `401`.
-- Inventory is always the authenticated tenant. Query selectors cannot choose another client.
-- Responses include at most 100 keys, newest first, with safe metadata only: `client_id`, `key_id`,
-  `display_id`, `name`, `kind`, `created_at`, `last_used_at`, and `revoked_at`. Credentials and
-  digests are never included.
+- Inventory is always the authenticated tenant. Query selectors `client_id` and `tenant_id` are
+  rejected with `400` and cannot choose another client. Duplicate or unknown query names also return
+  `400`.
+- Optional query parameters:
+  - `limit`: integer page size from 1 through 100. Default `100`.
+  - `offset`: integer number of newest-first keys to skip. Default `0`. Must be `>= 0`.
+  - `kind`: `management` or `inference`. Omit to include both kinds.
+- Malformed `limit`, `offset`, or `kind` values return `400` and do not change inventory.
+- Responses include at most `limit` keys, newest first, with safe metadata only: `client_id`,
+  `key_id`, `display_id`, `name`, `kind`, `created_at`, `last_used_at`, and `revoked_at`.
+  Credentials and digests are never included.
+- `has_more` is `true` when additional same-tenant keys exist after this page. Continue with the
+  same `limit` and `kind`, setting `offset` to the previous `offset + limit`. When the page is
+  shorter than `limit` or `has_more` is `false`, there is no further page. This MVP does not return
+  a continuation token.
 
 Response `200 OK`:
 
@@ -127,13 +138,15 @@ Response `200 OK`:
       "last_used_at": null,
       "revoked_at": null
     }
-  ]
+  ],
+  "has_more": false
 }
 ```
 
 Response codes:
 
 - `200 OK` success
+- `400 Bad Request` ownership selector, unknown/duplicate query, or invalid paging/kind
 - `401 Unauthorized` missing/invalid API key
 - `403 Forbidden` authenticated inference key
 - `503 Service Unavailable` authentication datastore unavailable

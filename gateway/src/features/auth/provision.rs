@@ -421,6 +421,8 @@ mod tests {
             &self,
             _client_id: Uuid,
             _limit: i64,
+            _offset: i64,
+            _kind: Option<ApiKeyKind>,
         ) -> Result<Vec<ApiKeyRecord>, AuthStoreError> {
             Ok(Vec::new())
         }

@@ -2,7 +2,8 @@
 
 use super::error::AuthStoreError;
 use super::models::{
-    ApiKeyRecord, ClientRecord, KeyDigest, NewApiKey, NewClient, RevokeOutcome,
+    ApiKeyKind, ApiKeyRecord, ClientRecord, KeyDigest, NewApiKey, NewClient,
+    RevokeOutcome,
 };
 use super::store::AuthStore;
 use async_trait::async_trait;
@@ -49,6 +50,8 @@ impl AuthStore for UnavailableAuthStore {
         &self,
         _client_id: Uuid,
         _limit: i64,
+        _offset: i64,
+        _kind: Option<ApiKeyKind>,
     ) -> Result<Vec<ApiKeyRecord>, AuthStoreError> {
         Err(AuthStoreError::Unavailable)
     }

@@ -50,5 +50,6 @@ mod tests {
         assert!(source.contains("opmux_private.api_keys"));
         assert!(source.contains("WHERE client_id = $1"));
         assert!(source.contains("WHERE key_digest = $1"));
+        assert!(source.contains("LIMIT $2 OFFSET $3"));
     }
 }

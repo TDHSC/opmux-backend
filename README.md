@@ -9,7 +9,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - `POST /api/v1/route`: request orchestration protected by inference API-key authentication.
   Management credentials receive `403` and do not generate.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
-  and inventory. Creation returns the secret once with `Cache-Control: no-store`.
+  and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
+  at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
+  ownership selectors and invalid paging are rejected.
 - LLM execution: an OpenAI vendor implementation, with retry, fallback, and circuit-breaker logic in
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
@@ -152,7 +154,9 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
 
 HTTP generation authenticates persisted inference keys. Management keys may create additional
 management or inference keys for their own tenant through `POST /api/v1/auth/keys`; they cannot
-generate. Inference keys cannot create or list keys. Do not seed `test-api-key-123` or
+generate. `GET /api/v1/auth/keys` lists that tenant's safe metadata only (at most 100 keys, newest
+first; optional `limit`, `offset`, and `kind`). Ownership selectors and invalid paging/kind values
+return 400. Inference keys cannot create or list keys. Do not seed `test-api-key-123` or
 `dev-api-key-456` into `opmux_private`; those former public keys return 401.
 
 Wrap workspace tests so they receive the owned database URL. The wrapper ignores inherited remote or

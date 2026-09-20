@@ -8,7 +8,7 @@ use axum::{
 };
 use serde_json::json;
 
-use super::persist::AuthStoreError;
+use super::persist::{AuthStoreError, MAX_KEY_LIST_LIMIT};
 use super::provision::ProvisionError;
 
 /// Errors specific to authentication operations.
@@ -33,8 +33,13 @@ pub enum AuthError {
 }
 
 impl From<AuthStoreError> for AuthError {
-    fn from(_: AuthStoreError) -> Self {
-        Self::StoreUnavailable
+    fn from(error: AuthStoreError) -> Self {
+        match error {
+            AuthStoreError::InvalidLimit => Self::InvalidInput(format!(
+                "limit must be between 1 and {MAX_KEY_LIST_LIMIT}"
+            )),
+            _ => Self::StoreUnavailable,
+        }
     }
 }
 

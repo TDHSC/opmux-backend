@@ -111,21 +111,25 @@ impl AuthStore for PostgresAuthStore {
         &self,
         client_id: Uuid,
         limit: i64,
+        offset: i64,
+        kind: Option<ApiKeyKind>,
     ) -> Result<Vec<ApiKeyRecord>, AuthStoreError> {
-        if limit < 1 {
+        if !(1..=MAX_KEY_LIST_LIMIT).contains(&limit) || offset < 0 {
             return Err(AuthStoreError::InvalidLimit);
         }
-        let limit = limit.min(MAX_KEY_LIST_LIMIT);
         let sql = format!(
             "SELECT {KEY_COLUMNS}
              FROM opmux_private.api_keys
              WHERE client_id = $1
+               AND ($4::text IS NULL OR kind = $4)
              ORDER BY created_at DESC, id DESC
-             LIMIT $2"
+             LIMIT $2 OFFSET $3"
         );
         let rows = sqlx::query(&sql)
             .bind(client_id)
             .bind(limit)
+            .bind(offset)
+            .bind(kind.map(ApiKeyKind::as_str))
             .fetch_all(&self.pool)
             .await
             .map_err(AuthStoreError::from_sqlx)?;

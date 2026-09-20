@@ -33,7 +33,10 @@ Local privileges are separate:
 `POST /api/v1/auth/keys`. It is not an unauthenticated HTTP endpoint. Tenant creation inserts one
 client and one management key atomically. Existing-client issuance adds one key of an explicit
 `management` or `inference` kind. Authenticated managers may also issue keys for their own tenant
-over HTTP; ownership cannot be taken from the request body.
+over HTTP; ownership cannot be taken from the request body. `GET /api/v1/auth/keys` lists only that
+tenant's safe metadata (default/max 100, newest first). Continue with `offset` when `has_more` is
+true. Query `client_id`/`tenant_id`, unknown parameters, and invalid `limit`/`offset`/`kind` return
+400 and do not change inventory.
 
 Successful commands print one JSON object to **stdout**, including the newly generated
 `opmx_v1_<base64url>` credential exactly once. Write stdout to a fresh private file created with

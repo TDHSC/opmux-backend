@@ -6,7 +6,7 @@
 
 use super::credentials::hash_credential;
 use super::error::AuthError;
-use super::models::{ApiKeyMetadata, AuthContext, KeyInventory};
+use super::models::{ApiKeyMetadata, AuthContext, KeyInventory, KeyListOptions};
 use super::persist::{ApiKeyKind, AuthStore, AuthStoreError, MAX_KEY_LIST_LIMIT};
 use super::provision::{IssuedKey, ProvisioningService};
 use chrono::Utc;
@@ -107,26 +107,67 @@ impl AuthService {
 
     /// Lists safe key metadata for the authenticated tenant.
     ///
+    /// Tenant scope is `actor.client_id`. Paging and kind filters cannot
+    /// select another client.
+    ///
     /// # Parameters
     /// - `actor` - Authenticated management context
+    /// - `options` - Validated limit, offset, and optional kind
     ///
     /// # Returns
     /// Same-tenant inventory without credentials or digests
     ///
     /// # Errors
     /// - `CapabilityDenied` when the actor is not a management key
+    /// - `InvalidInput` when paging is outside the documented bounds
     /// - `StoreUnavailable` when persistence fails
     pub async fn list_keys(
         &self,
         actor: &AuthContext,
+        options: KeyListOptions,
     ) -> Result<KeyInventory, AuthError> {
         Self::require_management(actor)?;
+        if !(1..=MAX_KEY_LIST_LIMIT).contains(&options.limit) {
+            return Err(AuthError::InvalidInput(format!(
+                "limit must be between 1 and {MAX_KEY_LIST_LIMIT}"
+            )));
+        }
+        if options.offset < 0 {
+            return Err(AuthError::InvalidInput(
+                "offset must be greater than or equal to 0".to_string(),
+            ));
+        }
         let records = self
             .store
-            .list_keys_for_client(actor.client_id, MAX_KEY_LIST_LIMIT)
+            .list_keys_for_client(
+                actor.client_id,
+                options.limit,
+                options.offset,
+                options.kind,
+            )
             .await?;
+        let has_more = if records.len() as i64 == options.limit {
+            match options.offset.checked_add(options.limit) {
+                Some(next_offset) => {
+                    let peek = self
+                        .store
+                        .list_keys_for_client(
+                            actor.client_id,
+                            1,
+                            next_offset,
+                            options.kind,
+                        )
+                        .await?;
+                    !peek.is_empty()
+                }
+                None => false,
+            }
+        } else {
+            false
+        };
         Ok(KeyInventory {
             keys: records.into_iter().map(ApiKeyMetadata::from).collect(),
+            has_more,
         })
     }
 
@@ -227,9 +268,10 @@ mod tests {
     use super::*;
     use crate::features::auth::persist::{
         ApiKeyKind, ApiKeyRecord, AuthStoreError, ClientRecord, KeyDigest, NewApiKey,
-        NewClient, RevokeOutcome, KEY_DIGEST_LEN,
+        NewClient, RevokeOutcome, KEY_DIGEST_LEN, MAX_KEY_LIST_LIMIT,
     };
     use crate::features::auth::AuthContext;
+    use crate::features::auth::KeyListOptions;
     use async_trait::async_trait;
     use chrono::{DateTime, Utc};
     use std::collections::HashMap;
@@ -331,15 +373,32 @@ mod tests {
         async fn list_keys_for_client(
             &self,
             client_id: Uuid,
-            _limit: i64,
+            limit: i64,
+            offset: i64,
+            kind: Option<ApiKeyKind>,
         ) -> Result<Vec<ApiKeyRecord>, AuthStoreError> {
-            Ok(self
+            if !(1..=MAX_KEY_LIST_LIMIT).contains(&limit) || offset < 0 {
+                return Err(AuthStoreError::InvalidLimit);
+            }
+            let mut records: Vec<ApiKeyRecord> = self
                 .records
                 .lock()
                 .expect("lock")
                 .values()
                 .filter(|record| record.client_id == client_id)
+                .filter(|record| kind.is_none_or(|expected| record.kind == expected))
                 .cloned()
+                .collect();
+            records.sort_by(|left, right| {
+                right
+                    .created_at
+                    .cmp(&left.created_at)
+                    .then(right.id.cmp(&left.id))
+            });
+            Ok(records
+                .into_iter()
+                .skip(offset as usize)
+                .take(limit as usize)
                 .collect())
         }
 
@@ -495,13 +554,17 @@ mod tests {
         assert!(matches!(denied, AuthError::CapabilityDenied));
         assert_eq!(*store.inserts.lock().expect("lock"), 1);
 
-        let listed = svc.list_keys(&actor).await.expect("list");
+        let listed = svc
+            .list_keys(&actor, KeyListOptions::default())
+            .await
+            .expect("list");
         assert!(listed
             .keys
             .iter()
             .any(|item| item.key_id == issued.key_id && item.kind == "inference"));
+        assert!(!listed.has_more);
         let list_denied = svc
-            .list_keys(&inference_actor)
+            .list_keys(&inference_actor, KeyListOptions::default())
             .await
             .expect_err("list denied");
         assert!(matches!(list_denied, AuthError::CapabilityDenied));

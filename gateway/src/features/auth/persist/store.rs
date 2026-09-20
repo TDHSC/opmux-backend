@@ -2,7 +2,8 @@
 
 use super::error::AuthStoreError;
 use super::models::{
-    ApiKeyRecord, ClientRecord, KeyDigest, NewApiKey, NewClient, RevokeOutcome,
+    ApiKeyKind, ApiKeyRecord, ClientRecord, KeyDigest, NewApiKey, NewClient,
+    RevokeOutcome,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
@@ -64,15 +65,19 @@ pub trait AuthStore: Send + Sync {
         used_at: DateTime<Utc>,
     ) -> Result<bool, AuthStoreError>;
 
-    /// Lists keys for one tenant, newest first, up to the documented bound.
+    /// Lists keys for one tenant, newest first, up to the requested page.
     ///
     /// # Parameters
     /// - `client_id` - Tenant whose inventory is requested
-    /// - `limit` - Positive page size, clamped to `MAX_KEY_LIST_LIMIT`
+    /// - `limit` - Positive page size, at most `MAX_KEY_LIST_LIMIT`
+    /// - `offset` - Non-negative number of newest-first rows to skip
+    /// - `kind` - Optional kind filter; `None` returns both kinds
     async fn list_keys_for_client(
         &self,
         client_id: Uuid,
         limit: i64,
+        offset: i64,
+        kind: Option<ApiKeyKind>,
     ) -> Result<Vec<ApiKeyRecord>, AuthStoreError>;
 
     /// Revokes a same-tenant key without deleting the row.

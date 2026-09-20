@@ -2,7 +2,7 @@
 //!
 //! Contains all data structures used in the authentication system
 
-use super::persist::{ApiKeyKind, ApiKeyRecord};
+use super::persist::{ApiKeyKind, ApiKeyRecord, MAX_KEY_LIST_LIMIT};
 use chrono::{DateTime, Utc};
 use serde::Serialize;
 use uuid::Uuid;
@@ -77,9 +77,35 @@ impl From<ApiKeyRecord> for ApiKeyMetadata {
     }
 }
 
+/// Validated inventory paging and kind filter.
+///
+/// Tenant scope is never taken from these fields. Handlers reject ownership
+/// selectors before constructing this type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct KeyListOptions {
+    /// Page size, from 1 through [`MAX_KEY_LIST_LIMIT`].
+    pub limit: i64,
+    /// Number of newest-first keys to skip.
+    pub offset: i64,
+    /// Optional immutable kind filter.
+    pub kind: Option<ApiKeyKind>,
+}
+
+impl Default for KeyListOptions {
+    fn default() -> Self {
+        Self {
+            limit: MAX_KEY_LIST_LIMIT,
+            offset: 0,
+            kind: None,
+        }
+    }
+}
+
 /// Tenant-scoped inventory of safe key metadata.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct KeyInventory {
     /// Keys owned by the authenticated tenant, newest first.
     pub keys: Vec<ApiKeyMetadata>,
+    /// True when more same-tenant keys exist after this page.
+    pub has_more: bool,
 }

@@ -19,7 +19,7 @@ pub use credentials::{
 };
 pub use error::AuthError;
 pub use handler::{create_api_key, list_api_keys};
-pub use models::{ApiKeyMetadata, AuthContext, KeyInventory};
+pub use models::{ApiKeyMetadata, AuthContext, KeyInventory, KeyListOptions};
 pub use persist::{
     ApiKeyKind, ApiKeyRecord, AuthStore, AuthStoreError, ClientRecord, KeyDigest,
     NewApiKey, NewClient, PostgresAuthStore, RevokeOutcome, UnavailableAuthStore,
