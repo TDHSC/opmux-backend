@@ -25,7 +25,9 @@ metrics.
 - Request-scoped logs omit credentials, digests, prompts, metadata, connection strings,
   authorization values, raw SQL, provider bodies, and credential-bearing URLs. Public error traces
   keep `request_id` and a stable `error.code`. Terminal failures are logged once at the HTTP
-  envelope; authentication records `auth_duration_ms` and then ends before downstream work.
+  envelope with `request_id` and category. Authentication records `auth_duration_ms` and `outcome`,
+  then ends before downstream work. `AuthService` does not emit a second "API key validation failed"
+  summary for unknown, revoked, or datastore-unavailable keys.
 - Authentication duration includes header validation, database lookup, and last-used update. A slow
   upstream response increases execution time, not authentication time.
 

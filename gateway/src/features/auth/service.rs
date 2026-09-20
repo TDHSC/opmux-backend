@@ -227,6 +227,11 @@ impl AuthService {
 
     /// Validates a presented credential and returns persisted identity.
     ///
+    /// Unknown, revoked, and store-unavailable paths return without a
+    /// service-layer terminal validation-failed summary. The HTTP envelope
+    /// owns that event; middleware still records authentication duration
+    /// and outcome.
+    ///
     /// # Flow
     /// 1. Hashes the presented secret before any store access
     /// 2. Authenticates the digest under a row lock, including revoked rows
@@ -251,36 +256,13 @@ impl AuthService {
     ) -> Result<AuthContext, AuthenticateError> {
         let start = std::time::Instant::now();
         let digest = hash_credential(presented);
-        let record = match self.store.authenticate_digest(&digest, Utc::now()).await {
-            Ok(record) => record,
-            Err(_) => {
-                tracing::debug!(
-                    duration_ms = start.elapsed().as_millis(),
-                    success = false,
-                    reason = "store_unavailable",
-                    "API key validation failed"
-                );
-                return Err(AuthenticateError::StoreUnavailable);
-            }
-        };
+        let record = self.store.authenticate_digest(&digest, Utc::now()).await?;
 
         let Some(record) = record else {
-            tracing::debug!(
-                duration_ms = start.elapsed().as_millis(),
-                success = false,
-                reason = "unknown_key",
-                "API key validation failed"
-            );
             return Err(AuthenticateError::InvalidCredentials);
         };
 
         if record.is_revoked() {
-            tracing::debug!(
-                duration_ms = start.elapsed().as_millis(),
-                success = false,
-                reason = "revoked_key",
-                "API key validation failed"
-            );
             return Err(AuthenticateError::InvalidCredentials);
         }
 

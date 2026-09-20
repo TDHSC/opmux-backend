@@ -268,20 +268,143 @@ fn is_request_scoped(event: &Value) -> bool {
         .unwrap_or(false)
 }
 
+fn event_message(event: &Value) -> &str {
+    event["fields"]["message"].as_str().unwrap_or_default()
+}
+
+fn event_target(event: &Value) -> &str {
+    event["target"].as_str().unwrap_or_default()
+}
+
+fn request_scoped_gateway_events(events: &[Value]) -> Vec<&Value> {
+    gateway_events(events)
+        .into_iter()
+        .filter(|event| is_request_scoped(event))
+        .collect()
+}
+
+fn owning_terminal_events(events: &[Value]) -> Vec<&Value> {
+    request_scoped_gateway_events(events)
+        .into_iter()
+        .filter(|event| {
+            matches!(event_message(event), "request rejected" | "request failed")
+                && event["fields"]["error_code"].as_str().is_some()
+        })
+        .collect()
+}
+
+fn auth_finished_event(events: &[Value]) -> Option<&Value> {
+    events.iter().find(|event| {
+        is_request_scoped(event) && event_message(event) == "authentication finished"
+    })
+}
+
 fn auth_duration_ms(events: &[Value]) -> Option<u64> {
-    for event in events {
-        let fields = &event["fields"];
-        if fields["message"].as_str() != Some("authentication finished") {
-            continue;
-        }
-        if let Some(ms) = fields["auth_duration_ms"].as_u64() {
-            return Some(ms);
-        }
-        if let Some(ms) = fields["auth_duration_ms"].as_i64() {
-            return Some(ms.max(0) as u64);
-        }
+    let event = auth_finished_event(events)?;
+    let fields = &event["fields"];
+    if let Some(ms) = fields["auth_duration_ms"].as_u64() {
+        return Some(ms);
     }
-    None
+    fields["auth_duration_ms"]
+        .as_i64()
+        .map(|ms| ms.max(0) as u64)
+}
+
+fn auth_outcome(events: &[Value]) -> Option<&str> {
+    auth_finished_event(events)?["fields"]["outcome"].as_str()
+}
+
+fn safe_event_summary(event: &Value) -> String {
+    format!(
+        "target={} message={} error_code={} outcome={}",
+        event_target(event),
+        event_message(event),
+        event["fields"]["error_code"].as_str().unwrap_or_default(),
+        event["fields"]["outcome"].as_str().unwrap_or_default()
+    )
+}
+
+fn assert_one_owning_terminal_event(
+    events: &[Value],
+    request_id: &str,
+    error_code: &str,
+) {
+    let terminals = owning_terminal_events(events);
+    let summaries: Vec<String> = terminals
+        .iter()
+        .map(|event| safe_event_summary(event))
+        .collect();
+    assert_eq!(
+        terminals.len(),
+        1,
+        "expected one HTTP-boundary terminal event, found {}: {summaries:?}",
+        terminals.len()
+    );
+    let event = terminals[0];
+    assert_eq!(
+        event["fields"]["error_code"].as_str(),
+        Some(error_code),
+        "owning terminal event must carry the stable category"
+    );
+    assert!(
+        value_contains(event, request_id),
+        "owning terminal event must include the response request id"
+    );
+}
+
+fn assert_no_service_terminal_duplicate(events: &[Value]) {
+    let duplicates: Vec<String> = gateway_events(events)
+        .into_iter()
+        .filter(|event| {
+            if event_message(event) == "API key validation failed" {
+                return true;
+            }
+            if !event_target(event).contains("features::auth::service") {
+                return false;
+            }
+            event["fields"]["success"].as_bool() == Some(false)
+                || matches!(
+                    event["fields"]["reason"].as_str(),
+                    Some("unknown_key" | "revoked_key" | "store_unavailable")
+                )
+        })
+        .map(safe_event_summary)
+        .collect();
+    assert!(
+        duplicates.is_empty(),
+        "AuthService must not emit a terminal validation-failure summary: {duplicates:?}"
+    );
+}
+
+fn assert_auth_failure_log_ownership(
+    observed: &Observed,
+    extra_credentials: &[&str],
+    expected_status: StatusCode,
+    error_code: &str,
+    expected_outcome: &str,
+) {
+    assert_eq!(observed.status, expected_status);
+    assert_eq!(observed.body["error"]["code"], error_code);
+    assert_omits_protected(&observed.capture, extra_credentials);
+    assert_no_execution_logs(&observed.capture);
+    assert_correlated(
+        &observed.capture,
+        &observed.request_id,
+        observed.correlation.as_deref(),
+        error_request_id(&observed.body),
+    );
+    let events = json_events(&observed.capture);
+    assert_one_owning_terminal_event(&events, &observed.request_id, error_code);
+    assert_no_service_terminal_duplicate(&events);
+    assert_eq!(
+        auth_outcome(&events),
+        Some(expected_outcome),
+        "authentication finished must retain the bounded outcome"
+    );
+    assert!(
+        auth_duration_ms(&events).is_some(),
+        "authentication finished must retain auth_duration_ms"
+    );
 }
 
 fn digest_hex(digest: &[u8; 32]) -> String {
@@ -514,17 +637,13 @@ async fn success_and_failure_paths_share_root_correlation_without_leaking_sentin
         ),
     )
     .await;
-    assert_eq!(invalid.status, StatusCode::UNAUTHORIZED);
-    assert_eq!(invalid.body["error"]["code"], "UNAUTHORIZED");
-    assert_correlated(
-        &invalid.capture,
-        &invalid.request_id,
-        Some("obs-corr-invalid"),
-        error_request_id(&invalid.body),
+    assert_auth_failure_log_ownership(
+        &invalid,
+        &credentials,
+        StatusCode::UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "invalid_credentials",
     );
-    assert_omits_protected(&invalid.capture, &credentials);
-    assert_no_execution_logs(&invalid.capture);
-    assert!(auth_duration_ms(&json_events(&invalid.capture)).is_some());
 
     let forbidden = observe(
         &capture,
@@ -610,17 +729,13 @@ async fn success_and_failure_paths_share_root_correlation_without_leaking_sentin
         ),
     )
     .await;
-    assert_eq!(down.status, StatusCode::SERVICE_UNAVAILABLE);
-    assert_eq!(down.body["error"]["code"], "AUTH_DEPENDENCY_UNAVAILABLE");
-    assert_correlated(
-        &down.capture,
-        &down.request_id,
-        Some("obs-corr-store"),
-        error_request_id(&down.body),
+    assert_auth_failure_log_ownership(
+        &down,
+        &credentials,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "AUTH_DEPENDENCY_UNAVAILABLE",
+        "store_unavailable",
     );
-    assert_omits_protected(&down.capture, &credentials);
-    assert_no_execution_logs(&down.capture);
-    assert!(auth_duration_ms(&json_events(&down.capture)).is_some());
     assert_eq!(simulator.generation_count(), generations_before_down);
 
     fixture.drop_rows().await;
@@ -858,6 +973,111 @@ async fn missing_key_and_store_failure_report_auth_duration_without_execution() 
         "store-failure authentication must stay bounded"
     );
     assert_no_execution_logs(&down.capture);
+    assert_eq!(simulator.generation_count(), 0);
+
+    fixture.drop_rows().await;
+}
+
+#[tokio::test]
+#[serial]
+async fn unknown_revoked_and_store_unavailable_own_one_http_terminal_event() {
+    isolate_provider_environment();
+    let fixture = ObsFixture::provision().await;
+    let provisioning =
+        ProvisioningService::new(Arc::new(PostgresAuthStore::new(fixture.pool.clone())));
+    let revoked_issued = provisioning
+        .issue_key(
+            fixture.inference.client_id,
+            ApiKeyKind::Inference,
+            "obs-revoked",
+        )
+        .await
+        .expect("revoked inference key");
+    let revoked_credential = revoked_issued.credential().to_string();
+    let auth = fixture.auth_service();
+    let manager = auth
+        .authenticate(&fixture.management.credential)
+        .await
+        .expect("management context");
+    auth.revoke_key(&manager, revoked_issued.key_id)
+        .await
+        .expect("revoke persisted key");
+
+    let simulator = OpenAiSimulator::start().await;
+    let (capture, _guard) = DebugCapture::install();
+    let app = production_router_with_auth(
+        &simulator,
+        fixture.auth_service(),
+        MetricsConfig::disabled(),
+    );
+    let _ = capture.take();
+    let credentials = [
+        fixture.inference.credential.as_str(),
+        fixture.management.credential.as_str(),
+        revoked_credential.as_str(),
+    ];
+
+    let unknown = observe(
+        &capture,
+        app.clone(),
+        route_request(
+            Some(INVALID_KEY_SENTINEL),
+            &format!("{CORRELATION_PREFIX}unknown-owner"),
+            sentinel_body(),
+        ),
+    )
+    .await;
+    assert_auth_failure_log_ownership(
+        &unknown,
+        &credentials,
+        StatusCode::UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "invalid_credentials",
+    );
+    assert_eq!(simulator.generation_count(), 0);
+
+    let revoked = observe(
+        &capture,
+        app,
+        route_request(
+            Some(&revoked_credential),
+            &format!("{CORRELATION_PREFIX}revoked-owner"),
+            sentinel_body(),
+        ),
+    )
+    .await;
+    assert_auth_failure_log_ownership(
+        &revoked,
+        &credentials,
+        StatusCode::UNAUTHORIZED,
+        "UNAUTHORIZED",
+        "invalid_credentials",
+    );
+    assert_eq!(simulator.generation_count(), 0);
+
+    let down_app = production_router_with_auth(
+        &simulator,
+        Arc::new(AuthService::new(Arc::new(UnavailableAuthStore))),
+        MetricsConfig::disabled(),
+    );
+    let _ = capture.take();
+    let down = observe(
+        &capture,
+        down_app,
+        route_request(
+            Some(&fixture.inference.credential),
+            &format!("{CORRELATION_PREFIX}store-owner"),
+            sentinel_body(),
+        ),
+    )
+    .await;
+    assert_auth_failure_log_ownership(
+        &down,
+        &credentials,
+        StatusCode::SERVICE_UNAVAILABLE,
+        "AUTH_DEPENDENCY_UNAVAILABLE",
+        "store_unavailable",
+    );
     assert_eq!(simulator.generation_count(), 0);
 
     fixture.drop_rows().await;
