@@ -197,6 +197,14 @@ impl AuthStore for PostgresAuthStore {
             None => Ok(RevokeOutcome::NotFound),
         }
     }
+
+    async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+        sqlx::query("SELECT 1 FROM opmux_private.api_keys LIMIT 0")
+            .execute(&self.pool)
+            .await
+            .map_err(AuthStoreError::from_sqlx)?;
+        Ok(())
+    }
 }
 
 /// Checked-out pool connection that detaches on cancellation.

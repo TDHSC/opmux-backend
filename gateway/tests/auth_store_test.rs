@@ -14,6 +14,7 @@ use gateway::features::auth::{
 };
 use serial_test::serial;
 use sqlx::Row;
+use std::str::FromStr;
 use std::sync::Arc;
 use support::{required_database_url, test_pool};
 use uuid::Uuid;
@@ -839,4 +840,41 @@ fn crate_sources_do_not_embed_a_sqlx_migrator() {
     assert!(!postgres.contains("sqlx::migrate!"));
     assert!(!db.contains("sqlx::migrate!"));
     assert!(!postgres.contains("_sqlx_migrations"));
+}
+
+#[tokio::test]
+#[serial]
+async fn authentication_probe_requires_schema_and_table_access() {
+    let pool = test_pool().await;
+    let store = PostgresAuthStore::new(pool.clone());
+    store
+        .probe_authentication_access()
+        .await
+        .expect("owned authentication schema must be readable");
+
+    let mut tx = pool.begin().await.expect("tx");
+    sqlx::query("SET LOCAL ROLE anon")
+        .execute(&mut *tx)
+        .await
+        .expect("set anon");
+    sqlx::query("SELECT 1 FROM opmux_private.api_keys LIMIT 0")
+        .execute(&mut *tx)
+        .await
+        .expect_err("anon cannot read api_keys");
+    tx.rollback().await.expect("rollback");
+
+    let url = required_database_url();
+    let options = sqlx::postgres::PgConnectOptions::from_str(&url)
+        .expect("owned url")
+        .database("template1");
+    let template_pool = sqlx::postgres::PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(options)
+        .await
+        .expect("template1 must exist on the owned cluster");
+    let missing = PostgresAuthStore::new(template_pool);
+    missing
+        .probe_authentication_access()
+        .await
+        .expect_err("missing product schema cannot report ready");
 }

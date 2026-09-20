@@ -204,6 +204,35 @@ impl TargetCircuitRegistry {
         )
     }
 
+    /// True when the target is closed and can accept generation.
+    ///
+    /// Open and half-open states are not usable. Readiness must not call
+    /// [`Self::admit`], which would start a recovery probe.
+    pub(crate) fn target_is_usable(&self, target_id: &str) -> bool {
+        let map = self.lock();
+        match map.get(target_id).map(|state| state.phase) {
+            None | Some(CircuitPhase::Closed { .. }) => true,
+            Some(CircuitPhase::Open { .. } | CircuitPhase::HalfOpen { .. }) => false,
+        }
+    }
+
+    /// Opens a target for tests without recording hop failures.
+    #[cfg(test)]
+    pub(crate) fn force_open(&self, target_id: &str) {
+        let mut map = self.lock();
+        let now = self.clock.now();
+        let state = map.entry(target_id.to_string()).or_default();
+        self.set_open(state, now);
+    }
+
+    /// Closes a target for tests without a recovery probe.
+    #[cfg(test)]
+    pub(crate) fn force_close(&self, target_id: &str) {
+        let mut map = self.lock();
+        let state = map.entry(target_id.to_string()).or_default();
+        Self::close_circuit(state);
+    }
+
     fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CircuitState>> {
         self.inner
             .lock()

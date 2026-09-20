@@ -11,7 +11,8 @@ Simple service banner endpoint.
 
 ## GET /health
 
-Liveness endpoint.
+Process liveness endpoint. It does not probe the authentication database or upstream provider. A
+live process can return `200` while `/ready` is `503`.
 
 - Auth: none
 - Response: `200 OK`
@@ -19,12 +20,19 @@ Liveness endpoint.
 
 ## GET /ready
 
-Readiness endpoint including dependency checks.
+Readiness endpoint. Returns `200` only when the authentication database schema/access, upstream
+`/models` reachability, and at least one usable default-route target are healthy. `/models` is a
+reachability and credential probe; it does not call generation and does not prove that a configured
+model can generate. Cached `/models` success cannot override a default route whose eligible targets
+are all circuit-open. Successful database and upstream probes may be cached for
+`HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures are never cached, so a restored
+dependency is rechecked on the next probe. Draining override is not part of this endpoint yet.
 
 - Auth: none
 - Response:
-  - `200 OK` when dependencies are healthy
-  - `503 Service Unavailable` when dependencies are unhealthy
+  - `200 OK` when `database`, `upstream`, and `default_route` are healthy
+  - `503 Service Unavailable` when any required dependency is unhealthy
+- Probe timeout: `HEALTH_CHECK_TIMEOUT` (default 2 seconds)
 
 Example response (`503`):
 
@@ -33,11 +41,13 @@ Example response (`503`):
   "status": "not_ready",
   "timestamp": "2026-03-13T00:00:00Z",
   "dependencies": {
-    "status": "unhealthy",
-    "vendor_count": 1,
-    "healthy_vendors": 0,
-    "latency_ms": 12,
-    "error": "..."
+    "database": {
+      "status": "unhealthy",
+      "latency_ms": 12,
+      "error": "Authentication database unavailable"
+    },
+    "upstream": { "status": "healthy", "latency_ms": 8 },
+    "default_route": { "status": "healthy" }
   }
 }
 ```

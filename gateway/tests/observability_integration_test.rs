@@ -19,7 +19,7 @@ use serial_test::serial;
 use std::sync::Arc;
 use support::{
     auth_service_from_pool, cleanup_clients, isolate_provider_environment,
-    provision_inference_key, test_pool,
+    production_router_with_auth, provision_inference_key, test_pool, OpenAiSimulator,
 };
 use tower::ServiceExt;
 
@@ -156,7 +156,14 @@ async fn test_health_endpoint_response_format() {
 #[tokio::test]
 #[serial]
 async fn test_ready_endpoint_with_healthy_dependencies() {
-    let app = build_test_app(Arc::new(health::HealthService::new()), false);
+    isolate_provider_environment();
+    let pool = test_pool().await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = production_router_with_auth(
+        &simulator,
+        auth_service_from_pool(pool.clone()),
+        MetricsConfig::disabled(),
+    );
 
     let request = Request::builder()
         .uri("/ready")
@@ -170,7 +177,10 @@ async fn test_ready_endpoint_with_healthy_dependencies() {
         .unwrap();
     let body_str = String::from_utf8(body.to_vec()).unwrap();
     assert!(body_str.contains("\"status\":\"ready\""));
-    assert!(body_str.contains("\"status\":\"healthy\""));
+    assert!(body_str.contains("\"database\""));
+    assert!(body_str.contains("\"upstream\""));
+    assert!(body_str.contains("\"default_route\""));
+    let _ = pool;
 }
 
 #[tokio::test]

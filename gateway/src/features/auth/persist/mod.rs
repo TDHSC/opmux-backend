@@ -59,5 +59,9 @@ mod tests {
         assert!(
             source.contains("WHERE id = $1 AND client_id = $2 AND revoked_at IS NULL")
         );
+        assert!(
+            source.contains("SELECT 1 FROM opmux_private.api_keys LIMIT 0"),
+            "readiness must probe authentication table access, not an unrelated SELECT"
+        );
     }
 }

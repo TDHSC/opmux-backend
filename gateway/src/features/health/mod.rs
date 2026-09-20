@@ -25,10 +25,9 @@
 //! # Health Check Types
 //!
 //! Currently supports:
-//! - Basic system status checks
-//! - Future: Database connectivity
-//! - Future: External service dependencies
-//! - Future: System resource monitoring
+//! - Process liveness on `/health`
+//! - Authentication-database schema/access, upstream `/models` reachability,
+//!   and usable default-route targets on `/ready`
 //!
 //! # Error Handling
 //!
@@ -64,4 +63,4 @@ mod service_tests;
 
 // Re-export handlers and service for easy access
 pub use handler::{health_handler, ready_handler};
-pub use service::HealthService;
+pub use service::{HealthConfig, HealthService};

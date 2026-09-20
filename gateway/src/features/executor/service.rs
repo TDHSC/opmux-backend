@@ -12,6 +12,7 @@ use super::{
     models::{ExecutionParams, ExecutionResult},
     repository::ExecutorRepository,
 };
+use crate::core::config::Catalog;
 use crate::core::contracts::RoutePlan;
 use crate::core::deadline::RequestDeadline;
 use std::sync::Arc;
@@ -63,6 +64,32 @@ impl ExecutorService {
     /// Useful for logging and monitoring vendor availability.
     pub fn vendor_count(&self) -> usize {
         self.repository.vendor_count()
+    }
+
+    /// True when the configured default route has at least one closed target.
+    ///
+    /// Open and half-open circuits are not usable. This inspection does not
+    /// admit a recovery probe or call generation. Cached `/models` success is
+    /// independent of this result.
+    pub fn default_route_has_usable_target(&self, catalog: &Catalog) -> bool {
+        let Some(route) = catalog.routes.get(&catalog.default_route) else {
+            return false;
+        };
+        std::iter::once(route.primary.as_str())
+            .chain(route.fallbacks.iter().map(String::as_str))
+            .any(|target_id| self.circuits.target_is_usable(target_id))
+    }
+
+    /// Opens a target circuit in tests without recording hop failures.
+    #[cfg(test)]
+    pub(crate) fn force_open_target(&self, target_id: &str) {
+        self.circuits.force_open(target_id);
+    }
+
+    /// Closes a target circuit in tests without a recovery probe.
+    #[cfg(test)]
+    pub(crate) fn force_close_target(&self, target_id: &str) {
+        self.circuits.force_close(target_id);
     }
 
     /// Checks health of a specific vendor.

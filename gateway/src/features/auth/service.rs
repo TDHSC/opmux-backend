@@ -212,6 +212,18 @@ impl AuthService {
         }
     }
 
+    /// Probes schema and SELECT access required to authenticate keys.
+    ///
+    /// Readiness uses this instead of a socket check or unrelated `SELECT 1`.
+    /// It does not authenticate a credential or remember a successful key.
+    ///
+    /// # Errors
+    /// Returns `StoreUnavailable` when the authentication schema is missing
+    /// or the connected role cannot read `opmux_private.api_keys`.
+    pub async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+        self.store.probe_authentication_access().await
+    }
+
     /// Validates a presented credential and returns persisted identity.
     ///
     /// # Flow
@@ -532,6 +544,13 @@ mod tests {
             }
             record.revoked_at = Some(revoked_at);
             Ok(RevokeOutcome::Revoked(record.clone()))
+        }
+
+        async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+            if self.fail_lookup {
+                return Err(AuthStoreError::Unavailable);
+            }
+            Ok(())
         }
     }
 

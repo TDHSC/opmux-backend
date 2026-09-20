@@ -113,4 +113,11 @@ pub trait AuthStore: Send + Sync {
         key_id: Uuid,
         revoked_at: DateTime<Utc>,
     ) -> Result<RevokeOutcome, AuthStoreError>;
+
+    /// Checks schema and SELECT access required for authentication.
+    ///
+    /// This is not a socket ping or an unrelated `SELECT 1`. It must fail
+    /// when `opmux_private.api_keys` is missing or the connected role cannot
+    /// read it. The probe does not authenticate a credential.
+    async fn probe_authentication_access(&self) -> Result<(), AuthStoreError>;
 }

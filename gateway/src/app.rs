@@ -51,8 +51,11 @@ impl Application {
     ) -> Result<Self, ExecutorError> {
         let executor_config = ExecutorConfig::from_settings(&settings);
         let executor_service = Arc::new(ExecutorService::from_config(executor_config)?);
-        let health_service = Arc::new(health::HealthService::with_executor(
+        let health_service = Arc::new(health::HealthService::with_dependencies(
             executor_service.clone(),
+            auth_service.clone(),
+            settings.clone(),
+            health::HealthConfig::from_env(),
         ));
         let ingress_service = Arc::new(ingress::service::IngressService::new(
             executor_service.clone(),

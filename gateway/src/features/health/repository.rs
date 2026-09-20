@@ -19,15 +19,8 @@ pub struct SystemStatus {
 ///
 /// This repository handles all data access operations related to health checks,
 /// including system status monitoring, dependency validation, and resource checks.
-/// Currently uses mock implementations, but will be extended to include real
-/// system monitoring capabilities.
-///
-/// # Future Extensions
-///
-/// - Database connectivity checks
-/// - External service availability monitoring
-/// - System resource monitoring (CPU, memory, disk)
-/// - Circuit breaker status checks
+/// Process liveness only. Authentication-database and upstream probes live
+/// on `HealthService` through `AuthService` and `ExecutorService`.
 pub struct HealthRepository;
 
 impl HealthRepository {

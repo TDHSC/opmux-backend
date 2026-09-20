@@ -443,6 +443,10 @@ mod tests {
         ) -> Result<RevokeOutcome, AuthStoreError> {
             Ok(RevokeOutcome::NotFound)
         }
+
+        async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+            Ok(())
+        }
     }
 
     #[tokio::test]

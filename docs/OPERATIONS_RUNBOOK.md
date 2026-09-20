@@ -123,9 +123,18 @@ curl -i http://127.0.0.1:3000/metrics
 
 ### Symptom: `/ready` returns `503`
 
-- Check dependency details in readiness response (`dependencies.error`, `healthy_vendors`).
-- Validate vendor credentials and upstream endpoint connectivity.
-- Confirm circuit breaker behavior via repeated `/api/v1/route` calls.
+- `/health` staying `200` means the process is live; readiness is independent liveness.
+- Inspect `dependencies.database`, `dependencies.upstream`, and `dependencies.default_route`.
+  Messages are sanitized (`Authentication database unavailable`, `Upstream provider unreachable`,
+  `No usable default-route target`) and omit SQL, URLs, and secrets.
+- Database readiness requires `opmux_private.api_keys` schema/SELECT access, not a socket ping.
+- Upstream readiness is `GET /models` reachability and credentials. It is not a generation call and
+  does not prove a configured model can generate.
+- Successful probes may stay cached for `HEALTH_CHECK_CACHE_TTL_SECS` (default 5 seconds). Failures
+  are not cached; restoring a dependency is visible on the next completed probe.
+- If `default_route` is unhealthy while `upstream` is healthy, every eligible default-route target
+  is circuit-open. Cached `/models` success cannot override that. Recover through the normal
+  generation path after `circuit_cooldown_ms`; readiness does not start generation probes.
 
 ### Symptom: `/api/v1/route` returns `504 DEADLINE_EXCEEDED`
 

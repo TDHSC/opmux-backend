@@ -115,6 +115,10 @@ impl AuthStore for DelayedAuthStore {
     ) -> Result<RevokeOutcome, AuthStoreError> {
         self.inner.revoke_key(client_id, key_id, revoked_at).await
     }
+
+    async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+        self.inner.probe_authentication_access().await
+    }
 }
 
 fn delayed_auth_service(pool: sqlx::PgPool, delay: Duration) -> Arc<AuthService> {

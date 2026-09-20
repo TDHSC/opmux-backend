@@ -72,4 +72,8 @@ impl AuthStore for UnavailableAuthStore {
     ) -> Result<RevokeOutcome, AuthStoreError> {
         Err(AuthStoreError::Unavailable)
     }
+
+    async fn probe_authentication_access(&self) -> Result<(), AuthStoreError> {
+        Err(AuthStoreError::Unavailable)
+    }
 }

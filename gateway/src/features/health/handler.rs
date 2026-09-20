@@ -66,8 +66,9 @@ pub async fn health_handler(
 ///   "status": "ready",
 ///   "timestamp": "2025-09-01T16:53:30.625665+00:00",
 ///   "dependencies": {
-///     "status": "healthy",
-///     "vendor_count": 2
+///     "database": { "status": "healthy", "latency_ms": 2 },
+///     "upstream": { "status": "healthy", "latency_ms": 12 },
+///     "default_route": { "status": "healthy" }
 ///   }
 /// }
 /// ```
@@ -78,9 +79,9 @@ pub async fn health_handler(
 ///   "status": "not_ready",
 ///   "timestamp": "2025-09-01T16:53:30.625665+00:00",
 ///   "dependencies": {
-///     "status": "unhealthy",
-///     "vendor_count": 0,
-///     "error": "No LLM vendors configured"
+///     "database": { "status": "unhealthy", "error": "Authentication database unavailable" },
+///     "upstream": { "status": "healthy" },
+///     "default_route": { "status": "healthy" }
 ///   }
 /// }
 /// ```

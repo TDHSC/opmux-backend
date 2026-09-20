@@ -150,8 +150,10 @@ Observability/performance:
 - `LOG_VERBOSE_DEBUG` (default `false`; adds line numbers and thread IDs)
 - `METRICS_ENABLED` (default `true`)
 - `METRICS_PATH` (default `/metrics`)
-- `HEALTH_CHECK_TIMEOUT` (default `2`)
-- `HEALTH_CHECK_CACHE_TTL_SECS` (default `5`)
+- `HEALTH_CHECK_TIMEOUT` (default `2` seconds; bound for database and `/models` probes)
+- `HEALTH_CHECK_CACHE_TTL_SECS` (default `5`; success-only cache for database and `/models`.
+  Failures are never cached. Zero disables the success cache. Circuit/default-route usability is not
+  success-cached. `/models` is reachability/credentials, not proof of generation.)
 - `INGRESS_SLOW_REQUEST_THRESHOLD_MS` (default `1000`)
 
 TLS certificate and hostname verification stay enabled. There is no insecure-TLS setting.

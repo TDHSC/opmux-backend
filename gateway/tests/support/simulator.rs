@@ -487,6 +487,11 @@ impl OpenAiSimulator {
         lock_vec(&self.inner.models_script).push_back(response);
     }
 
+    /// Drops unused scripted `/models` replies so the default success is used.
+    pub fn clear_models_script(&self) {
+        lock_vec(&self.inner.models_script).clear();
+    }
+
     /// Snapshot of captured requests, oldest first.
     pub fn captured(&self) -> Vec<CapturedRequest> {
         lock_vec(&self.inner.captures).clone()

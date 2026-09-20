@@ -66,8 +66,12 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   admission (including when later inference fails). Invalid credentials do not update it.
 - LLM execution: an OpenAI vendor implementation, with retry, fallback, and circuit-breaker logic in
   the executor service.
-- Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
-  configurable metrics endpoint (`/metrics` by default).
+- Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, process liveness on `/health`,
+  dependency readiness on `/ready`, and a configurable metrics endpoint (`/metrics` by default).
+  `/ready` requires authentication-database schema/access, upstream `/models` reachability, and at
+  least one usable default-route target. `/models` is not a generation call and cannot override
+  circuit-open default-route targets. Successful probes cache for `HEALTH_CHECK_CACHE_TTL_SECS`
+  (default 5 seconds); failures are never cached.
 
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
@@ -204,8 +208,9 @@ process serves protected work. Use a direct or session-mode pooler URL for hoste
 (`sslmode=verify-full` plus a CA). Transaction-mode poolers are incompatible with SQLx prepared
 statements. Platform `anon` / `service_role` keys are not Opmux API keys and cannot read
 `opmux_private` digests. The gateway assumes `SET ROLE opmux_runtime` (override
-`OPMUX_RUNTIME_DB_ROLE`). Transient database outages keep `/health` live and fail closed with 503 on
-protected routes.
+`OPMUX_RUNTIME_DB_ROLE`). Transient database outages keep `/health` live, mark `/ready` not ready
+after any success cache expires, and fail closed with 503 on protected routes. Restoring the
+database does not revive revoked keys or introduce an authentication cache.
 
 `opmux-admin` is the operator CLI, not an HTTP bootstrap. It uses `DATABASE_URL` and
 `SET ROLE opmux_operator` (override with `OPMUX_DB_ROLE`). Schema migrations stay with the database
@@ -295,6 +300,10 @@ env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_P
   `gateway/tests/openai_adapter_http_test.rs` start an owned loopback OpenAI simulator, build the
   same production router as the binary, and exercise `/health`, generation, metrics, and the real
   Reqwest adapter. They bind `127.0.0.1` only and abort the simulator task on drop.
+- `gateway/tests/health_readiness_test.rs` exercises `/health` vs `/ready` against real Supabase and
+  the owned simulator, including independent database and `/models` outages, success-only caching,
+  revoked-key persistence after recovery, and default-route circuit override of cached upstream
+  health.
 - `gateway/tests/observability_integration_test.rs` uses that shared router with dummy configuration
   and a local unavailable upstream for HTTP failure scenarios.
 - `gateway/tests/startup_integration_test.rs` launches the binary without vendor keys to verify
