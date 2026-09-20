@@ -14,6 +14,8 @@ use gateway::features::auth::{
 };
 use serial_test::serial;
 use sqlx::Row;
+use std::path::PathBuf;
+use std::process::Command;
 use std::str::FromStr;
 use std::sync::Arc;
 use support::{required_database_url, test_pool};
@@ -877,4 +879,60 @@ async fn authentication_probe_requires_schema_and_table_access() {
         .probe_authentication_access()
         .await
         .expect_err("missing product schema cannot report ready");
+}
+
+#[tokio::test]
+#[serial]
+async fn canonical_migration_reapplication_is_a_noop() {
+    let pool = test_pool().await;
+    let versions_before: Vec<String> = sqlx::query_scalar(
+        "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migration versions");
+    assert!(
+        versions_before
+            .iter()
+            .any(|version| version == AUTH_MIGRATION_VERSION),
+        "canonical auth migration must already be applied"
+    );
+    let clients_before: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM opmux_private.clients")
+            .fetch_one(&pool)
+            .await
+            .expect("client count");
+
+    let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("..");
+    let output = Command::new("bash")
+        .arg("scripts/ci-setup-db.sh")
+        .current_dir(&repo)
+        .env("DATABASE_URL", required_database_url())
+        .env("NO_PROXY", "*")
+        .output()
+        .expect("run ci-setup-db");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("postgresql://") && !stderr.contains("postgresql://"),
+        "migration setup must omit connection URLs"
+    );
+    assert!(
+        output.status.success(),
+        "canonical migration setup failed without printing secrets"
+    );
+
+    let versions_after: Vec<String> = sqlx::query_scalar(
+        "SELECT version FROM supabase_migrations.schema_migrations ORDER BY version",
+    )
+    .fetch_all(&pool)
+    .await
+    .expect("migration versions after reapply");
+    let clients_after: i64 =
+        sqlx::query_scalar("SELECT count(*) FROM opmux_private.clients")
+            .fetch_one(&pool)
+            .await
+            .expect("client count after reapply");
+    assert_eq!(versions_before, versions_after);
+    assert_eq!(clients_before, clients_after);
 }

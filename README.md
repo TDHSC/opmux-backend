@@ -208,7 +208,13 @@ migrate on startup.
 
 ```bash
 bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh bash scripts/ci-setup-db.sh
 ```
+
+`scripts/ci-setup-db.sh` prepares portable role stubs, applies the same history, and reapplies it as
+a no-op. It requires `DATABASE_URL` and does not skip. CI uses that script against disposable
+Postgres 17; local use wraps it with `scripts/with-owned-database.sh`. Do not reset retained mission
+data to reapply migrations.
 
 `scripts/with-owned-database.sh` always verifies the owned container, the exact `127.0.0.1:55432`
 loopback binding, and readiness, then replaces any inherited `DATABASE_URL` privately. Use that
@@ -262,12 +268,13 @@ Inference keys cannot create, list, or revoke keys. Do not seed `test-api-key-12
 `dev-api-key-456` into `opmux_private`; those former public keys return 401.
 
 Wrap workspace tests so they receive the owned database URL. The wrapper ignores inherited remote or
-unrelated-local `DATABASE_URL` values:
+unrelated-local `DATABASE_URL` values. `scripts/with-safe-test-env.sh` then removes inherited
+provider/proxy variables, disables live-provider opt-in, and forces a dummy loopback OpenAI URL:
 
 ```bash
-bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
-  -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
-  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' cargo test
+bash scripts/with-owned-database.sh bash scripts/with-safe-test-env.sh \
+  env CARGO_BUILD_JOBS=2 \
+  cargo test --workspace --locked --all-features -j 2 -- --test-threads=2
 ```
 
 Logging defaults to JSON at `info` level. Set `LOG_FORMAT=pretty` for readable local logs and
@@ -367,9 +374,9 @@ Run the test suite. Routine tests isolate provider and proxy environment so inhe
 cannot contact a public provider:
 
 ```bash
-env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-  -u http_proxy -u https_proxy -u all_proxy \
-  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' cargo test
+bash scripts/with-owned-database.sh bash scripts/with-safe-test-env.sh \
+  env CARGO_BUILD_JOBS=2 \
+  cargo test --workspace --locked --all-features -j 2 -- --test-threads=2
 ```
 
 - HTTP fixtures in `gateway/tests/http_fixture_test.rs` and
@@ -423,7 +430,8 @@ setup.
 
 ```bash
 cargo fmt --all -- --check
-cargo clippy --all-targets --all-features -- -D warnings
+cargo clippy --workspace --locked --all-targets --all-features -j 2 -- -D warnings
+cargo check --workspace --locked --all-targets --all-features -j 2
 npm run format:check
 ```
 
@@ -431,11 +439,25 @@ Use `cargo fmt` to format Rust. `npm run format` formats the repository's non-Ru
 small Markdown change, prefer targeting the changed files, for example
 `npx prettier --write README.md AGENTS.md`.
 
-[CI](.github/workflows/ci.yml) configures tests on stable, beta, and nightly Rust, formatting
-checks, strict Clippy, dependency auditing with `cargo audit`, and a release build uploaded from
-`target/release/gateway`. CI removes inherited provider keys and proxy variables for routine tests;
-dummy vendor configuration is scoped to local simulators and the separate startup check. Ignored
-live-provider tests are not run. It does not currently configure a code-coverage job.
+The local equivalent of [CI](.github/workflows/ci.yml) is:
+
+```bash
+bash scripts/ci-local.sh
+```
+
+That script applies canonical migrations to the **owned** loopback database, then runs the locked
+workspace test/check/Clippy/fmt/Prettier gates, the startup smoke check, and the locked image
+build/runtime acceptance. It fails clearly if the owned database is unavailable; it does not skip
+persistence checks, push, or start a remote job.
+
+CI pins **Rust 1.89.0** (`rust-toolchain.toml`) and runs the same gates with `-j 2` /
+`--test-threads=2`. The test job provisions disposable Postgres 17.6 on `127.0.0.1:55432`, installs
+the pinned Supabase CLI 2.117.x, and applies `supabase/migrations` through `scripts/ci-setup-db.sh`.
+It does not depend on this workstation's container. Routine tests use
+`scripts/with-safe-test-env.sh` so inherited provider keys, proxy variables, and
+`OPMUX_LIVE_PROVIDER_TESTS` cannot contact a real provider. Ignored live-provider tests are not
+invoked. The image job builds `gateway/Dockerfile` without baked credentials. `sslmode=disable` in
+CI is local-only, not hosted TLS proof. Remote CI execution is not required for local acceptance.
 
 ## Project Structure
 

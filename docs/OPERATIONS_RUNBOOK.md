@@ -8,13 +8,17 @@ history explicitly:
 
 ```bash
 bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh bash scripts/ci-setup-db.sh
 ```
 
 Local tests and mission migrations must use `scripts/with-owned-database.sh`, which verifies the
-owned loopback fixture and replaces inherited `DATABASE_URL` values. For operator/production
-Postgres, run `scripts/db-migrate.sh` with a chosen `DATABASE_URL`; that path is not restricted to
-localhost. Do not enable SQLx migrators, hosted project linking, or automatic migrate-on-boot for
-each replica.
+owned loopback fixture and replaces inherited `DATABASE_URL` values. `scripts/ci-setup-db.sh`
+prepares portable role stubs, applies the same history, and reapplies it as a no-op without
+resetting retained rows. For operator/production Postgres, run `scripts/db-migrate.sh` with a chosen
+`DATABASE_URL`; that path is not restricted to localhost. CI provisions its own disposable Postgres
+17 and uses `scripts/ci-setup-db.sh` rather than this host. Do not enable SQLx migrators, hosted
+project linking, or automatic migrate-on-boot for each replica. The local CI equivalent is
+`bash scripts/ci-local.sh`.
 
 Local privileges are separate:
 

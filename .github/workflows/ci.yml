@@ -6,54 +6,28 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Local equivalent: bash scripts/ci-local.sh
+# Remote execution of this workflow is not required for local acceptance.
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
   AUTH_DEVELOPMENT_MODE: "false"
+  CARGO_BUILD_JOBS: "2"
 
 jobs:
-  test:
-    name: Test Suite
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        rust:
-          - stable
-          - beta
-          - nightly
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: ${{ matrix.rust }}
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Run tests
-        run: >-
-          env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY
-          -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy
-          AUTH_DEVELOPMENT_MODE=false OPENAI_BASE_URL=http://127.0.0.1:9/v1
-          NO_PROXY='*' cargo test --verbose
-
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.89.0"
           components: rustfmt
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
 
       - name: Check formatting
         run: cargo fmt --all -- --check
@@ -61,6 +35,7 @@ jobs:
   prettier:
     name: Prettier
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -68,7 +43,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "18"
+          node-version: "20"
           cache: "npm"
 
       - name: Install dependencies
@@ -80,30 +55,133 @@ jobs:
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
         with:
+          toolchain: "1.89.0"
           components: clippy
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
 
       - name: Linting
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: >-
+          cargo clippy --workspace --locked --all-targets --all-features -j 2 -- -D
+          warnings
 
-  security_audit:
-    name: Security Audit
+  check:
+    name: Cargo check
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check workspace
+        run: cargo check --workspace --locked --all-targets --all-features -j 2
+
+  test:
+    name: Test suite
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:17.6
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - 55432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres" --health-interval 10s
+          --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@127.0.0.1:55432/postgres?sslmode=disable
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      - name: Install pinned Supabase CLI
+        run: npm ci
+
+      - name: Install psql client
+        run: sudo apt-get update && sudo apt-get install -y postgresql-client
+
+      - name: Apply canonical migrations
+        run: bash scripts/ci-setup-db.sh
+
+      - name: Run locked workspace tests
+        run: >-
+          bash scripts/with-safe-test-env.sh cargo test --workspace --locked
+          --all-features -j 2 -- --test-threads=2
+
+      - name: Build gateway binary
+        run: cargo build -p gateway --locked -j 2
+
+      - name: Startup smoke without live providers
+        env:
+          STARTUP_CHECK_PORT: "38082"
+        run: bash scripts/check-startup.sh "$GITHUB_WORKSPACE/target/debug/gateway"
+
+  image:
+    name: Container image
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Build locked gateway image
+        run: docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
+
+      - name: Reject baked credentials
+        run: |
+          if docker image inspect opmux-gateway:mvp --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -E '^(DATABASE_URL|OPENAI_API_KEY|ANTHROPIC_API_KEY|AUTH_DEVELOPMENT_MODE)='; then
+            echo "image must not bake credentials or AUTH_DEVELOPMENT_MODE" >&2
+            exit 1
+          fi
+
+  security_audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust 1.89.0
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.89.0"
 
       - name: Cache dependencies
         uses: Swatinem/rust-cache@v2
@@ -121,27 +199,3 @@ jobs:
 
       - name: Security audit
         run: cargo audit
-
-  build:
-    name: Build
-    runs-on: ubuntu-latest
-    needs: [test, fmt, prettier, clippy]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Build
-        run: cargo build --release --verbose
-
-      - name: Upload build artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: opmux-backend
-          path: target/release/gateway
-          if-no-files-found: error

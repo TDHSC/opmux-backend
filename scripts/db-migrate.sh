@@ -43,7 +43,7 @@ if ! "$CLI" db push \
   --yes \
   --include-all \
   --skip-vault \
-  --log-level error >/dev/null; then
+  --log-level error >/dev/null 2>&1; then
   echo "supabase db push failed; inspect CLI status without printing DATABASE_URL" >&2
   exit 1
 fi

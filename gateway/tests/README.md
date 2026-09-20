@@ -32,6 +32,7 @@ adapter**, not only `LLMVendor` mocks.
 | `execution_budget_test.rs`                               | Protected-request deadline across slow body, delayed real-DB auth, and stalled simulator headers/bodies; 504 envelopes; health/metrics outside the deadline; one-slot runtime pool release after a timed-out row-lock wait so an unrelated key can authenticate while the blocker remains held; real-adapter cancellation of in-flight and backoff work; shared attempt budgets; capped jitter and Retry-After cannot-fit 429 vs expired 504, including configured fallbacks; stalled 429 cannot-fit before a 400ms deadline; fitting Retry-After 1 with stalled body then a held retry returning 504; near-attempt-cutoff 429 headers; malformed/oversized 429 bodies retaining throttling                  |
 | `fallback_http_test.rs`                                  | Same-provider A→B→C fallback order through the production router and real adapter; shared attempt budget; `allow_fallback` opt-out; mixed-cap skip without parameter changes; eligibility matrix for transient vs credential/quota/protocol/throttling failures; actual 429 quota code/type with queued success; same-router threshold-1 throttling `[A,A]` never B; throttled probe does not reopen; preserved primary error and deadline override; target-scoped circuits, skipped-open accounting, half-open single-flight probe, and success/failure recovery. Generation-owned stale-completion races live in `gateway/src/features/executor/circuit_tests.rs` (retained barriers, not lossy Notify).   |
 | `owned_database_guard_test.rs`                           | Fake-Docker wrapper, mutating-helper URL rejection, and documented private CLI output recipe. Does not need a real database                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `ci_release_checks_test.rs`                              | CI workflow pin/lock/migration/provider-isolation inspection, missing-database `ci-local`/`ci-setup-db` failures, dummy loopback test env, and load-script 401-as-failure classification. Manifest command: `commands.test_ci_release`                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | `local_stack_script_test.rs`                             | Fake-Docker `scripts/local-stack.sh` cases: missing-env/absent/repeated cleanup, foreign ownership refusal, preexisting `.env.opmux-local` preservation, inherited `OPMUX_LOCAL_DATABASE_URL` isolation, `CONTAINER_IMAGE` selection, missing no-build failure, and the 605s stop ceiling. Does not need a real Docker daemon                                                                                                                                                                                                                                                                                                                                                                                |
 | `support/`                                               | Environment isolation, loopback simulator, recoverable loopback DB proxy, owned-database URL guard                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 
@@ -40,9 +41,7 @@ inherited `OPENAI_*`, `ANTHROPIC_API_KEY`, and proxy variables, set `NO_PROXY=*`
 loopback settings explicitly.
 
 ```bash
-env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY \
-  -u http_proxy -u https_proxy -u all_proxy \
-  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' \
+bash scripts/with-safe-test-env.sh \
   cargo test -p gateway --test http_fixture_test --test openai_adapter_http_test
 ```
 
@@ -56,10 +55,8 @@ container and replaces inherited remote or unrelated-local URLs. Direct test hel
 non-owned destinations and extra connection options.
 
 ```bash
-bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
-bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
-  -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
-  OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' \
+bash scripts/with-owned-database.sh bash scripts/ci-setup-db.sh
+bash scripts/with-owned-database.sh bash scripts/with-safe-test-env.sh \
   cargo test -p gateway --test auth_store_test
 ```
 
@@ -86,6 +83,15 @@ HTTP, generates on default and named routes with simulated OpenAI results, denie
 wrong-kind actions with zero generation calls, recovers from one primary 500 fallback and one
 database outage, then restarts the gateway and checks retained revocation/usage. Cleanup deletes
 only those fixture rows. Do not treat the labeled simulator content as live OpenAI verification.
+
+## Local CI equivalent
+
+`scripts/ci-local.sh` is the documented local equivalent of `.github/workflows/ci.yml`. It applies
+canonical `supabase/migrations` to the owned loopback database (`scripts/ci-setup-db.sh`), then runs
+the locked workspace test/check/Clippy/fmt/Prettier gates, startup smoke, and image acceptance. If
+the owned database is missing, the script fails with a setup message; persistence checks do not
+skip. Routine tests use `scripts/with-safe-test-env.sh` so inherited provider keys cannot contact a
+real provider. Ignored live-provider tests are not invoked. Remote CI execution is not required.
 
 ## Deferred live-provider tests (unrun)
 

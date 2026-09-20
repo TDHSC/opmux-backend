@@ -6,63 +6,23 @@ on:
   pull_request:
     branches: [main, develop]
 
+# Build, test, migrate, and startup checks live in ci.yml with disposable
+# Postgres. This workflow only scans committed configuration.
 jobs:
   security-check:
     name: Security Configuration Check
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Run security checks
-        run: |
-          echo "🔒 Running security configuration checks..."
-          ./scripts/check-security.sh
+        run: ./scripts/check-security.sh
 
       - name: Verify no development mode in environment
         run: |
-          echo "🔍 Checking environment variables..."
           if [ "$AUTH_DEVELOPMENT_MODE" = "true" ]; then
-            echo "❌ SECURITY VIOLATION: AUTH_DEVELOPMENT_MODE is set to true in CI environment"
+            echo "SECURITY VIOLATION: AUTH_DEVELOPMENT_MODE is set to true in CI environment"
             exit 1
           fi
-          echo "✅ Environment variables are secure"
-
-  build-and-test:
-    name: Build and Test (Production Mode)
-    runs-on: ubuntu-latest
-    needs: security-check
-    env:
-      AUTH_DEVELOPMENT_MODE: "false"
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
-
-      - name: Cache dependencies
-        uses: Swatinem/rust-cache@v2
-
-      - name: Check code formatting
-        run: cargo fmt --all -- --check
-
-      - name: Run clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
-
-      - name: Run tests (production mode)
-        run: >-
-          env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY -u HTTP_PROXY -u HTTPS_PROXY
-          -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy
-          AUTH_DEVELOPMENT_MODE=false OPENAI_BASE_URL=http://127.0.0.1:9/v1
-          NO_PROXY='*' cargo test --all
-
-      - name: Build release (production mode)
-        run: cargo build --release --all
-
-      - name: Verify startup and authentication without live providers
-        run: bash scripts/check-startup.sh
