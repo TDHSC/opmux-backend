@@ -1,8 +1,9 @@
 //! Ingress module for stateless AI routing.
 //!
-//! Accepts prompt and opaque metadata, selects an operator-configured route,
-//! and executes through the executor boundary. Metadata is never forwarded,
-//! logged, or persisted.
+//! Accepts prompt and opaque metadata, optional route/fallback controls, and
+//! typed generation parameters. Selects an operator-configured route and
+//! executes through the executor boundary. Metadata is never forwarded, logged,
+//! or persisted.
 //!
 //! # Request Flow
 //!
@@ -21,7 +22,8 @@
 //!
 //! Omitted `route` selects the catalog default. Omitted `allow_fallback`
 //! follows the configured chain; `allow_fallback=false` limits execution to
-//! the primary target without disabling its retries.
+//! the primary target without disabling its retries. Omitted `parameters`
+//! uses documented defaults, including the selected target's output-token cap.
 
 /// Error handling for ingress operations.
 pub mod error;
@@ -33,6 +35,8 @@ pub mod repository;
 mod routing;
 /// Service Layer - Business logic and orchestration.
 pub mod service;
+/// Canonical request parsing and validation.
+mod validate;
 
 /// Constants and hardcoded values.
 pub mod constants;

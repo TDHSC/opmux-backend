@@ -1,9 +1,7 @@
 // Handler Layer - HTTP request/response processing
 
 use super::{
-    constants::{MAX_METADATA_SIZE, MAX_PROMPT_LENGTH, MIN_PROMPT_LENGTH},
-    error::IngressError,
-    service::{IngressRequest, IngressResponse},
+    error::IngressError, service::IngressResponse, validate::parse_ingress_request,
 };
 use crate::{
     core::correlation::RequestContext,
@@ -14,6 +12,7 @@ use axum::{
     extract::{Extension, Json, State},
     response::Json as ResponseJson,
 };
+use serde_json::Value;
 
 /// HTTP handler for AI routing ingress endpoint.
 ///
@@ -21,33 +20,34 @@ use axum::{
 /// inherit `request_id` and `client_correlation_id` from this span.
 ///
 /// # Flow
-/// 1. Validates inference capability and prompt/metadata bounds
-/// 2. Processes the request through stateless configured routing
-/// 3. Returns JSON response or error
+/// 1. Validates inference capability
+/// 2. Parses the canonical request contract and prompt/parameter bounds
+/// 3. Processes the request through stateless configured routing
+/// 4. Returns JSON response or error
 ///
 /// # Parameters
 /// - `state` - Application state with shared services (injected via Axum state)
 /// - `request_context` - Request correlation context (injected by correlation_id_middleware)
 /// - `auth_context` - Authentication context (injected by auth middleware)
-/// - `request` - JSON AI routing request with prompt and metadata
+/// - `body` - JSON AI routing request
 ///
 /// # Returns
 /// JSON response with AI content, model info, cost, and timing
 #[tracing::instrument(
-    skip(state, request_context, auth_context, request),
+    skip(state, request_context, auth_context, body),
     fields(
         request_id = %request_context.request_id,
         client_correlation_id = ?request_context.client_correlation_id,
         user_id = %auth_context.client_id,
         endpoint = "/api/v1/route",
-        prompt_length = request.prompt.len(),
+        prompt_length = tracing::field::Empty,
     )
 )]
 pub async fn ingress_handler(
     State(state): State<AppState>,
     Extension(request_context): Extension<RequestContext>,
     auth_context: AuthContext,
-    Json(request): Json<IngressRequest>,
+    Json(body): Json<Value>,
 ) -> Result<ResponseJson<IngressResponse>, IngressError> {
     tracing::info!("Incoming AI routing request");
 
@@ -59,40 +59,8 @@ pub async fn ingress_handler(
         return Err(IngressError::AuthorizationFailed);
     }
 
-    let prompt_len = request.prompt.trim().chars().count();
-
-    if prompt_len < MIN_PROMPT_LENGTH {
-        tracing::warn!("Request validation failed: empty prompt");
-        return Err(IngressError::InvalidRequest(
-            "Prompt cannot be empty".to_string(),
-        ));
-    }
-
-    if prompt_len > MAX_PROMPT_LENGTH {
-        tracing::warn!(
-            prompt_len = prompt_len,
-            "Request validation failed: prompt too long"
-        );
-        return Err(IngressError::InvalidRequest(format!(
-            "Prompt exceeds maximum length of {} characters",
-            MAX_PROMPT_LENGTH
-        )));
-    }
-
-    let metadata_size = serde_json::to_vec(&request.metadata)
-        .map(|bytes| bytes.len())
-        .unwrap_or(usize::MAX);
-    if metadata_size > MAX_METADATA_SIZE {
-        tracing::warn!(
-            metadata_size = metadata_size,
-            "Request validation failed: metadata too large"
-        );
-        return Err(IngressError::InvalidRequest(format!(
-            "Metadata exceeds maximum size of {} bytes",
-            MAX_METADATA_SIZE
-        )));
-    }
-
+    let request = parse_ingress_request(&body, &state.settings.limits)?;
+    tracing::Span::current().record("prompt_length", request.prompt.len());
     tracing::debug!("Request validation passed");
 
     match state.ingress_service.process_request(request).await {

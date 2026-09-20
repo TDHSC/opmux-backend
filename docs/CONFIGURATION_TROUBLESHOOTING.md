@@ -38,33 +38,40 @@ plans, and unsupported vendors are rejected before bind.
 - Finite zero prices are valid. Negative, NaN/Inf, and overflowing prices are not.
 - See [config/opmux.example.json](../config/opmux.example.json) for a default route with one
   fallback and a named `fast` route with a distinct primary model.
-- Clients may send optional `route` and `allow_fallback` on `POST /api/v1/route`. Omitted `route`
-  uses `default_route`. Omitted `allow_fallback` follows the configured chain; `false` keeps the
-  primary target and its retries. Clients cannot choose a vendor, model, or URL.
+- Clients may send optional `route`, `allow_fallback`, and `parameters` on `POST /api/v1/route`.
+  Omitted `route` uses `default_route`. Omitted `allow_fallback` follows the configured chain;
+  `false` keeps the primary target and its retries. Clients cannot choose a vendor, model, or URL.
+- `parameters.temperature` is a JSON number in `0.0`–`2.0`. `parameters.top_p` is a JSON number in
+  `0.0`–`1.0`. `parameters.max_tokens` is a positive JSON integer no greater than the selected
+  primary target's `max_output_tokens`. Omitted temperature/top_p are omitted upstream; omitted
+  `max_tokens` is replaced by that target cap. Values are not clamped.
+- Prompt length uses the original untrimmed Unicode scalar count and UTF-8 byte length. Both are
+  capped by `max_prompt_chars` (default 4000). Whitespace-only prompts are rejected.
 
 Optional `limits` may appear on the catalog object. Omitted fields use the defaults below.
 Environment overrides are validated with the same bounds. Canonical `OPMUX_*` variables win over
 compatible `OPENAI_TIMEOUT_MS` / `EXECUTOR_*` names.
 
-These limits are validated and injected now. Protected-request deadline, fallback execution, target
-circuits, concurrency admission, and raw-size enforcement are later milestones.
+These limits are validated and injected now. `max_prompt_chars` and per-target `max_output_tokens`
+are enforced on `POST /api/v1/route`. Protected-request deadline, fallback execution, target
+circuits, concurrency admission, and raw-body enforcement are later milestones.
 
-| Setting                          | Type    | Unit         | Default | Min | Max      |
-| -------------------------------- | ------- | ------------ | ------- | --- | -------- |
-| `protected_request_deadline_ms`  | integer | milliseconds | 30000   | 1   | 300000   |
-| `max_attempt_timeout_ms`         | integer | milliseconds | 10000   | 1   | 120000   |
-| `retries_per_target`             | integer | count        | 1       | 0   | 8        |
-| `max_total_attempts`             | integer | count        | 3       | 1   | 16       |
-| `max_fallback_targets`           | integer | count        | 2       | 0   | 8        |
-| `backoff_cap_ms`                 | integer | milliseconds | 2000    | 1   | 60000    |
-| `circuit_failure_threshold`      | integer | count        | 3       | 1   | 100      |
-| `circuit_cooldown_ms`            | integer | milliseconds | 30000   | 1   | 600000   |
-| `max_concurrent_generations`     | integer | count        | 32      | 1   | 1024     |
-| `max_request_body_bytes`         | integer | bytes        | 1048576 | 1   | 16777216 |
-| `max_metadata_bytes`             | integer | bytes        | 1000    | 1   | 1048576  |
-| `max_prompt_chars`               | integer | characters   | 4000    | 1   | 1000000  |
-| `max_upstream_response_bytes`    | integer | bytes        | 1048576 | 1   | 16777216 |
-| `max_output_tokens` (per target) | integer | tokens       | n/a     | 1   | 1000000  |
+| Setting                          | Type    | Unit                       | Default | Min | Max      |
+| -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |
+| `protected_request_deadline_ms`  | integer | milliseconds               | 30000   | 1   | 300000   |
+| `max_attempt_timeout_ms`         | integer | milliseconds               | 10000   | 1   | 120000   |
+| `retries_per_target`             | integer | count                      | 1       | 0   | 8        |
+| `max_total_attempts`             | integer | count                      | 3       | 1   | 16       |
+| `max_fallback_targets`           | integer | count                      | 2       | 0   | 8        |
+| `backoff_cap_ms`                 | integer | milliseconds               | 2000    | 1   | 60000    |
+| `circuit_failure_threshold`      | integer | count                      | 3       | 1   | 100      |
+| `circuit_cooldown_ms`            | integer | milliseconds               | 30000   | 1   | 600000   |
+| `max_concurrent_generations`     | integer | count                      | 32      | 1   | 1024     |
+| `max_request_body_bytes`         | integer | bytes                      | 1048576 | 1   | 16777216 |
+| `max_metadata_bytes`             | integer | bytes                      | 1000    | 1   | 1048576  |
+| `max_prompt_chars`               | integer | characters and UTF-8 bytes | 4000    | 1   | 1000000  |
+| `max_upstream_response_bytes`    | integer | bytes                      | 1048576 | 1   | 16777216 |
+| `max_output_tokens` (per target) | integer | tokens                     | n/a     | 1   | 1000000  |
 
 Zero retries means no extra attempts after the first call; it is not the same as zero actual
 attempts (`max_total_attempts` minimum is 1). Fractional integers are rejected.

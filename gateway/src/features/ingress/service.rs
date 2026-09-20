@@ -8,23 +8,38 @@ use super::{
 };
 use crate::core::config::Settings;
 use crate::features::executor::service::ExecutorService;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use serde_json::{json, Number, Value};
 use std::sync::Arc;
 
+/// Typed generation options accepted by ingress.
+///
+/// Omitted `temperature` and `top_p` are left off the provider JSON so the
+/// provider default applies. Omitted `max_tokens` uses the selected primary
+/// target's `max_output_tokens`.
+#[derive(Clone, Debug, Default)]
+pub struct GenerationParameters {
+    /// Sampling temperature in `[0.0, 2.0]`.
+    pub temperature: Option<Number>,
+    /// Nucleus sampling in `[0.0, 1.0]`.
+    pub top_p: Option<Number>,
+    /// Positive integer token cap, at most the selected target's output cap.
+    pub max_tokens: Option<u32>,
+}
+
 /// Incoming AI routing request from clients.
-#[derive(Deserialize)]
 pub struct IngressRequest {
-    /// User's prompt/message for AI processing.
+    /// Original user prompt. Forwarded unchanged after validation.
     pub prompt: String,
     /// Bounded opaque metadata. Never forwarded, logged, or persisted.
-    pub metadata: serde_json::Value,
+    pub metadata: Value,
     /// Optional configured route name. Omitted selects the catalog default.
-    #[serde(default)]
     pub route: Option<String>,
     /// Optional fallback opt-out. Omitted or `true` follows the configured
     /// chain; `false` limits execution to the primary without disabling retries.
-    #[serde(default)]
     pub allow_fallback: Option<bool>,
+    /// Optional typed generation controls.
+    pub parameters: GenerationParameters,
 }
 
 /// AI assistant response structure.
@@ -89,8 +104,9 @@ impl IngressService {
     /// # Flow
     /// 1. Selects the configured default or named route
     /// 2. Builds a flat target plan, honoring fallback opt-out
-    /// 3. Sends only the original user prompt to the executor
-    /// 4. Returns the execution result
+    /// 3. Rejects `max_tokens` above the selected primary cap
+    /// 4. Forwards the original prompt and accepted generation options
+    /// 5. Returns the execution result
     ///
     /// # Parameters
     /// - `request` - AI routing request with prompt, opaque metadata, and optional route controls
@@ -99,7 +115,8 @@ impl IngressService {
     /// Complete AI response with metadata (cost, model, processing time)
     ///
     /// # Errors
-    /// Returns `InvalidRequest` for an unknown route before provider access.
+    /// Returns `InvalidRequest` for an unknown route or a token cap the selected
+    /// primary cannot satisfy, before provider access.
     #[tracing::instrument(
         skip(self, request),
         fields(prompt_length = request.prompt.len())
@@ -124,14 +141,34 @@ impl IngressService {
             "Selected configured route"
         );
 
-        let payload = serde_json::json!({
+        if let Some(max_tokens) = request.parameters.max_tokens {
+            if max_tokens > resolved.max_output_tokens {
+                return Err(IngressError::InvalidRequest(
+                    "max_tokens exceeds the selected target's max_output_tokens"
+                        .to_string(),
+                ));
+            }
+        }
+
+        let max_tokens = request
+            .parameters
+            .max_tokens
+            .unwrap_or(resolved.max_output_tokens);
+        let mut payload = json!({
             "messages": [
                 {
                     "role": "user",
                     "content": request.prompt,
                 }
             ],
+            "max_tokens": max_tokens,
         });
+        if let Some(temperature) = request.parameters.temperature {
+            payload["temperature"] = Value::Number(temperature);
+        }
+        if let Some(top_p) = request.parameters.top_p {
+            payload["top_p"] = Value::Number(top_p);
+        }
 
         tracing::debug!("Executing LLM call via ExecutorService");
         let llm_result = self

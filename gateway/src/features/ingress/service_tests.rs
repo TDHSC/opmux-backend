@@ -11,7 +11,7 @@ mod tests {
     };
     use crate::features::ingress::{
         error::IngressError,
-        service::{IngressRequest, IngressService},
+        service::{GenerationParameters, IngressRequest, IngressService},
     };
     use async_trait::async_trait;
     use serde_json::json;
@@ -114,6 +114,7 @@ mod tests {
                 metadata: json!({ "rewrite": false, "conversation_id": "ignored" }),
                 route: None,
                 allow_fallback: None,
+                parameters: GenerationParameters::default(),
             })
             .await
             .expect("ingress request should succeed");
@@ -137,6 +138,7 @@ mod tests {
                 metadata: json!({}),
                 route: Some("fast".to_string()),
                 allow_fallback: Some(false),
+                parameters: GenerationParameters::default(),
             })
             .await
             .expect("named route should succeed");
@@ -154,6 +156,7 @@ mod tests {
                 metadata: json!({}),
                 route: Some("missing".to_string()),
                 allow_fallback: None,
+                parameters: GenerationParameters::default(),
             })
             .await;
 
@@ -175,6 +178,7 @@ mod tests {
                 metadata: json!({}),
                 route: None,
                 allow_fallback: Some(false),
+                parameters: GenerationParameters::default(),
             })
             .await;
 
@@ -188,6 +192,35 @@ mod tests {
             }
             _ => panic!(
                 "Expected UnsupportedModel wrapped by IngressError::ExecutionFailed"
+            ),
+        }
+    }
+
+    #[tokio::test]
+    async fn max_tokens_above_primary_cap_fails_before_execution() {
+        let service =
+            service_with_models(vec!["example-chat-model", "example-chat-model-mini"]);
+
+        let result = service
+            .process_request(IngressRequest {
+                prompt: "too many tokens".to_string(),
+                metadata: json!({}),
+                route: None,
+                allow_fallback: Some(false),
+                parameters: GenerationParameters {
+                    max_tokens: Some(513),
+                    ..GenerationParameters::default()
+                },
+            })
+            .await;
+
+        match result {
+            Err(IngressError::InvalidRequest(message)) => {
+                assert!(message.contains("max_output_tokens"));
+            }
+            other => panic!(
+                "expected primary cap rejection, got success={}",
+                other.is_ok()
             ),
         }
     }

@@ -9,9 +9,14 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - `POST /api/v1/route`: stateless configured routing protected by inference API-key authentication.
   Omitted `route` uses the catalog default; a named route selects that route's primary target.
   Unknown routes return `400` before any provider call. Omitted `allow_fallback` follows the
-  configured chain; `false` limits execution to the primary without disabling its retries.
-  Management credentials receive `403` and do not generate. Metadata stays opaque and is not
-  forwarded, logged, or persisted.
+  configured chain; `false` limits execution to the primary without disabling its retries. Optional
+  `parameters.temperature` (`0.0`–`2.0`), `parameters.top_p` (`0.0`–`1.0`), and integral
+  `parameters.max_tokens` are validated against the selected primary cap and forwarded as JSON
+  numbers/integers. Omitted parameters use documented defaults (provider sampling defaults; target
+  `max_output_tokens` for `max_tokens`). Unknown controls, `stream`, and `rewrite` return `400`.
+  Prompt bounds use the original untrimmed character and UTF-8 byte lengths. Management credentials
+  receive `403` and do not generate. Metadata stays opaque and is not forwarded, logged, or
+  persisted.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. Inventory returns
   at most 100 safe metadata rows, newest first, with optional `limit`/`offset`/`kind` paging. Query
@@ -30,9 +35,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 **Implementation boundary:** Request authentication uses persisted API keys in local Supabase.
 Provision tenants with `opmux-admin`; former public mock keys are rejected. Ingress selects
 operator-configured routes only; there is no Memory/Router service and no conversation history.
-Typed generation-parameter validation, faithful OpenAI result mapping, and eligible fallback policy
-are later work. Planned Rewrite/Validation microservices and additional vendors should not be
-treated as implemented capabilities.
+Faithful OpenAI result mapping and eligible fallback policy are later work. Planned
+Rewrite/Validation microservices and additional vendors should not be treated as implemented
+capabilities. Explicit `stream`/`rewrite` requests are rejected.
 
 ## Getting Started
 

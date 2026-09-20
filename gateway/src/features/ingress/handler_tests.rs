@@ -215,6 +215,26 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ingress_handler_returns_400_for_malformed_json() {
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .body(Body::from("{"))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(!body_str.contains("Mock handler response"));
+    }
+
+    #[tokio::test]
     async fn test_ingress_handler_returns_400_for_unknown_route() {
         let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
 
@@ -285,6 +305,55 @@ mod tests {
             .unwrap();
         let body_str = String::from_utf8(body.to_vec()).unwrap();
         assert!(body_str.contains("Prompt exceeds maximum length"));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_handler_returns_400_for_unsupported_stream_control() {
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "prompt": "Hello", "metadata": {}, "stream": true }).to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("stream is not supported"));
+        assert!(!body_str.contains("Mock handler response"));
+    }
+
+    #[tokio::test]
+    async fn test_ingress_handler_returns_400_for_unknown_top_level_control() {
+        let app = build_test_app(vec!["example-chat-model", "example-chat-model-mini"]);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/route")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                json!({ "prompt": "Hello", "metadata": {}, "model": "gpt-4" })
+                    .to_string(),
+            ))
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body_str = String::from_utf8(body.to_vec()).unwrap();
+        assert!(body_str.contains("unknown control"));
+        assert!(!body_str.contains("Mock handler response"));
     }
 
     #[tokio::test]

@@ -13,6 +13,8 @@ pub(crate) struct ResolvedRoute {
     pub route_id: String,
     /// Primary target identifier from the catalog.
     pub target_id: String,
+    /// Inclusive output-token cap of the selected primary target.
+    pub max_output_tokens: u32,
     /// Flat execution plan for the executor boundary.
     pub plan: RoutePlan,
 }
@@ -67,6 +69,7 @@ pub(crate) fn resolve_route(
     Ok(ResolvedRoute {
         route_id,
         target_id: route.primary.clone(),
+        max_output_tokens: primary.max_output_tokens,
         plan: RoutePlan {
             vendor_id: primary.vendor.as_str().to_string(),
             model_id: primary.model.clone(),
@@ -116,6 +119,7 @@ mod tests {
         assert_eq!(resolved.target_id, "primary");
         assert_eq!(resolved.plan.vendor_id, "openai");
         assert_eq!(resolved.plan.model_id, "example-chat-model");
+        assert_eq!(resolved.max_output_tokens, 512);
         assert_eq!(resolved.plan.fallback_plans.len(), 1);
         assert_eq!(
             resolved.plan.fallback_plans[0].model_id,
@@ -131,6 +135,7 @@ mod tests {
         assert_eq!(resolved.route_id, "fast");
         assert_eq!(resolved.target_id, "secondary");
         assert_eq!(resolved.plan.model_id, "example-chat-model-mini");
+        assert_eq!(resolved.max_output_tokens, 256);
         assert!(resolved.plan.fallback_plans.is_empty());
     }
 

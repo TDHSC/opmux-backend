@@ -192,36 +192,64 @@ Protected AI routing endpoint.
   - `X-API-Key`: required inference credential; missing, empty, duplicate, comma-joined, unknown,
     revoked, and former public mock keys (`test-api-key-123`, `dev-api-key-456`) return `401`
   - `X-Correlation-ID`: optional, echoed in response when provided
-- Request body:
+- Request body (canonical contract):
 
 ```json
 {
   "prompt": "hello",
   "metadata": {},
   "route": "fast",
-  "allow_fallback": true
+  "allow_fallback": true,
+  "parameters": {
+    "temperature": 0.2,
+    "top_p": 1.0,
+    "max_tokens": 32
+  }
 }
 ```
 
-- `prompt` (required): non-empty and <= 4000 characters. Each request sends only this user prompt.
-- `metadata` (required): bounded opaque JSON, serialized size <= 1000 bytes. It is not forwarded
-  upstream, logged, or persisted, and cannot select a route, model, vendor, URL, or tenant.
-- `route` (optional): configured route name. Omitted selects the catalog `default_route`. An unknown
-  name returns `400` before any provider call. Clients cannot inject an arbitrary provider, model,
-  or URL.
+Existing `{ "prompt": "...", "metadata": {} }` requests remain valid and use the documented defaults
+below.
+
+- `prompt` (required string): must contain a non-whitespace character. Length is measured on the
+  **original untrimmed** string. Inclusive maxima are `max_prompt_chars` Unicode scalar values and
+  `max_prompt_chars` UTF-8 bytes (default `4000` for both units, overridable by catalog/env).
+  Trimming cannot bypass those bounds. An accepted prompt is forwarded unchanged as the user
+  message. Whitespace-only input returns `400`.
+- `metadata` (required): bounded opaque JSON, serialized size <= `max_metadata_bytes` (default 1000
+  bytes). It is not forwarded upstream, logged, or persisted, and cannot select a route, model,
+  vendor, URL, or tenant.
+- `route` (optional string): configured route name. Omitted selects the catalog `default_route`. An
+  unknown name returns `400` before any provider call. Clients cannot inject an arbitrary provider,
+  model, or URL. A non-string value returns `400`.
 - `allow_fallback` (optional boolean): omitted follows the configured fallback chain; `true` does
   the same and cannot invent fallbacks a route does not have; `false` limits execution to the
-  primary target without disabling that target's bounded retries. Eligible fallback switching is
-  enforced by the executor in a later milestone.
+  primary target without disabling that target's bounded retries. A non-boolean value returns `400`.
+  Eligible fallback switching is enforced by the executor in a later milestone.
+- `parameters` (optional object): typed generation controls. Unknown parameter names return `400`.
+  Values are not coerced or clamped.
+  - `temperature` (optional JSON number): inclusive range `0.0` through `2.0`. Omitted: not sent
+    upstream (provider default `1.0`).
+  - `top_p` (optional JSON number): inclusive range `0.0` through `1.0`. Omitted: not sent upstream
+    (provider default `1.0`).
+  - `max_tokens` (optional JSON integer): integral, `>= 1`, and `<=` the selected primary target's
+    `max_output_tokens`. Omitted: the selected primary cap is sent as `max_tokens`. Fractional,
+    zero, negative, and above-cap values return `400` with no provider call.
+- Unsupported controls: top-level `stream` and `rewrite` (including `true`) return `400`. Unknown
+  top-level fields such as `model` or `url` return `400`. Nested keys inside `metadata` remain
+  opaque and cannot change controls.
 
 - Validation:
-  - `prompt` must be non-empty and <= 4000 chars
-  - serialized `metadata` must be <= 1000 bytes
-  - `route`, when present, must name a configured route
+  - `prompt` must be a nonempty (after trim) string within the original character and byte bounds
+  - serialized `metadata` must be <= `max_metadata_bytes`
+  - `route`, when present, must be a string naming a configured route
+  - `allow_fallback`, when present, must be a boolean
+  - `parameters` types/ranges and the selected primary token cap are checked before upstream access
+  - Invalid JSON that cannot be decoded and semantic/typed field violations both return `400`.
 
 - Response codes:
   - `200 OK` success
-  - `400 Bad Request` invalid request
+  - `400 Bad Request` invalid JSON, unknown/unsupported control, or out-of-range parameter
   - `401 Unauthorized` invalid/missing/ambiguous API key
   - `403 Forbidden` authenticated management key (generation requires inference)
   - `500 Internal Server Error` execution failed
