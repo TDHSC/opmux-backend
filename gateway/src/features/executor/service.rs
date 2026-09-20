@@ -272,7 +272,7 @@ impl ExecutorService {
                     }
                 }
             }
-            CircuitAdmission::Allow => {
+            CircuitAdmission::Allow(permit) => {
                 match self
                     .execute_attempts(
                         plan,
@@ -284,7 +284,7 @@ impl ExecutorService {
                     .await
                 {
                     Ok(result) => {
-                        self.circuits.record_success(&plan.target_id);
+                        permit.success();
                         Ok(result)
                     }
                     Err(ExecutorError::DeadlineExceeded) => {
@@ -292,7 +292,7 @@ impl ExecutorService {
                     }
                     Err(error) => {
                         if Self::is_circuit_failure(&error) {
-                            self.circuits.record_failure(&plan.target_id);
+                            permit.transient_failure();
                         }
                         Err(error)
                     }

@@ -1,10 +1,18 @@
-//! Target-scoped circuit breakers with single-flight half-open probes.
+//! Target-scoped circuit breakers with generation-owned completions.
 //!
 //! Circuits are keyed by catalog target identity, not vendor. One model's
 //! transient failure can open its own circuit without blocking a healthy
 //! same-provider fallback. At most one recovery probe is in flight per
-//! target; dropping a probe future releases ownership without wedging
-//! half-open state.
+//! target.
+//!
+//! Every closed admission and half-open probe receives a generation/phase
+//! token. Completions apply only while that ownership is still current.
+//! Opening, probe admission, and recovery advance generation so a stale
+//! success cannot close a newer open circuit, a stale failure cannot reopen
+//! after recovery, and probe Drop releases only its matching half-open
+//! ownership. Same-generation closed completions still count in completion
+//! order. Request results remain deliverable even when the circuit write is
+//! ignored.
 
 use super::config::ExecutorConfig;
 use std::collections::HashMap;
@@ -73,64 +81,88 @@ enum CircuitPhase {
     HalfOpen { in_flight: bool },
 }
 
-impl Default for CircuitPhase {
+struct CircuitState {
+    generation: u64,
+    phase: CircuitPhase,
+}
+
+impl Default for CircuitState {
     fn default() -> Self {
-        Self::Closed { failures: 0 }
+        Self {
+            generation: 0,
+            phase: CircuitPhase::Closed { failures: 0 },
+        }
     }
 }
 
 /// Result of asking a target circuit whether a hop may start.
 pub(crate) enum CircuitAdmission {
     /// Closed circuit; use the normal retry budget.
-    Allow,
+    Allow(CircuitPermit),
     /// Open, or a probe is already in flight. Skip without an attempt.
     Reject { retry_after_ms: u64 },
     /// This caller owns the single half-open probe.
-    Probe(ProbeGuard),
+    Probe(CircuitPermit),
 }
 
-enum ProbeOutcome {
+#[derive(Clone, Copy)]
+enum PermitKind {
+    Closed,
+    Probe,
+}
+
+#[derive(Clone, Copy)]
+enum CompletionOutcome {
     Success,
     TransientFailure,
     Permanent,
 }
 
-/// Releases probe ownership on drop unless the outcome was recorded.
-pub(crate) struct ProbeGuard {
+/// Ownership token issued at admission.
+///
+/// Completions apply only while the target's generation and phase still
+/// match this token. Dropping an unsettled probe permit releases only that
+/// probe's half-open ownership.
+pub(crate) struct CircuitPermit {
     registry: TargetCircuitRegistry,
     target_id: String,
+    generation: u64,
+    kind: PermitKind,
     settled: bool,
 }
 
-impl ProbeGuard {
-    /// Closes the circuit after a healthy probe.
+impl CircuitPermit {
+    /// Records a healthy hop or probe against this admission.
     pub(crate) fn success(mut self) {
-        self.settle(ProbeOutcome::Success);
+        self.settle(CompletionOutcome::Success);
     }
 
-    /// Reopens the circuit for cooldown after a transient probe failure.
+    /// Records an eligible transient failure against this admission.
     pub(crate) fn transient_failure(mut self) {
-        self.settle(ProbeOutcome::TransientFailure);
+        self.settle(CompletionOutcome::TransientFailure);
     }
 
-    /// Drops half-open state without counting a permanent error as transient.
+    /// Drops half-open ownership without counting a permanent error as
+    /// transient.
     pub(crate) fn ignore_permanent(mut self) {
-        self.settle(ProbeOutcome::Permanent);
+        self.settle(CompletionOutcome::Permanent);
     }
 
-    fn settle(&mut self, outcome: ProbeOutcome) {
+    fn settle(&mut self, outcome: CompletionOutcome) {
         if self.settled {
             return;
         }
         self.settled = true;
-        self.registry.finish_probe(&self.target_id, outcome);
+        self.registry
+            .complete(&self.target_id, self.generation, self.kind, outcome);
     }
 }
 
-impl Drop for ProbeGuard {
+impl Drop for CircuitPermit {
     fn drop(&mut self) {
-        if !self.settled {
-            self.registry.release_probe(&self.target_id);
+        if !self.settled && matches!(self.kind, PermitKind::Probe) {
+            self.registry
+                .release_probe(&self.target_id, self.generation);
         }
     }
 }
@@ -138,7 +170,7 @@ impl Drop for ProbeGuard {
 /// In-process circuit map keyed by catalog target ID.
 #[derive(Clone)]
 pub(crate) struct TargetCircuitRegistry {
-    inner: Arc<Mutex<HashMap<String, CircuitPhase>>>,
+    inner: Arc<Mutex<HashMap<String, CircuitState>>>,
     threshold: u32,
     cooldown: Duration,
     clock: Arc<dyn InstantClock>,
@@ -172,7 +204,7 @@ impl TargetCircuitRegistry {
         )
     }
 
-    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CircuitPhase>> {
+    fn lock(&self) -> std::sync::MutexGuard<'_, HashMap<String, CircuitState>> {
         self.inner
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -195,53 +227,99 @@ impl TargetCircuitRegistry {
             .max(1)
     }
 
+    fn closed_permit(&self, target_id: &str, generation: u64) -> CircuitPermit {
+        CircuitPermit {
+            registry: self.clone(),
+            target_id: target_id.to_string(),
+            generation,
+            kind: PermitKind::Closed,
+            settled: false,
+        }
+    }
+
+    fn probe_permit(&self, target_id: &str, generation: u64) -> CircuitPermit {
+        CircuitPermit {
+            registry: self.clone(),
+            target_id: target_id.to_string(),
+            generation,
+            kind: PermitKind::Probe,
+            settled: false,
+        }
+    }
+
+    fn start_probe(state: &mut CircuitState) {
+        state.generation = state.generation.wrapping_add(1);
+        state.phase = CircuitPhase::HalfOpen { in_flight: true };
+    }
+
+    fn set_open(&self, state: &mut CircuitState, now: Instant) {
+        state.generation = state.generation.wrapping_add(1);
+        state.phase = CircuitPhase::Open {
+            opened_until: now + self.cooldown,
+        };
+    }
+
+    fn close_circuit(state: &mut CircuitState) {
+        state.generation = state.generation.wrapping_add(1);
+        state.phase = CircuitPhase::Closed { failures: 0 };
+    }
+
     /// Decides whether this target may start an upstream call.
     pub(crate) fn admit(&self, target_id: &str) -> CircuitAdmission {
         let mut map = self.lock();
         let now = self.clock.now();
         let entry = map.entry(target_id.to_string()).or_default();
-        match *entry {
-            CircuitPhase::Closed { .. } => CircuitAdmission::Allow,
+        match entry.phase {
+            CircuitPhase::Closed { .. } => {
+                CircuitAdmission::Allow(self.closed_permit(target_id, entry.generation))
+            }
             CircuitPhase::Open { opened_until } if now < opened_until => {
                 CircuitAdmission::Reject {
                     retry_after_ms: self.retry_after_ms(opened_until),
                 }
             }
             CircuitPhase::Open { .. } => {
-                *entry = CircuitPhase::HalfOpen { in_flight: true };
-                CircuitAdmission::Probe(ProbeGuard {
-                    registry: self.clone(),
-                    target_id: target_id.to_string(),
-                    settled: false,
-                })
+                Self::start_probe(entry);
+                CircuitAdmission::Probe(self.probe_permit(target_id, entry.generation))
             }
             CircuitPhase::HalfOpen { in_flight: true } => CircuitAdmission::Reject {
                 retry_after_ms: self.cooldown_retry_after_ms(),
             },
             CircuitPhase::HalfOpen { in_flight: false } => {
-                *entry = CircuitPhase::HalfOpen { in_flight: true };
-                CircuitAdmission::Probe(ProbeGuard {
-                    registry: self.clone(),
-                    target_id: target_id.to_string(),
-                    settled: false,
-                })
+                Self::start_probe(entry);
+                CircuitAdmission::Probe(self.probe_permit(target_id, entry.generation))
             }
         }
     }
 
-    /// Resets the target to closed after a successful hop.
-    pub(crate) fn record_success(&self, target_id: &str) {
-        let mut map = self.lock();
-        map.insert(target_id.to_string(), CircuitPhase::Closed { failures: 0 });
-    }
-
-    /// Counts a completed hop's eligible transient failure.
-    pub(crate) fn record_failure(&self, target_id: &str) {
+    fn complete(
+        &self,
+        target_id: &str,
+        generation: u64,
+        kind: PermitKind,
+        outcome: CompletionOutcome,
+    ) {
         let mut map = self.lock();
         let now = self.clock.now();
-        let entry = map.entry(target_id.to_string()).or_default();
-        match *entry {
-            CircuitPhase::Closed { failures } => {
+        let Some(state) = map.get_mut(target_id) else {
+            return;
+        };
+        if state.generation != generation {
+            return;
+        }
+        match (kind, state.phase, outcome) {
+            (
+                PermitKind::Closed,
+                CircuitPhase::Closed { .. },
+                CompletionOutcome::Success,
+            ) => {
+                state.phase = CircuitPhase::Closed { failures: 0 };
+            }
+            (
+                PermitKind::Closed,
+                CircuitPhase::Closed { failures },
+                CompletionOutcome::TransientFailure,
+            ) => {
                 let next = failures.saturating_add(1);
                 if next >= self.threshold {
                     tracing::warn!(
@@ -250,34 +328,38 @@ impl TargetCircuitRegistry {
                         open_duration_ms = self.cooldown_retry_after_ms(),
                         "Circuit breaker opened for target"
                     );
-                    *entry = CircuitPhase::Open {
-                        opened_until: now + self.cooldown,
-                    };
+                    self.set_open(state, now);
                 } else {
-                    *entry = CircuitPhase::Closed { failures: next };
+                    state.phase = CircuitPhase::Closed { failures: next };
                 }
             }
-            CircuitPhase::HalfOpen { .. } => {
-                *entry = CircuitPhase::Open {
-                    opened_until: now + self.cooldown,
-                };
+            (
+                PermitKind::Probe,
+                CircuitPhase::HalfOpen { .. },
+                CompletionOutcome::Success | CompletionOutcome::Permanent,
+            ) => {
+                Self::close_circuit(state);
             }
-            CircuitPhase::Open { .. } => {}
+            (
+                PermitKind::Probe,
+                CircuitPhase::HalfOpen { .. },
+                CompletionOutcome::TransientFailure,
+            ) => {
+                self.set_open(state, now);
+            }
+            _ => {}
         }
     }
 
-    fn finish_probe(&self, target_id: &str, outcome: ProbeOutcome) {
-        match outcome {
-            ProbeOutcome::Success | ProbeOutcome::Permanent => {
-                self.record_success(target_id);
-            }
-            ProbeOutcome::TransientFailure => self.record_failure(target_id),
-        }
-    }
-
-    fn release_probe(&self, target_id: &str) {
+    fn release_probe(&self, target_id: &str, generation: u64) {
         let mut map = self.lock();
-        if let Some(CircuitPhase::HalfOpen { in_flight }) = map.get_mut(target_id) {
+        let Some(state) = map.get_mut(target_id) else {
+            return;
+        };
+        if state.generation != generation {
+            return;
+        }
+        if let CircuitPhase::HalfOpen { in_flight } = &mut state.phase {
             *in_flight = false;
         }
     }

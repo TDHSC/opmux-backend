@@ -83,8 +83,11 @@ already-validated request is skipped without rewriting parameters. Target-scoped
 `circuit_failure_threshold` consecutive eligible hop failures and skip that target for
 `circuit_cooldown_ms` without consuming an attempt. A healthy same-provider fallback remains usable.
 After cooldown, at most one half-open probe is admitted per target; success closes the circuit and
-failure reopens it. Permanent credential, quota, protocol, rejection, and throttling errors do not
-open circuits. Concurrency admission and inbound raw-body enforcement are later milestones.
+failure reopens it. Each closed admission and probe carries a generation/phase token; only the
+current owner can change circuit state. A late success or failure is ignored for circuit accounting
+but the request result is still returned. Permanent credential, quota, protocol, rejection, and
+throttling errors do not open circuits. Concurrency admission and inbound raw-body enforcement are
+later milestones.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |

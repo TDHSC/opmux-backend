@@ -19,33 +19,36 @@ and provides health checks, correlation IDs, and Prometheus metrics.
   unless the overall deadline expires (`504`). Transient hop failures open a target-scoped circuit
   after `circuit_failure_threshold` consecutive failures; an open primary is skipped without using
   an attempt and does not block a healthy same-provider fallback. After `circuit_cooldown_ms`, at
-  most one half-open probe may run; success closes the circuit and failure reopens it. If every
-  eligible target is open, the response is `503 CIRCUIT_OPEN` with no generation call. Permanent
-  credential, quota, protocol, and rejection errors do not open circuits. Same-account throttling
-  may retry the current hop under the shared budget, but it does not open or reopen circuits. A
-  complete bounded HTTP 429 JSON body whose `error.code` or `error.type` is `insufficient_quota` is
-  terminal quota (`502 UPSTREAM_ERROR`) with no retry or fallback. Optional `parameters.temperature`
-  (`0.0`–`2.0`), `parameters.top_p` (`0.0`–`1.0`), and integral `parameters.max_tokens` are
-  validated against the selected primary cap and forwarded as JSON numbers/integers. Omitted
-  parameters use documented defaults (provider sampling defaults; target `max_output_tokens` for
-  `max_tokens`). Unknown controls, `stream`, and `rewrite` return `400`. Prompt bounds use the
-  original untrimmed character and UTF-8 byte lengths. Management credentials receive `403` and do
-  not generate. Metadata stays opaque and is not forwarded, logged, or persisted. Successful
-  responses preserve provider `content`, `role`, and `finish_reason`. Successful Chat Completions
-  `message.role` must be exactly `assistant`; other roles fail as protocol errors. `model_used` is
-  the provider-reported model, which may differ from the selected target alias sent as the request
-  `model`. `cost` is a USD estimate for that successful response from the selected target's
-  configured per-million prices (illustrative `1.0`/`2.0` with 120/30 tokens is `0.00018`), rounded
-  to 8 decimal places. Distinct target IDs keep their own prices even when they request the same
-  provider model. Missing prices fail rather than becoming zero. The estimate is not current
-  provider billing and does not total retries or abandoned work. Malformed successful payloads,
-  empty choices, missing or invalid required fields, non-assistant roles, and impossible usage fail
-  as upstream protocol errors without fabricating model, content, usage, role, or cost. Provider
-  response bodies are capped by `max_upstream_response_bytes` while the bytes are read, including
-  chunked transfer and advertised `Content-Length`. Those protocol faults are not retried as network
-  failures. Protected endpoint errors, including JSON and path extraction rejections, use
-  `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream credential, protocol,
-  and oversized failures are sanitized `502` and are never a gateway `401`.
+  most one half-open probe may run; success closes the circuit and failure reopens it. Completions
+  apply only to the still-current admission generation and phase, so a late success cannot close a
+  newer open circuit before cooldown, a late failure cannot reopen a recovered target, and a late
+  closed completion cannot admit another probe while one is held. The late request's result is still
+  returned. If every eligible target is open, the response is `503 CIRCUIT_OPEN` with no generation
+  call. Permanent credential, quota, protocol, and rejection errors do not open circuits.
+  Same-account throttling may retry the current hop under the shared budget, but it does not open or
+  reopen circuits. A complete bounded HTTP 429 JSON body whose `error.code` or `error.type` is
+  `insufficient_quota` is terminal quota (`502 UPSTREAM_ERROR`) with no retry or fallback. Optional
+  `parameters.temperature` (`0.0`–`2.0`), `parameters.top_p` (`0.0`–`1.0`), and integral
+  `parameters.max_tokens` are validated against the selected primary cap and forwarded as JSON
+  numbers/integers. Omitted parameters use documented defaults (provider sampling defaults; target
+  `max_output_tokens` for `max_tokens`). Unknown controls, `stream`, and `rewrite` return `400`.
+  Prompt bounds use the original untrimmed character and UTF-8 byte lengths. Management credentials
+  receive `403` and do not generate. Metadata stays opaque and is not forwarded, logged, or
+  persisted. Successful responses preserve provider `content`, `role`, and `finish_reason`.
+  Successful Chat Completions `message.role` must be exactly `assistant`; other roles fail as
+  protocol errors. `model_used` is the provider-reported model, which may differ from the selected
+  target alias sent as the request `model`. `cost` is a USD estimate for that successful response
+  from the selected target's configured per-million prices (illustrative `1.0`/`2.0` with 120/30
+  tokens is `0.00018`), rounded to 8 decimal places. Distinct target IDs keep their own prices even
+  when they request the same provider model. Missing prices fail rather than becoming zero. The
+  estimate is not current provider billing and does not total retries or abandoned work. Malformed
+  successful payloads, empty choices, missing or invalid required fields, non-assistant roles, and
+  impossible usage fail as upstream protocol errors without fabricating model, content, usage, role,
+  or cost. Provider response bodies are capped by `max_upstream_response_bytes` while the bytes are
+  read, including chunked transfer and advertised `Content-Length`. Those protocol faults are not
+  retried as network failures. Protected endpoint errors, including JSON and path extraction
+  rejections, use `{"error":{"code","message","request_id"}}` with `X-Request-ID`. Upstream
+  credential, protocol, and oversized failures are sanitized `502` and are never a gateway `401`.
 - `POST /api/v1/auth/keys` and `GET /api/v1/auth/keys`: management-only, same-tenant key creation
   and inventory. Creation returns the secret once with `Cache-Control: no-store`. That one-time
   output is not guaranteed delivery or exactly-once issuance. A timeout or disconnect during

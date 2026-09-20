@@ -144,7 +144,8 @@ curl -i http://127.0.0.1:3000/metrics
 
 - Consecutive eligible transient failures opened every usable target on the route.
 - Circuits are target-scoped: one model can be open while another same-provider target still works.
-- Wait for the configured cooldown, then a single half-open probe may recover that target.
+- Wait for the configured cooldown, then a single half-open probe may recover that target. Late
+  completions from earlier admissions do not close or reopen a newer circuit state.
 - Investigate upstream network/timeout conditions for the failing target. Permanent credential,
   quota, and throttling failures do not open circuits.
 
