@@ -3,6 +3,8 @@
 //! These tests fail when DATABASE_URL is missing or the owned database is
 //! unreachable. They do not skip, contact hosted databases, or print secrets.
 
+mod support;
+
 use chrono::{Duration, TimeZone, Utc};
 use gateway::core::db::DatabasePoolConfig;
 use gateway::features::auth::{
@@ -13,41 +15,8 @@ use gateway::features::auth::{
 use serial_test::serial;
 use sqlx::Row;
 use std::sync::Arc;
+use support::{required_database_url, test_pool};
 use uuid::Uuid;
-
-fn required_database_url() -> String {
-    match std::env::var("DATABASE_URL") {
-        Ok(url) if !url.trim().is_empty() => url,
-        _ => panic!(
-            "DATABASE_URL is required for persistence tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable."
-        ),
-    }
-}
-
-async fn test_pool() -> sqlx::PgPool {
-    let config = DatabasePoolConfig::new(required_database_url())
-        .expect("DATABASE_URL must parse")
-        .with_max_connections(2)
-        .expect("test pool size")
-        .with_acquire_timeout(std::time::Duration::from_secs(10))
-        .expect("test acquire timeout");
-    let pool = config.connect().await.unwrap_or_else(|_| {
-        panic!(
-            "failed to connect to DATABASE_URL; persistence tests require the owned local Supabase and do not skip"
-        )
-    });
-    let present: bool =
-        sqlx::query_scalar("SELECT to_regclass('opmux_private.api_keys') IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("database must answer catalog queries");
-    if !present {
-        panic!(
-            "opmux_private.api_keys is missing; run scripts/db-migrate.sh against the owned local database. Persistence tests do not skip."
-        );
-    }
-    pool
-}
 
 fn unique_digest() -> KeyDigest {
     let mut bytes = [0_u8; KEY_DIGEST_LEN];

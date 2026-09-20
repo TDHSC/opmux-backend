@@ -14,8 +14,9 @@ use gateway::{
 use std::sync::Arc;
 
 pub use db::{
-    auth_service_from_pool, cleanup_clients, provision_inference_key,
-    required_database_url, test_pool, IssuedInference,
+    auth_service_from_pool, cleanup_clients, owned_database_url_violation,
+    provision_inference_key, required_database_url, test_pool, IssuedInference,
+    OWNED_DATABASE_HOST, OWNED_DATABASE_NAME, OWNED_DATABASE_PORT,
 };
 pub use env::isolate_provider_environment;
 pub use simulator::{

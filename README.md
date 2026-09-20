@@ -109,13 +109,16 @@ API-key persistence uses SQLx 0.8.6 against Postgres. Schema lives in
 migrate on startup.
 
 ```bash
-bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
 ```
 
-The script uses `DATABASE_URL` when set, otherwise the mission-owned loopback database at
-`127.0.0.1:55432`. Do not run `supabase start` from this repository (that would create a second
-stack). Do not use hosted project linking. Persistence tests fail if the owned database is missing;
-they do not skip.
+`scripts/with-owned-database.sh` always verifies the owned container, the exact `127.0.0.1:55432`
+loopback binding, and readiness, then replaces any inherited `DATABASE_URL` privately. Use that
+wrapper for local tests, smoke, and mission migrations. `scripts/db-migrate.sh` itself still applies
+the same history to a chosen `DATABASE_URL` for operator/production Postgres; that path is not
+restricted to localhost. Do not run `supabase start` from this repository (that would create a
+second stack). Do not use hosted project linking. Persistence tests fail if the owned database is
+missing; they do not skip.
 
 Gateway startup requires `DATABASE_URL` after catalog load. Missing or invalid URLs fail before the
 process serves protected work. Use a direct or session-mode pooler URL for hosted Postgres
@@ -128,21 +131,27 @@ protected routes.
 `opmux-admin` is the operator CLI, not an HTTP bootstrap. It uses `DATABASE_URL` and
 `SET ROLE opmux_operator` (override with `OPMUX_DB_ROLE`). Schema migrations stay with the database
 owner via `scripts/db-migrate.sh`; `opmux_runtime` cannot create tenants. Successful commands print
-one JSON object to stdout, including the newly generated `opmx_v1_` credential **once**. Redirect
-stdout to a mode-0600 file. Do not log the secret. There is no later retrieval; issue a replacement
-key to recover.
+one JSON object to stdout, including the newly generated `opmx_v1_` credential **once**. Write that
+stdout to a **fresh** private file created with `mktemp` (mode 0600 even under umask 022). Do not
+redirect onto an existing path or symlink. Do not log the secret. There is no later retrieval; issue
+a replacement key to recover.
 
 ```bash
+keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$keyfile"
 bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
-  tenant create --name acme > /tmp/acme-management.json
+  tenant create --name acme > "$keyfile"
+inference_file=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$inference_file"
 bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
-  key issue --client-id "$CLIENT_ID" --kind inference --name route > /tmp/acme-inference.json
+  key issue --client-id "$CLIENT_ID" --kind inference --name route > "$inference_file"
 ```
 
 HTTP generation authenticates persisted inference keys. Do not seed `test-api-key-123` or
 `dev-api-key-456` into `opmux_private`; those former public keys return 401.
 
-Wrap workspace tests so they receive the owned database URL:
+Wrap workspace tests so they receive the owned database URL. The wrapper ignores inherited remote or
+unrelated-local `DATABASE_URL` values:
 
 ```bash
 bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \

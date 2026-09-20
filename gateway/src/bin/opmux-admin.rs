@@ -1,8 +1,9 @@
 //! Operator CLI for tenant and API-key provisioning.
 //!
 //! Successful commands print one JSON object to stdout, including the newly
-//! issued credential exactly once. Redirect stdout to a mode-0600 file and
-//! keep stderr/logs free of that value. There is no later secret retrieval;
+//! issued credential exactly once. Write that stdout to a fresh private file
+//! created with `mktemp` (mode 0600 even under umask 022). Do not redirect
+//! onto an existing path or symlink. There is no later secret retrieval;
 //! recover by issuing a replacement key. HTTP bootstrap is not provided.
 
 use clap::{Parser, Subcommand, ValueEnum};
@@ -18,10 +19,16 @@ Operator-only CLI for local and migration environments.
 
 Successful tenant create and key issue commands print one JSON object to
 stdout. That object includes the newly generated credential exactly once.
-Redirect stdout to a mode-0600 file (for example `opmux-admin tenant create \
---name acme > /tmp/acme-key.json`). Do not paste secrets into tickets, logs, \
-or shell history. The secret cannot be retrieved later; issue a replacement \
-key if it is lost.
+Write it to a fresh private file created with mktemp, then chmod 600. That
+file is mode 0600 even when the process umask is 022. Do not redirect onto
+an existing path or symlink.
+
+  keyfile=$(mktemp \"${TMPDIR:-/tmp}/opmux-key.XXXXXX\")
+  chmod 600 \"$keyfile\"
+  opmux-admin tenant create --name acme > \"$keyfile\"
+
+Do not paste secrets into tickets, logs, or shell history. The secret cannot
+be retrieved later; issue a replacement key if it is lost.
 
 The CLI is not an unauthenticated HTTP bootstrap. It uses DATABASE_URL and
 assumes the connecting user can SET ROLE to OPMUX_DB_ROLE (default
@@ -34,7 +41,8 @@ scripts/db-migrate.sh. The runtime role opmux_runtime cannot create tenants.";
     about = "Provision tenants and API keys against local Supabase",
     long_about = LONG_ABOUT,
     after_help = "Secure output: secrets appear only in successful stdout JSON. \
-Store that file privately. Failed commands print no credential."
+Create a fresh mktemp file (mode 0600) instead of overwriting an existing path \
+or symlink. Failed commands print no credential."
 )]
 struct Cli {
     #[command(subcommand)]

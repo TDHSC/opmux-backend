@@ -7,12 +7,14 @@ SHA-256 `bytea` values; anonymous and Data-API roles cannot read them. Apply the
 history explicitly:
 
 ```bash
-bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
 ```
 
-Use `DATABASE_URL` for a chosen Postgres, or omit it to target the owned local database at
-`127.0.0.1:55432`. Do not enable SQLx migrators, hosted project linking, or automatic
-migrate-on-boot for each replica.
+Local tests and mission migrations must use `scripts/with-owned-database.sh`, which verifies the
+owned loopback fixture and replaces inherited `DATABASE_URL` values. For operator/production
+Postgres, run `scripts/db-migrate.sh` with a chosen `DATABASE_URL`; that path is not restricted to
+localhost. Do not enable SQLx migrators, hosted project linking, or automatic migrate-on-boot for
+each replica.
 
 Local privileges are separate:
 
@@ -33,15 +35,20 @@ management key atomically. Existing-client issuance adds one key of an explicit 
 `inference` kind.
 
 Successful commands print one JSON object to **stdout**, including the newly generated
-`opmx_v1_<base64url>` credential exactly once. Redirect stdout to a mode-0600 file. Do not copy the
-secret into logs, tickets, or shell history. Failed commands print no credential and leave no
-partial tenant/key row. Secrets cannot be retrieved later; issue a replacement key to recover.
+`opmx_v1_<base64url>` credential exactly once. Write stdout to a fresh private file created with
+`mktemp` (mode 0600 even under umask 022). Do not redirect onto an existing path or symlink. Do not
+copy the secret into logs, tickets, or shell history. Failed commands print no credential and leave
+no partial tenant/key row. Secrets cannot be retrieved later; issue a replacement key to recover.
 
 ```bash
+keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$keyfile"
 bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
-  tenant create --name acme > /tmp/acme-management.json
+  tenant create --name acme > "$keyfile"
+inference_file=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$inference_file"
 bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
-  key issue --client-id "$CLIENT_ID" --kind inference --name route > /tmp/acme-inference.json
+  key issue --client-id "$CLIENT_ID" --kind inference --name route > "$inference_file"
 ```
 
 Do not seed public mock keys (`test-api-key-123`, `dev-api-key-456`) into the database. HTTP request

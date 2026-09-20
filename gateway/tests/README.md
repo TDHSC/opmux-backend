@@ -14,10 +14,11 @@ adapter**, not only `LLMVendor` mocks.
 | `openai_adapter_http_test.rs`                            | Actual OpenAI adapter success, scripted 500, inherited env/proxy isolation                                                                                         |
 | `observability_integration_test.rs`                      | Correlation, metrics, health/ready, circuit-open via the shared router                                                                                             |
 | `config_startup_test.rs` / `startup_integration_test.rs` | Binary catalog/logging startup with canonical `OPMUX_CONFIG_FILE`                                                                                                  |
-| `auth_store_test.rs`                                     | Real owned-Supabase schema, grant, constraint, and SQLx store tests. Requires `DATABASE_URL`; does not skip                                                        |
-| `provisioning_test.rs`                                   | Shared provisioning service: two-tenant identity, digest-only storage, rollback, reconnect. Requires `DATABASE_URL`; does not skip                                 |
+| `auth_store_test.rs`                                     | Real owned-Supabase schema, grant, constraint, and SQLx store tests. Requires owned `DATABASE_URL`; does not skip                                                  |
+| `provisioning_test.rs`                                   | Shared provisioning service: two-tenant identity, digest-only storage, rollback, reconnect. Requires owned `DATABASE_URL`; does not skip                           |
 | `opmux_admin_test.rs`                                    | Actual `opmux-admin` subprocesses against real Supabase. Captures secrets privately; does not print them                                                           |
-| `support/`                                               | Environment isolation, loopback simulator with request capture and scripted replies                                                                                |
+| `owned_database_guard_test.rs`                           | Fake-Docker wrapper, mutating-helper URL rejection, and documented private CLI output recipe. Does not need a real database                                        |
+| `support/`                                               | Environment isolation, loopback simulator with request capture and scripted replies, owned-database URL guard                                                      |
 
 Fixtures bind `127.0.0.1` with an OS-assigned port and abort the owned task on drop. They clear
 inherited `OPENAI_*`, `ANTHROPIC_API_KEY`, and proxy variables, set `NO_PROXY=*`, and inject dummy
@@ -35,10 +36,12 @@ Do not treat these simulator results as live OpenAI verification.
 ## Persistence tests (owned local Supabase)
 
 `auth_store_test.rs` talks to the owned Postgres on `127.0.0.1:55432`. Apply migrations first, then
-inject `DATABASE_URL` without printing it:
+inject `DATABASE_URL` without printing it. `scripts/with-owned-database.sh` verifies the owned
+container and replaces inherited remote or unrelated-local URLs. Direct test helpers reject
+non-owned destinations and extra connection options.
 
 ```bash
-bash scripts/db-migrate.sh
+bash scripts/with-owned-database.sh bash scripts/db-migrate.sh
 bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
   -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy \
   OPENAI_BASE_URL=http://127.0.0.1:9/v1 NO_PROXY='*' \
@@ -48,10 +51,11 @@ bash scripts/with-owned-database.sh env -u OPENAI_API_KEY -u ANTHROPIC_API_KEY \
 If the database is down or the schema is missing, these tests fail with a setup message. They are
 not ignored and they do not skip.
 
-`provisioning_test.rs` and `opmux_admin_test.rs` also require `DATABASE_URL`. They exercise tenant
-create, existing-client key issue, identity resolution, and failed-issuance rollback. Successful CLI
-JSON includes a one-time credential; tests capture it in memory and never print it. Help text covers
-secure stdout handling and `opmux_operator` versus migration privileges.
+`provisioning_test.rs` and `opmux_admin_test.rs` also require the owned `DATABASE_URL`. They
+exercise tenant create, existing-client key issue, identity resolution, and failed-issuance
+rollback. Successful CLI JSON includes a one-time credential; tests capture it in a fresh private
+file or in memory and never print it. Help text covers the `mktemp`/`chmod 600` stdout recipe and
+`opmux_operator` versus migration privileges.
 
 ## Deferred live-provider tests (unrun)
 

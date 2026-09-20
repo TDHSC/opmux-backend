@@ -6,9 +6,18 @@ use gateway::{
     core::db::DatabasePoolConfig,
     features::auth::{ApiKeyKind, AuthService, PostgresAuthStore, ProvisioningService},
 };
+use sqlx::postgres::PgConnectOptions;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
+
+/// Exact host published by the mission-owned local Supabase fixture.
+pub const OWNED_DATABASE_HOST: &str = "127.0.0.1";
+/// Exact port published by the mission-owned local Supabase fixture.
+pub const OWNED_DATABASE_PORT: u16 = 55432;
+/// Database name used by the owned local fixture.
+pub const OWNED_DATABASE_NAME: &str = "postgres";
 
 /// Issued inference credential captured privately for a fixture.
 pub struct IssuedInference {
@@ -17,10 +26,67 @@ pub struct IssuedInference {
     pub credential: String,
 }
 
+/// Returns a sanitized reason when `url` is not the owned loopback fixture.
+///
+/// The reason never includes the URL, userinfo, or password. Production
+/// gateway/operator configuration is not validated here.
+pub fn owned_database_url_violation(url: &str) -> Option<&'static str> {
+    let trimmed = url.trim();
+    if trimmed.is_empty() {
+        return Some(
+            "DATABASE_URL is required for persistence tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable.",
+        );
+    }
+    let before_query = trimmed.split(['?', '#']).next().unwrap_or(trimmed);
+    if before_query.contains(',') {
+        return Some(NON_OWNED_DATABASE_URL);
+    }
+    if query_has_disallowed_option(trimmed) {
+        return Some(NON_OWNED_DATABASE_URL);
+    }
+    let options = match PgConnectOptions::from_str(trimmed) {
+        Ok(options) => options,
+        Err(_) => {
+            return Some(
+                "DATABASE_URL is invalid without echoing it; persistence tests require the owned local Supabase on 127.0.0.1:55432",
+            )
+        }
+    };
+    if options.get_socket().is_some()
+        || options.get_host() != OWNED_DATABASE_HOST
+        || options.get_port() != OWNED_DATABASE_PORT
+        || options.get_database() != Some(OWNED_DATABASE_NAME)
+    {
+        return Some(NON_OWNED_DATABASE_URL);
+    }
+    None
+}
+
+const NON_OWNED_DATABASE_URL: &str = "DATABASE_URL must target the owned local Supabase on 127.0.0.1:55432 without extra hosts or connection options. Tests do not skip.";
+
+fn query_has_disallowed_option(url: &str) -> bool {
+    let Some((_, query)) = url.split_once('?') else {
+        return false;
+    };
+    let query = query.split('#').next().unwrap_or(query);
+    query.split('&').any(|pair| {
+        if pair.is_empty() {
+            return false;
+        }
+        let key = pair.split('=').next().unwrap_or(pair);
+        !key.eq_ignore_ascii_case("sslmode") && !key.eq_ignore_ascii_case("ssl-mode")
+    })
+}
+
 /// Requires `DATABASE_URL` for the owned local Supabase. Does not skip.
 pub fn required_database_url() -> String {
     match std::env::var("DATABASE_URL") {
-        Ok(url) if !url.trim().is_empty() => url,
+        Ok(url) if !url.trim().is_empty() => {
+            if let Some(reason) = owned_database_url_violation(&url) {
+                panic!("{reason}");
+            }
+            url
+        }
         _ => panic!(
             "DATABASE_URL is required for persisted authentication tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable."
         ),

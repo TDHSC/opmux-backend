@@ -118,6 +118,8 @@ impl DatabasePoolConfig {
     /// Reads `DATABASE_URL` and optional `OPMUX_DB_MAX_CONNECTIONS`,
     /// `OPMUX_DB_ACQUIRE_TIMEOUT_MS`, and `OPMUX_DB_STATEMENT_TIMEOUT_MS`.
     /// Gateway startup requires this after catalog load. Persistence tests do too.
+    /// Production and operator URLs are not restricted to localhost; owned test
+    /// wrappers replace `DATABASE_URL` before mutating tests run.
     ///
     /// # Errors
     /// Returns a sanitized error when the URL or numeric bounds are invalid.
@@ -336,6 +338,18 @@ mod tests {
         assert!(rendered.contains("[redacted]"));
         assert!(!rendered.contains("s3cret-fixture"));
         assert!(!rendered.contains("opmux:"));
+    }
+
+    #[test]
+    fn production_config_accepts_non_loopback_urls() {
+        let config = DatabasePoolConfig::new(
+            "postgresql://opmux:s3cret-fixture@db.internal.example:5432/postgres?sslmode=verify-full",
+        )
+        .expect("hosted operator urls remain valid");
+        let rendered = format!("{config:?}");
+        assert!(rendered.contains("[redacted]"));
+        assert!(!rendered.contains("s3cret-fixture"));
+        assert!(!rendered.contains("db.internal.example"));
     }
 
     #[test]

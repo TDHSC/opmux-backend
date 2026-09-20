@@ -2,6 +2,10 @@
 # Apply supabase/migrations to DATABASE_URL using Supabase CLI tracking.
 # Never links a hosted project, never starts a second database, and never
 # runs from gateway replica startup.
+#
+# Production/operator use: set DATABASE_URL to the chosen Postgres (not
+# localhost-restricted). Local tests and mission migrations wrap this script
+# with scripts/with-owned-database.sh so inherited URLs cannot be used.
 set -eu
 
 REPO="$(CDPATH= cd -- "$(dirname "$0")/.." && pwd)"

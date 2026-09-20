@@ -2,7 +2,8 @@
 //!
 //! Fail when DATABASE_URL is missing. Do not print credentials or digests.
 
-use gateway::core::db::DatabasePoolConfig;
+mod support;
+
 use gateway::features::auth::{
     hash_credential, parse_credential_payload, ApiKeyKind, AuthStore, EntropyError,
     PostgresAuthStore, ProvisionError, ProvisioningService, SecretSource,
@@ -12,41 +13,8 @@ use serial_test::serial;
 use sqlx::Row;
 use std::collections::{HashSet, VecDeque};
 use std::sync::{Arc, Mutex};
+use support::test_pool;
 use uuid::Uuid;
-
-fn required_database_url() -> String {
-    match std::env::var("DATABASE_URL") {
-        Ok(url) if !url.trim().is_empty() => url,
-        _ => panic!(
-            "DATABASE_URL is required for persistence tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable."
-        ),
-    }
-}
-
-async fn test_pool() -> sqlx::PgPool {
-    let config = DatabasePoolConfig::new(required_database_url())
-        .expect("DATABASE_URL must parse")
-        .with_max_connections(2)
-        .expect("test pool size")
-        .with_acquire_timeout(std::time::Duration::from_secs(10))
-        .expect("test acquire timeout");
-    let pool = config.connect().await.unwrap_or_else(|_| {
-        panic!(
-            "failed to connect to DATABASE_URL; persistence tests require the owned local Supabase and do not skip"
-        )
-    });
-    let present: bool =
-        sqlx::query_scalar("SELECT to_regclass('opmux_private.api_keys') IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("database must answer catalog queries");
-    if !present {
-        panic!(
-            "opmux_private.api_keys is missing; run scripts/db-migrate.sh against the owned local database. Persistence tests do not skip."
-        );
-    }
-    pool
-}
 
 struct ScriptedEntropy {
     chunks: Mutex<VecDeque<Vec<u8>>>,

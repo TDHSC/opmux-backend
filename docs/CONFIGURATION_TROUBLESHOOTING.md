@@ -124,8 +124,10 @@ Persistence (SQLx 0.8.6, required at gateway bind):
 - `OPMUX_DB_STATEMENT_TIMEOUT_MS` (optional, default 5000, 100–60000)
 
 Local loopback may use `sslmode=disable`. Hosted connections should use a direct or session-mode
-pooler URL with `sslmode=verify-full`. Transaction-mode poolers are not supported. Apply schema with
-`bash scripts/db-migrate.sh`; do not migrate from every replica and do not `supabase start` a second
+pooler URL with `sslmode=verify-full`. Transaction-mode poolers are not supported. Apply local
+schema with `bash scripts/with-owned-database.sh bash scripts/db-migrate.sh`. Operator/production
+migrations may set `DATABASE_URL` and run `scripts/db-migrate.sh` without the wrapper; that path is
+not localhost-restricted. Do not migrate from every replica and do not `supabase start` a second
 database from this repository.
 
 ## Troubleshooting quick reference

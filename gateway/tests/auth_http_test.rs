@@ -24,61 +24,15 @@ use std::process::{Command, Stdio};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use support::{
-    isolate_provider_environment, production_router_with_auth, OpenAiSimulator,
-    MOCK_GATEWAY_API_KEY, SIMULATED_CONTENT,
+    cleanup_clients, isolate_provider_environment, production_router_with_auth,
+    required_database_url, test_pool, OpenAiSimulator, MOCK_GATEWAY_API_KEY,
+    SIMULATED_CONTENT,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
 
 const LEGACY_DEV_KEY: &str = "dev-api-key-456";
 const ROUTE_BODY: &str = r#"{"prompt":"persisted auth generation","metadata":{}}"#;
-
-fn required_database_url() -> String {
-    match std::env::var("DATABASE_URL") {
-        Ok(url) if !url.trim().is_empty() => url,
-        _ => panic!(
-            "DATABASE_URL is required for persisted authentication tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable."
-        ),
-    }
-}
-
-async fn test_pool() -> sqlx::PgPool {
-    let config = DatabasePoolConfig::new(required_database_url())
-        .expect("DATABASE_URL must parse")
-        .with_max_connections(2)
-        .expect("test pool size")
-        .with_acquire_timeout(Duration::from_secs(10))
-        .expect("test acquire timeout");
-    let pool = config.connect().await.unwrap_or_else(|_| {
-        panic!(
-            "failed to connect to DATABASE_URL; persisted authentication tests require the owned local Supabase and do not skip"
-        )
-    });
-    let present: bool =
-        sqlx::query_scalar("SELECT to_regclass('opmux_private.api_keys') IS NOT NULL")
-            .fetch_one(&pool)
-            .await
-            .expect("database must answer catalog queries");
-    if !present {
-        panic!(
-            "opmux_private.api_keys is missing; run scripts/db-migrate.sh against the owned local database. Persistence tests do not skip."
-        );
-    }
-    pool
-}
-
-async fn cleanup(pool: &sqlx::PgPool, client_ids: &[Uuid]) {
-    for client_id in client_ids {
-        let _ = sqlx::query("DELETE FROM opmux_private.api_keys WHERE client_id = $1")
-            .bind(client_id)
-            .execute(pool)
-            .await;
-        let _ = sqlx::query("DELETE FROM opmux_private.clients WHERE id = $1")
-            .bind(client_id)
-            .execute(pool)
-            .await;
-    }
-}
 
 async fn last_used_is_set(pool: &sqlx::PgPool, key_id: Uuid) -> bool {
     sqlx::query_scalar(
@@ -231,7 +185,7 @@ impl TwoTenantFixture {
     }
 
     async fn drop_rows(&self) {
-        cleanup(&self.pool, &self.client_ids()).await;
+        cleanup_clients(&self.pool, &self.client_ids()).await;
     }
 }
 
@@ -671,7 +625,7 @@ async fn operator_cli_inference_keys_generate_over_http() {
         assert!(body.contains(SIMULATED_CONTENT));
         assert!(!body.contains(credential));
     }
-    cleanup(&pool, &[created_a.client_id, created_b.client_id]).await;
+    cleanup_clients(&pool, &[created_a.client_id, created_b.client_id]).await;
 }
 
 fn admin_bin() -> PathBuf {

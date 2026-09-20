@@ -3,7 +3,8 @@
 //! Capture issued credentials privately. Do not print secrets, digests, or
 //! raw CLI stdout from successful issuance.
 
-use gateway::core::db::DatabasePoolConfig;
+mod support;
+
 use gateway::features::auth::{
     hash_credential, parse_credential_payload, ApiKeyKind, PostgresAuthStore,
     ProvisioningService, CREDENTIAL_PREFIX, INITIAL_MANAGEMENT_KEY_NAME,
@@ -12,33 +13,14 @@ use gateway::features::auth::{
 use serial_test::serial;
 use sqlx::Row;
 use std::collections::HashSet;
+use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use support::{required_database_url, test_pool};
 use uuid::Uuid;
-
-fn required_database_url() -> String {
-    match std::env::var("DATABASE_URL") {
-        Ok(url) if !url.trim().is_empty() => url,
-        _ => panic!(
-            "DATABASE_URL is required for CLI persistence tests and must point at the owned local Supabase on 127.0.0.1:55432. Tests do not skip when the database is unavailable."
-        ),
-    }
-}
-
-async fn test_pool() -> sqlx::PgPool {
-    let config = DatabasePoolConfig::new(required_database_url())
-        .expect("DATABASE_URL must parse")
-        .with_max_connections(2)
-        .expect("test pool size")
-        .with_acquire_timeout(std::time::Duration::from_secs(10))
-        .expect("test acquire timeout");
-    config.connect().await.unwrap_or_else(|_| {
-        panic!(
-            "failed to connect to DATABASE_URL; persistence tests require the owned local Supabase and do not skip"
-        )
-    })
-}
 
 fn admin_bin() -> PathBuf {
     std::path::Path::new(env!("CARGO_BIN_EXE_gateway")).with_file_name("opmux-admin")
@@ -101,7 +83,10 @@ fn parse_issued(output: &Output) -> Issued {
         output.status.success(),
         "opmux-admin exited nonzero; output omitted"
     );
-    let stdout = stdout_text(output);
+    parse_issued_json(&stdout_text(output))
+}
+
+fn parse_issued_json(stdout: &str) -> Issued {
     let value: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|_| panic!("opmux-admin stdout was not JSON; output omitted"));
     let credential = value
@@ -184,16 +169,111 @@ async fn client_count_for(pool: &sqlx::PgPool, client_id: Uuid) -> i64 {
 
 #[test]
 fn help_documents_secure_output_and_operator_privileges() {
-    let output = run_admin(&["--help"]);
+    let output = Command::new(admin_bin())
+        .arg("--help")
+        .env_remove("DATABASE_URL")
+        .output()
+        .expect("spawn opmux-admin help");
     assert!(output.status.success());
     let stdout = stdout_text(&output);
     let stderr = stderr_text(&output);
     let help = format!("{stdout}{stderr}");
     assert!(help.contains("stdout"));
     assert!(help.contains("once"));
+    assert!(help.contains("mktemp"));
+    assert!(help.contains("opmux-key.XXXXXX"));
+    assert!(help.contains("0600"));
+    assert!(help.contains("umask"));
+    assert!(help.contains("symlink") || help.contains("existing"));
     assert!(help.contains("opmux_operator"));
     assert!(help.contains("scripts/db-migrate.sh"));
+    assert!(!help.contains("/tmp/acme-key.json"));
     assert!(!help.contains(CREDENTIAL_PREFIX));
+}
+
+#[tokio::test]
+#[serial]
+async fn documented_private_output_recipe_creates_mode_0600_file() {
+    let pool = test_pool().await;
+    let name = format!("cli-priv-{}", Uuid::new_v4().simple());
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("time")
+        .as_nanos();
+    let tmp = std::env::temp_dir()
+        .join(format!("opmux-admin-recipe-{}-{nanos}", std::process::id()));
+    fs::create_dir_all(&tmp).expect("recipe temp");
+    let mut permissions = fs::metadata(&tmp).expect("temp metadata").permissions();
+    permissions.set_mode(0o700);
+    fs::set_permissions(&tmp, permissions).expect("temp mode");
+    let path_file = tmp.join("keyfile.path");
+    let existing = tmp.join("existing.json");
+    fs::write(&existing, "EXISTING_DO_NOT_OVERWRITE").expect("existing");
+    let script = r#"
+set -eu
+umask 022
+keyfile=$(mktemp "${TMPDIR:-/tmp}/opmux-key.XXXXXX")
+chmod 600 "$keyfile"
+printf '%s\n' "$keyfile" > "$1"
+"$2" tenant create --name "$3" > "$keyfile"
+"#;
+    let output = Command::new("sh")
+        .arg("-c")
+        .arg(script)
+        .arg("recipe")
+        .arg(&path_file)
+        .arg(admin_bin())
+        .arg(&name)
+        .env("TMPDIR", &tmp)
+        .env("DATABASE_URL", required_database_url())
+        .env("OPMUX_DB_ROLE", "opmux_operator")
+        .env("NO_PROXY", "*")
+        .env_remove("OPENAI_API_KEY")
+        .env_remove("ANTHROPIC_API_KEY")
+        .output()
+        .expect("run documented CLI recipe");
+    let stdout = stdout_text(&output);
+    let stderr = stderr_text(&output);
+    assert!(
+        output.status.success(),
+        "documented recipe exited nonzero; output omitted"
+    );
+    assert!(
+        !stdout.contains(CREDENTIAL_PREFIX) && !stderr.contains(CREDENTIAL_PREFIX),
+        "recipe harness must not print the issued credential"
+    );
+    let keyfile =
+        PathBuf::from(fs::read_to_string(&path_file).expect("keyfile path").trim());
+    assert!(keyfile.starts_with(&tmp));
+    assert_ne!(&keyfile, &existing);
+    let mode = fs::metadata(&keyfile)
+        .expect("keyfile metadata")
+        .permissions()
+        .mode()
+        & 0o777;
+    assert_eq!(
+        mode, 0o600,
+        "documented recipe must create mode 0600 under umask 022"
+    );
+    assert_eq!(
+        fs::read_to_string(&existing).expect("existing after"),
+        "EXISTING_DO_NOT_OVERWRITE"
+    );
+    let issued =
+        parse_issued_json(&fs::read_to_string(&keyfile).expect("private output"));
+    assert_eq!(issued.name, INITIAL_MANAGEMENT_KEY_NAME);
+    assert_eq!(issued.kind, "management");
+    let service =
+        ProvisioningService::new(Arc::new(PostgresAuthStore::new(pool.clone())));
+    let identity = service
+        .resolve_credential(&issued.credential)
+        .await
+        .expect("resolve")
+        .expect("identity");
+    assert_eq!(identity.client_id, issued.client_id);
+    assert_eq!(identity.key_id, issued.key_id);
+    cleanup(&pool, &[issued.client_id]).await;
+    let _ = fs::remove_dir_all(&tmp);
 }
 
 #[tokio::test]
