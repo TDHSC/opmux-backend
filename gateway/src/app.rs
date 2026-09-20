@@ -3,6 +3,7 @@
 //! The binary and HTTP integration tests build the same route and middleware
 //! graph from injected `AppState`. Middleware order is behavior-critical.
 
+use crate::core::extract::RequestBodyLimit;
 use crate::{
     core::{
         config::Settings,
@@ -19,10 +20,11 @@ use crate::{
     AppState,
 };
 use axum::{
+    extract::DefaultBodyLimit,
     middleware,
     response::Html,
     routing::{delete, get, post},
-    Router,
+    Extension, Router,
 };
 use std::sync::Arc;
 
@@ -93,6 +95,8 @@ impl Application {
 /// 3. Deadline (protected routes only) - one monotonic budget covering auth,
 ///    body extraction, and execution. Health and metrics stay outside it.
 /// 4. Auth (protected routes only) - validates authentication
+/// 5. Raw-body limit (protected routes only) - configured `max_request_body_bytes`
+///    for JSON extraction. Health, readiness, and metrics stay outside it.
 ///
 /// # Parameters
 /// - `state` - Injected application state
@@ -101,6 +105,10 @@ impl Application {
 /// # Returns
 /// Router used by the binary and HTTP fixtures
 pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Router {
+    let max_request_body_bytes = state.settings.limits.max_request_body_bytes;
+    let max_request_body_limit =
+        usize::try_from(max_request_body_bytes).unwrap_or(usize::MAX);
+
     let protected_routes = Router::new()
         .route("/api/v1/route", post(ingress::ingress_handler))
         .route(
@@ -108,6 +116,8 @@ pub fn build_production_router(state: AppState, metrics: MetricsConfig) -> Route
             post(auth::create_api_key).get(auth::list_api_keys),
         )
         .route("/api/v1/auth/keys/{id}", delete(auth::revoke_api_key))
+        .layer(DefaultBodyLimit::max(max_request_body_limit))
+        .layer(Extension(RequestBodyLimit(max_request_body_bytes)))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::auth_middleware,

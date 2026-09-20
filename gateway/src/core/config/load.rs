@@ -22,7 +22,7 @@ pub struct Settings {
     pub auth: AuthConfig,
     /// Validated route/target/pricing catalog.
     pub catalog: Catalog,
-    /// Validated policy limits for later execution and admission features.
+    /// Validated policy limits for execution and protected-route admission.
     pub limits: PolicyLimits,
     /// Environment-only provider credential and base URL.
     pub provider: ProviderSettings,

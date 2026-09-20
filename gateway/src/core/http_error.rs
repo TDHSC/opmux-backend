@@ -53,7 +53,7 @@ pub enum ErrorCode {
     CircuitOpen,
     /// Local generation admission is saturated. Owned by later admission.
     Overloaded,
-    /// Request body exceeded the configured limit. Owned by later admission.
+    /// Request body exceeded the configured protected-route limit.
     PayloadTooLarge,
 }
 

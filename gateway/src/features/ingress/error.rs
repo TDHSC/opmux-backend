@@ -117,7 +117,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn future_admission_variants_map_without_enforcement() {
+    async fn payload_too_large_and_overload_map_to_documented_codes() {
         let (too_large_status, too_large) = envelope(IngressError::PayloadTooLarge).await;
         assert_eq!(too_large_status, StatusCode::PAYLOAD_TOO_LARGE);
         assert_eq!(too_large["error"]["code"], "PAYLOAD_TOO_LARGE");

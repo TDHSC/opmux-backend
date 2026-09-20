@@ -187,8 +187,10 @@ pub(crate) struct RawLimits {
 /// request deadline is enforced across authentication, body extraction, and
 /// execution. Per-attempt timeouts, per-target retries, the global actual-attempt
 /// budget, capped jitter / Retry-After waits, eligible flat fallback switching,
-/// and target-scoped circuits are enforced. Concurrency and inbound raw-size
-/// enforcement are later features and must not be described as already active.
+/// and target-scoped circuits are enforced. Protected JSON routes enforce
+/// `max_request_body_bytes` and ingress metadata enforces `max_metadata_bytes`.
+/// Concurrent generation admission is a later feature and must not be described
+/// as already active.
 #[derive(Clone, PartialEq, Eq)]
 pub struct PolicyLimits {
     /// Overall protected-request deadline.

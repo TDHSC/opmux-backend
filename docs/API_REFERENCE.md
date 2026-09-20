@@ -115,6 +115,7 @@ Response codes:
 - `400 Bad Request` invalid name/kind or ownership override
 - `401 Unauthorized` missing/invalid API key
 - `403 Forbidden` authenticated inference key
+- `413 Payload Too Large` raw JSON body above `max_request_body_bytes` (`PAYLOAD_TOO_LARGE`)
 - `503 Service Unavailable` authentication datastore unavailable
 - `504 Gateway Timeout` protected-request deadline elapsed. This does not prove the insert rolled
   back.
@@ -269,8 +270,12 @@ below.
   opaque and cannot change controls.
 
 - Validation:
+  - The raw HTTP body, including advertised `Content-Length` and chunked/no-length transfer, must be
+    <= `max_request_body_bytes` (default 1048576 bytes, inclusive). Overflow returns `413` before
+    generation or key mutation. Health, readiness, and metrics are not this protected-route limit.
   - `prompt` must be a nonempty (after trim) string within the original character and byte bounds
-  - serialized `metadata` must be <= `max_metadata_bytes`
+  - serialized `metadata` must be <= `max_metadata_bytes` (default 1000 bytes, inclusive). There is
+    no additional metadata structural bound in this MVP. Overflow returns `400 INVALID_REQUEST`.
   - `route`, when present, must be a string naming a configured route
   - `allow_fallback`, when present, must be a boolean
   - `parameters` types/ranges and the selected primary token cap are checked before upstream access
@@ -332,10 +337,11 @@ Response `200 OK`:
 
 - Response codes:
   - `200 OK` success
-  - `400 Bad Request` invalid JSON (`INVALID_JSON`), unknown/unsupported control, or out-of-range
-    parameter (`INVALID_REQUEST`). Malformed path parameters use `INVALID_PATH`.
+  - `400 Bad Request` invalid JSON (`INVALID_JSON`), unknown/unsupported control, metadata size, or
+    out-of-range parameter (`INVALID_REQUEST`). Malformed path parameters use `INVALID_PATH`.
   - `401 Unauthorized` invalid/missing/ambiguous API key (`UNAUTHORIZED`)
   - `403 Forbidden` authenticated management key (generation requires inference) (`FORBIDDEN`)
+  - `413 Payload Too Large` raw body above `max_request_body_bytes` (`PAYLOAD_TOO_LARGE`)
   - `415 Unsupported Media Type` non-JSON Content-Type (`UNSUPPORTED_MEDIA_TYPE`)
   - `429 Too Many Requests` upstream provider throttling (`UPSTREAM_RATE_LIMIT`). A valid
     `Retry-After` that cannot finish in remaining time returns this status only while the overall
@@ -372,25 +378,25 @@ bodies, secrets, or credential-bearing URLs.
 
 Documented codes:
 
-| Code                          | Status | Meaning                                                |
-| ----------------------------- | ------ | ------------------------------------------------------ |
-| `INVALID_REQUEST`             | 400    | Semantic validation or unknown control                 |
-| `INVALID_JSON`                | 400    | Malformed JSON body                                    |
-| `INVALID_PATH`                | 400    | Path parameter could not be parsed                     |
-| `UNSUPPORTED_MEDIA_TYPE`      | 415    | Content-Type is not `application/json`                 |
-| `UNAUTHORIZED`                | 401    | Missing, malformed, unknown, or revoked gateway key    |
-| `FORBIDDEN`                   | 403    | Authenticated key lacks the required capability        |
-| `NOT_FOUND`                   | 404    | Same-tenant key missing; other-tenant IDs use this too |
-| `AUTH_DEPENDENCY_UNAVAILABLE` | 503    | Authentication datastore unavailable                   |
-| `UPSTREAM_AUTHENTICATION`     | 502    | Upstream rejected provider credentials                 |
-| `UPSTREAM_PROTOCOL`           | 502    | Unusable or oversized upstream success body            |
-| `UPSTREAM_ERROR`              | 502    | Other upstream execution failure                       |
-| `UPSTREAM_RATE_LIMIT`         | 429    | Upstream throttled the request                         |
-| `INTERNAL_ERROR`              | 500    | Unexpected internal fault                              |
-| `DEADLINE_EXCEEDED`           | 504    | Protected-request deadline elapsed                     |
-| `CIRCUIT_OPEN`                | 503    | All eligible targets are circuit-open                  |
-| `OVERLOADED`                  | 429    | Reserved for later local admission                     |
-| `PAYLOAD_TOO_LARGE`           | 413    | Reserved for later raw-body limits                     |
+| Code                          | Status | Meaning                                                   |
+| ----------------------------- | ------ | --------------------------------------------------------- |
+| `INVALID_REQUEST`             | 400    | Semantic validation or unknown control                    |
+| `INVALID_JSON`                | 400    | Malformed JSON body                                       |
+| `INVALID_PATH`                | 400    | Path parameter could not be parsed                        |
+| `UNSUPPORTED_MEDIA_TYPE`      | 415    | Content-Type is not `application/json`                    |
+| `UNAUTHORIZED`                | 401    | Missing, malformed, unknown, or revoked gateway key       |
+| `FORBIDDEN`                   | 403    | Authenticated key lacks the required capability           |
+| `NOT_FOUND`                   | 404    | Same-tenant key missing; other-tenant IDs use this too    |
+| `AUTH_DEPENDENCY_UNAVAILABLE` | 503    | Authentication datastore unavailable                      |
+| `UPSTREAM_AUTHENTICATION`     | 502    | Upstream rejected provider credentials                    |
+| `UPSTREAM_PROTOCOL`           | 502    | Unusable or oversized upstream success body               |
+| `UPSTREAM_ERROR`              | 502    | Other upstream execution failure                          |
+| `UPSTREAM_RATE_LIMIT`         | 429    | Upstream throttled the request                            |
+| `INTERNAL_ERROR`              | 500    | Unexpected internal fault                                 |
+| `DEADLINE_EXCEEDED`           | 504    | Protected-request deadline elapsed                        |
+| `CIRCUIT_OPEN`                | 503    | All eligible targets are circuit-open                     |
+| `OVERLOADED`                  | 429    | Reserved for later local admission                        |
+| `PAYLOAD_TOO_LARGE`           | 413    | Raw protected JSON body exceeded `max_request_body_bytes` |
 
 Health and readiness probes keep their existing status documents; they are not this protected-API
 envelope.

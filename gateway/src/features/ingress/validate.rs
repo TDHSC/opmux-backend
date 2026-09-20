@@ -412,4 +412,29 @@ mod tests {
         let request = parse(Value::Object(object)).expect("required fields");
         assert_eq!(request.prompt, "hello");
     }
+
+    #[test]
+    fn metadata_serialized_byte_bound_is_inclusive() {
+        let mut limits = PolicyLimits::documented_defaults();
+        limits.max_metadata_bytes = 8;
+        let exact = json!({ "k": "" });
+        assert_eq!(serde_json::to_vec(&exact).expect("exact").len(), 8);
+        parse_ingress_request(&json!({ "prompt": "hello", "metadata": exact }), &limits)
+            .expect("exact metadata bound");
+
+        let over = json!({ "k": "a" });
+        assert!(serde_json::to_vec(&over).expect("over").len() > 8);
+        match parse_ingress_request(
+            &json!({ "prompt": "hello", "metadata": over }),
+            &limits,
+        ) {
+            Err(IngressError::InvalidRequest(message)) => {
+                assert!(message.contains("Metadata exceeds maximum size of 8 bytes"));
+            }
+            other => panic!(
+                "expected over-limit metadata failure, got success={}",
+                other.is_ok()
+            ),
+        }
+    }
 }

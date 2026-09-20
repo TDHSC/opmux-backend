@@ -88,8 +88,12 @@ same-provider fallback remains usable. After cooldown, at most one half-open pro
 target; success closes the circuit and failure reopens it. Each closed admission and probe carries a
 generation/phase token; only the current owner can change circuit state. A late success or failure
 is ignored for circuit accounting but the request result is still returned. Permanent credential,
-quota, protocol, rejection, and throttling errors do not open circuits. Concurrency admission and
-inbound raw-body enforcement are later milestones.
+quota, protocol, rejection, and throttling errors do not open circuits. Protected JSON routes
+enforce `max_request_body_bytes` during extraction, including advertised `Content-Length` and
+chunked/no-length bodies. Exact bound is accepted; one byte over returns `413 PAYLOAD_TOO_LARGE`.
+Serialized `metadata` is capped by `max_metadata_bytes` and returns `400 INVALID_REQUEST` when over.
+`/health`, `/ready`, and `/metrics` are not this raw-body limit. Concurrent generation admission is
+a later milestone.
 
 | Setting                          | Type    | Unit                       | Default | Min | Max      |
 | -------------------------------- | ------- | -------------------------- | ------- | --- | -------- |
