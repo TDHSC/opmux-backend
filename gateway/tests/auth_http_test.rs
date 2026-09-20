@@ -1063,6 +1063,10 @@ fn auth_sources_skip_secrets_and_do_not_cache() {
     ));
     let implementation = service.split("mod tests").next().expect("impl");
     assert!(
+        implementation.contains("authenticate_digest"),
+        "authentication must use transactional digest lookup and last-used"
+    );
+    assert!(
         !implementation.contains("tokio::spawn"),
         "last-used must be synchronous"
     );

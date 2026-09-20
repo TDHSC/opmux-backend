@@ -49,6 +49,23 @@ pub trait AuthStore: Send + Sync {
         digest: &KeyDigest,
     ) -> Result<Option<ApiKeyRecord>, AuthStoreError>;
 
+    /// Authenticates a digest under a row lock and records last-used.
+    ///
+    /// Missing keys return `None`. Revoked keys return the committed row
+    /// without updating `last_used_at`. Active keys update `last_used_at`
+    /// monotonically inside the same bounded transaction, then return the
+    /// committed row. Callers must deny revoked records. This is the
+    /// authoritative authentication write, not a detached touch.
+    ///
+    /// # Parameters
+    /// - `digest` - Pre-hashed credential digest
+    /// - `used_at` - Successful authentication time
+    async fn authenticate_digest(
+        &self,
+        digest: &KeyDigest,
+        used_at: DateTime<Utc>,
+    ) -> Result<Option<ApiKeyRecord>, AuthStoreError>;
+
     /// Records last-used when the timestamp is newer and the key is active.
     ///
     /// # Parameters

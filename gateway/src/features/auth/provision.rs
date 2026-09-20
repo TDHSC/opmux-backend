@@ -408,6 +408,14 @@ mod tests {
             }))
         }
 
+        async fn authenticate_digest(
+            &self,
+            digest: &KeyDigest,
+            _used_at: DateTime<Utc>,
+        ) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
+            self.find_key_by_digest(digest).await
+        }
+
         async fn touch_last_used(
             &self,
             _client_id: Uuid,

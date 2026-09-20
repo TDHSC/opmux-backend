@@ -43,9 +43,11 @@ impl From<AuthStoreError> for AuthenticateError {
 /// Authentication service backed by the shared [`AuthStore`].
 ///
 /// Successful authentication updates `last_used_at` before the request is
-/// admitted. That write is part of authentication, not a detached task, and
-/// happens even if later inference fails. There is no in-process key map:
-/// every request hashes then queries the store. HTTP key issuance reuses
+/// admitted. Lookup and that monotonic write share one bounded store
+/// transaction so a concurrent revoke cannot admit a key whose committed row
+/// is already revoked. The write is not a detached task and happens even if
+/// later inference fails. There is no in-process key map: every request
+/// hashes then queries the store. HTTP key issuance reuses
 /// [`ProvisioningService`] so CLI and API share generation and hashing.
 pub struct AuthService {
     store: Arc<dyn AuthStore>,
@@ -210,9 +212,9 @@ impl AuthService {
     ///
     /// # Flow
     /// 1. Hashes the presented secret before any store access
-    /// 2. Looks up the digest, including revoked rows
+    /// 2. Authenticates the digest under a row lock, including revoked rows
     /// 3. Rejects missing and revoked keys as invalid
-    /// 4. Synchronously records last-used for an active key
+    /// 4. Records last-used for an active key in the same transaction
     /// 5. Returns client id, key id, and stored kind
     ///
     /// # Parameters
@@ -231,7 +233,7 @@ impl AuthService {
     ) -> Result<AuthContext, AuthenticateError> {
         let start = std::time::Instant::now();
         let digest = hash_credential(presented);
-        let record = match self.store.find_key_by_digest(&digest).await {
+        let record = match self.store.authenticate_digest(&digest, Utc::now()).await {
             Ok(record) => record,
             Err(_) => {
                 tracing::debug!(
@@ -262,21 +264,6 @@ impl AuthService {
                 "API key validation failed"
             );
             return Err(AuthenticateError::InvalidCredentials);
-        }
-
-        if self
-            .store
-            .touch_last_used(record.client_id, record.id, Utc::now())
-            .await
-            .is_err()
-        {
-            tracing::debug!(
-                duration_ms = start.elapsed().as_millis(),
-                success = false,
-                reason = "store_unavailable",
-                "API key validation failed"
-            );
-            return Err(AuthenticateError::StoreUnavailable);
         }
 
         tracing::debug!(
@@ -322,6 +309,7 @@ mod tests {
         fail_lookup: bool,
         fail_touch: bool,
         fail_revoke: bool,
+        revoke_after_find: bool,
     }
 
     impl ScriptedStore {
@@ -337,6 +325,7 @@ mod tests {
                 fail_lookup: false,
                 fail_touch: false,
                 fail_revoke: false,
+                revoke_after_find: false,
             }
         }
 
@@ -350,6 +339,7 @@ mod tests {
                 fail_lookup: true,
                 fail_touch: false,
                 fail_revoke: false,
+                revoke_after_find: false,
             }
         }
     }
@@ -396,6 +386,42 @@ mod tests {
                 return Err(AuthStoreError::Unavailable);
             }
             Ok(self.records.lock().expect("lock").get(digest).cloned())
+        }
+
+        async fn authenticate_digest(
+            &self,
+            digest: &KeyDigest,
+            used_at: DateTime<Utc>,
+        ) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
+            *self.lookups.lock().expect("lock") += 1;
+            if self.fail_lookup {
+                return Err(AuthStoreError::Unavailable);
+            }
+            let mut records = self.records.lock().expect("lock");
+            let Some(mut record) = records.get(digest).cloned() else {
+                return Ok(None);
+            };
+            if self.revoke_after_find && record.revoked_at.is_none() {
+                record.revoked_at = Some(used_at);
+                records.insert(record.digest, record.clone());
+                return Ok(Some(record));
+            }
+            if record.is_revoked() {
+                return Ok(Some(record));
+            }
+            *self.touches.lock().expect("lock") += 1;
+            if self.fail_touch {
+                return Err(AuthStoreError::Unavailable);
+            }
+            if record
+                .last_used_at
+                .is_some_and(|existing| existing >= used_at)
+            {
+                return Ok(Some(record));
+            }
+            record.last_used_at = Some(used_at);
+            records.insert(record.digest, record.clone());
+            Ok(Some(record))
         }
 
         async fn touch_last_used(
@@ -517,6 +543,22 @@ mod tests {
         let svc = AuthService::new(store.clone());
         let revoked = svc.authenticate(&presented).await.expect_err("revoked");
         assert_eq!(revoked, AuthenticateError::InvalidCredentials);
+        assert_eq!(*store.touches.lock().expect("lock"), 0);
+    }
+
+    #[tokio::test]
+    async fn authenticate_denies_when_revoke_commits_before_last_used() {
+        let (presented, stored) = record(ApiKeyKind::Inference, false);
+        let mut store = ScriptedStore::with_record(stored);
+        store.revoke_after_find = true;
+        let store = Arc::new(store);
+        let svc = AuthService::new(store.clone());
+        let denied = svc
+            .authenticate(&presented)
+            .await
+            .expect_err("revoked before touch");
+        assert_eq!(denied, AuthenticateError::InvalidCredentials);
+        assert_eq!(*store.lookups.lock().expect("lock"), 1);
         assert_eq!(*store.touches.lock().expect("lock"), 0);
     }
 

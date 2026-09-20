@@ -37,6 +37,14 @@ impl AuthStore for UnavailableAuthStore {
         Err(AuthStoreError::Unavailable)
     }
 
+    async fn authenticate_digest(
+        &self,
+        _digest: &KeyDigest,
+        _used_at: DateTime<Utc>,
+    ) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
+        Err(AuthStoreError::Unavailable)
+    }
+
     async fn touch_last_used(
         &self,
         _client_id: Uuid,

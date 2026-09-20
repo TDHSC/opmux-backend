@@ -15,7 +15,9 @@ and provides health checks, correlation IDs, and Prometheus metrics.
 - `DELETE /api/v1/auth/keys/{id}`: management-only same-tenant revocation. First and repeat DELETE
   return `204`. Other-tenant and unknown IDs return indistinguishable `404`. Self-revocation and
   final-manager revocation are allowed; recover with `opmux-admin key issue`. Subsequent auth is
-  denied after commit; already admitted requests may finish.
+  denied after commit on every gateway process sharing the database; already admitted requests may
+  finish. Inventory `last_used_at` is the last successful authentication, persisted monotonically
+  before admission (including when later inference fails). Invalid credentials do not update it.
 - LLM execution: an OpenAI vendor implementation, with retry, fallback, and circuit-breaker logic in
   the executor service.
 - Observability: `X-Request-ID`, optional `X-Correlation-ID` echo, `/health`, `/ready`, and a
@@ -160,9 +162,13 @@ HTTP generation authenticates persisted inference keys. Management keys may crea
 management or inference keys for their own tenant through `POST /api/v1/auth/keys`; they cannot
 generate. `GET /api/v1/auth/keys` lists that tenant's safe metadata only (at most 100 keys, newest
 first; optional `limit`, `offset`, and `kind`). Ownership selectors and invalid paging/kind values
-return 400. `DELETE /api/v1/auth/keys/{id}` revokes a same-tenant key (204, idempotent) and returns
-indistinguishable 404 for other-tenant or unknown IDs. Rotate a manager by creating a replacement,
-verifying it, then revoking the old key. Final-manager self-revocation is allowed; recover with
+return 400. `last_used_at` is null until the first successful authentication and then never moves
+backward. Failed or revoked credentials do not update it; a request that authenticates and then
+fails downstream still counts. `DELETE /api/v1/auth/keys/{id}` revokes a same-tenant key (204,
+idempotent) and returns indistinguishable 404 for other-tenant or unknown IDs. There is no
+authentication cache: another gateway process using the same database denies a revoked key as soon
+as DELETE commits. Rotate a manager by creating a replacement, verifying it, then revoking the old
+key. Final-manager self-revocation is allowed; recover with
 `opmux-admin key issue --client-id UUID --kind management --name NAME` for the existing client.
 Inference keys cannot create, list, or revoke keys. Do not seed `test-api-key-123` or
 `dev-api-key-456` into `opmux_private`; those former public keys return 401.

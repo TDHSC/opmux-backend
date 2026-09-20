@@ -117,7 +117,10 @@ List keys for the authenticated tenant.
 - Malformed `limit`, `offset`, or `kind` values return `400` and do not change inventory.
 - Responses include at most `limit` keys, newest first, with safe metadata only: `client_id`,
   `key_id`, `display_id`, `name`, `kind`, `created_at`, `last_used_at`, and `revoked_at`.
-  Credentials and digests are never included.
+  Credentials and digests are never included. `last_used_at` is null until the first successful
+  authentication. It is written monotonically before the request is admitted, including when later
+  inference fails. Missing, unknown, and revoked credentials do not update it. Listing a tenant
+  authenticates the calling manager, so that manager's `last_used_at` advances.
 - `has_more` is `true` when additional same-tenant keys exist after this page. Continue with the
   same `limit` and `kind`, setting `offset` to the previous `offset + limit`. When the page is
   shorter than `limit` or `has_more` is `false`, there is no further page. This MVP does not return
@@ -167,8 +170,9 @@ Revoke a key in the authenticated tenant. The row is retained with a revocation 
   revive revoked keys.
 - Rotation is create a replacement manager, verify it, then revoke the old key. Overlap is required:
   the replacement must work before the old key is revoked.
-- Revocation is effective for authentication after commit. Already admitted requests may finish;
-  revocation does not cancel in-flight provider work.
+- Revocation is effective for authentication after commit, including other gateway processes that
+  share the database. There is no authentication cache and no TTL delay. Already admitted requests
+  may finish; revocation does not cancel in-flight provider work.
 
 Response codes:
 

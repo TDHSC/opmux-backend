@@ -481,6 +481,189 @@ async fn lookup_touch_list_and_revoke_are_tenant_scoped() {
     cleanup(&pool, &[tenant_a.id, tenant_b.id]).await;
 }
 
+async fn last_used_at(
+    pool: &sqlx::PgPool,
+    key_id: Uuid,
+) -> Option<chrono::DateTime<Utc>> {
+    sqlx::query_scalar("SELECT last_used_at FROM opmux_private.api_keys WHERE id = $1")
+        .bind(key_id)
+        .fetch_one(pool)
+        .await
+        .expect("last_used_at")
+}
+
+async fn concurrent_pool() -> sqlx::PgPool {
+    let config = DatabasePoolConfig::new(required_database_url())
+        .expect("DATABASE_URL must parse")
+        .with_max_connections(4)
+        .expect("pool size")
+        .with_acquire_timeout(std::time::Duration::from_secs(10))
+        .expect("acquire timeout");
+    config.connect().await.unwrap_or_else(|_| {
+        panic!(
+            "failed to connect to DATABASE_URL; persisted authentication tests require the owned local Supabase and do not skip"
+        )
+    })
+}
+
+#[tokio::test]
+#[serial]
+async fn authenticate_digest_is_monotonic_and_skips_revoked_keys() {
+    let pool = test_pool().await;
+    let store = PostgresAuthStore::new(pool.clone());
+    let tenant = new_client();
+    let key = new_key(tenant.id, ApiKeyKind::Inference);
+    store
+        .provision_client_with_key(tenant.clone(), key.clone())
+        .await
+        .expect("tenant");
+
+    let unused = store
+        .authenticate_digest(&unique_digest(), created_at() + Duration::seconds(1))
+        .await
+        .expect("unknown digest");
+    assert!(unused.is_none());
+    assert!(last_used_at(&pool, key.id).await.is_none());
+
+    let first = created_at() + Duration::seconds(20);
+    let second = created_at() + Duration::seconds(40);
+    let older = created_at() + Duration::seconds(10);
+    let active = store
+        .authenticate_digest(&key.digest, first)
+        .await
+        .expect("first auth")
+        .expect("present");
+    assert!(!active.is_revoked());
+    assert_eq!(active.last_used_at, Some(first));
+    assert_eq!(last_used_at(&pool, key.id).await, Some(first));
+
+    let again = store
+        .authenticate_digest(&key.digest, second)
+        .await
+        .expect("newer auth")
+        .expect("present");
+    assert_eq!(again.last_used_at, Some(second));
+    let stale = store
+        .authenticate_digest(&key.digest, older)
+        .await
+        .expect("older auth")
+        .expect("present");
+    assert!(!stale.is_revoked());
+    assert_eq!(stale.last_used_at, Some(second));
+    assert_eq!(last_used_at(&pool, key.id).await, Some(second));
+
+    match store
+        .revoke_key(tenant.id, key.id, created_at() + Duration::seconds(50))
+        .await
+        .expect("revoke")
+    {
+        RevokeOutcome::Revoked(_) => {}
+        other => panic!("expected Revoked, got {other:?}"),
+    }
+    let revoked = store
+        .authenticate_digest(&key.digest, created_at() + Duration::seconds(80))
+        .await
+        .expect("revoked auth")
+        .expect("row retained");
+    assert!(revoked.is_revoked());
+    assert_eq!(revoked.last_used_at, Some(second));
+    assert_eq!(last_used_at(&pool, key.id).await, Some(second));
+
+    cleanup(&pool, &[tenant.id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn overlapping_touches_never_move_last_used_backward() {
+    let pool = concurrent_pool().await;
+    let store = Arc::new(PostgresAuthStore::new(pool.clone()));
+    let tenant = new_client();
+    let key = new_key(tenant.id, ApiKeyKind::Inference);
+    store
+        .provision_client_with_key(tenant.clone(), key.clone())
+        .await
+        .expect("tenant");
+
+    let older = created_at() + Duration::seconds(15);
+    let newer = created_at() + Duration::seconds(45);
+    let (older_result, newer_result) = tokio::join!(
+        store.touch_last_used(tenant.id, key.id, older),
+        store.touch_last_used(tenant.id, key.id, newer),
+    );
+    let older_wrote = older_result.expect("older touch");
+    let newer_wrote = newer_result.expect("newer touch");
+    assert!(newer_wrote || !older_wrote);
+    assert_eq!(last_used_at(&pool, key.id).await, Some(newer));
+
+    let (older_auth, newer_auth) = tokio::join!(
+        store.authenticate_digest(&key.digest, older),
+        store.authenticate_digest(&key.digest, newer + Duration::seconds(10)),
+    );
+    let older_record = older_auth.expect("older digest auth").expect("present");
+    let newer_record = newer_auth.expect("newer digest auth").expect("present");
+    assert!(!older_record.is_revoked());
+    assert!(!newer_record.is_revoked());
+    let stored = last_used_at(&pool, key.id).await.expect("last used");
+    assert!(stored >= newer);
+    assert_eq!(stored, newer + Duration::seconds(10));
+
+    cleanup(&pool, &[tenant.id]).await;
+}
+
+#[tokio::test]
+#[serial]
+async fn authenticate_digest_serializes_with_revoke() {
+    let pool = concurrent_pool().await;
+    let store = Arc::new(PostgresAuthStore::new(pool.clone()));
+    let tenant = new_client();
+    let key = new_key(tenant.id, ApiKeyKind::Inference);
+    store
+        .provision_client_with_key(tenant.clone(), key.clone())
+        .await
+        .expect("tenant");
+
+    let used_at = created_at() + Duration::seconds(25);
+    let revoked_at = created_at() + Duration::seconds(30);
+    let (auth_result, revoke_result) = tokio::join!(
+        store.authenticate_digest(&key.digest, used_at),
+        store.revoke_key(tenant.id, key.id, revoked_at),
+    );
+    let authenticated = auth_result.expect("digest auth");
+    let outcome = revoke_result.expect("revoke");
+    match outcome {
+        RevokeOutcome::Revoked(_) | RevokeOutcome::AlreadyRevoked(_) => {}
+        RevokeOutcome::NotFound => panic!("same-tenant revoke must find the key"),
+    }
+
+    let stored = store
+        .find_key_by_digest(&key.digest)
+        .await
+        .expect("lookup")
+        .expect("retained");
+    assert!(stored.is_revoked());
+    if let Some(record) = authenticated {
+        if record.is_revoked() {
+            assert!(record.last_used_at.is_none());
+            assert_eq!(stored.last_used_at, None);
+        } else {
+            assert_eq!(record.last_used_at, Some(used_at));
+            assert_eq!(stored.last_used_at, Some(used_at));
+        }
+    } else {
+        panic!("digest lookup must return the committed row");
+    }
+
+    let later = store
+        .authenticate_digest(&key.digest, created_at() + Duration::seconds(90))
+        .await
+        .expect("post-revoke auth")
+        .expect("row retained");
+    assert!(later.is_revoked());
+    assert_eq!(later.last_used_at, stored.last_used_at);
+
+    cleanup(&pool, &[tenant.id]).await;
+}
+
 #[tokio::test]
 #[serial]
 async fn closed_pool_propagates_unavailable_instead_of_none() {

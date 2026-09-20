@@ -84,6 +84,67 @@ impl AuthStore for PostgresAuthStore {
         row.map(|row| api_key_from_row(&row)).transpose()
     }
 
+    async fn authenticate_digest(
+        &self,
+        digest: &KeyDigest,
+        used_at: DateTime<Utc>,
+    ) -> Result<Option<ApiKeyRecord>, AuthStoreError> {
+        let mut tx = self.pool.begin().await.map_err(AuthStoreError::from_sqlx)?;
+        let row = match sqlx::query(&format!(
+            "SELECT {KEY_COLUMNS}
+             FROM opmux_private.api_keys
+             WHERE key_digest = $1
+             FOR UPDATE"
+        ))
+        .bind(digest.as_bytes().as_slice())
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(row) => row,
+            Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
+        };
+        let Some(row) = row else {
+            tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+            return Ok(None);
+        };
+        let mut record = match api_key_from_row(&row) {
+            Ok(record) => record,
+            Err(err) => return rollback_err(tx, err).await,
+        };
+        if record.is_revoked() {
+            tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+            return Ok(Some(record));
+        }
+        let updated = match sqlx::query(
+            "UPDATE opmux_private.api_keys
+             SET last_used_at = $3
+             WHERE id = $1
+               AND client_id = $2
+               AND revoked_at IS NULL
+               AND (last_used_at IS NULL OR last_used_at < $3)
+             RETURNING last_used_at",
+        )
+        .bind(record.id)
+        .bind(record.client_id)
+        .bind(used_at)
+        .fetch_optional(&mut *tx)
+        .await
+        {
+            Ok(row) => row,
+            Err(err) => return rollback_err(tx, AuthStoreError::from_sqlx(err)).await,
+        };
+        if let Some(updated) = updated {
+            record.last_used_at = match updated.try_get("last_used_at") {
+                Ok(value) => value,
+                Err(err) => {
+                    return rollback_err(tx, AuthStoreError::from_sqlx(err)).await;
+                }
+            };
+        }
+        tx.commit().await.map_err(AuthStoreError::from_sqlx)?;
+        Ok(Some(record))
+    }
+
     async fn touch_last_used(
         &self,
         client_id: Uuid,

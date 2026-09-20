@@ -1,5 +1,5 @@
-//! Production-router HTTP tests for key revocation, rotation, and operator
-//! recovery against owned local Supabase.
+//! Production-router and two-process HTTP tests for key revocation, usage
+//! timestamps, and restart durability against owned local Supabase.
 //!
 //! Capture issued credentials privately. Do not print secrets, digests, or
 //! bodies that contain them.
@@ -19,12 +19,16 @@ use gateway::{
     },
 };
 use serial_test::serial;
+use std::io::Read;
+use std::net::TcpListener;
 use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::process::{Child, Command, Output, Stdio};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use support::{
     cleanup_clients, isolate_provider_environment, production_router_with_auth,
-    required_database_url, test_pool, OpenAiSimulator, SIMULATED_CONTENT,
+    required_database_url, test_pool, OpenAiSimulator, ScriptedResponse,
+    SIMULATED_CONTENT,
 };
 use tower::ServiceExt;
 use uuid::Uuid;
@@ -250,6 +254,24 @@ async fn key_row(
     .fetch_optional(pool)
     .await
     .expect("key row")
+}
+
+async fn last_used_at(pool: &sqlx::PgPool, key_id: Uuid) -> Option<DateTime<Utc>> {
+    sqlx::query_scalar("SELECT last_used_at FROM opmux_private.api_keys WHERE id = $1")
+        .bind(key_id)
+        .fetch_one(pool)
+        .await
+        .expect("last_used_at")
+}
+
+fn inventory_timestamp(item: &serde_json::Value, field: &str) -> Option<DateTime<Utc>> {
+    item.get(field).and_then(|value| {
+        value.as_str().and_then(|raw| {
+            DateTime::parse_from_rfc3339(raw)
+                .ok()
+                .map(|parsed| parsed.with_timezone(&Utc))
+        })
+    })
 }
 
 async fn client_exists(pool: &sqlx::PgPool, client_id: Uuid) -> bool {
@@ -691,16 +713,496 @@ async fn management_rotation_and_final_manager_self_revocation_have_operator_rec
     fixture.drop_rows().await;
 }
 
+#[tokio::test]
+#[serial]
+async fn last_used_records_successful_auth_persistently_and_monotonically() {
+    isolate_provider_environment();
+    let fixture = TwoTenantFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+    let app = production_router_with_auth(
+        &simulator,
+        fixture.auth_service(),
+        MetricsConfig::disabled(),
+    );
+
+    let unused = create_named_key(
+        &app,
+        &fixture.a_management.credential,
+        "unused-inference",
+        "inference",
+    )
+    .await;
+    assert!(last_used_at(&fixture.pool, unused.key_id).await.is_none());
+    let unused_list = app
+        .clone()
+        .oneshot(list_keys(&fixture.a_management.credential))
+        .await
+        .unwrap();
+    assert_eq!(unused_list.status(), StatusCode::OK);
+    let unused_list_body = body_string(unused_list).await;
+    let unused_item =
+        inventory_item(&unused_list_body, unused.key_id).expect("unused listed");
+    assert!(unused_item
+        .get("last_used_at")
+        .and_then(|v| v.as_str())
+        .is_none());
+    assert!(!unused_list_body.contains(&unused.credential));
+
+    let first_ok = app
+        .clone()
+        .oneshot(route_request(Some(&unused.credential)))
+        .await
+        .unwrap();
+    assert_eq!(first_ok.status(), StatusCode::OK);
+    let first_used = last_used_at(&fixture.pool, unused.key_id)
+        .await
+        .expect("successful auth persists last-used");
+    let after_success = app
+        .clone()
+        .oneshot(list_keys(&fixture.a_management.credential))
+        .await
+        .unwrap();
+    let after_success_body = body_string(after_success).await;
+    let listed_unused =
+        inventory_item(&after_success_body, unused.key_id).expect("listed unused");
+    assert_eq!(
+        inventory_timestamp(&listed_unused, "last_used_at"),
+        Some(first_used)
+    );
+
+    let second_ok = app
+        .clone()
+        .oneshot(route_request(Some(&unused.credential)))
+        .await
+        .unwrap();
+    assert_eq!(second_ok.status(), StatusCode::OK);
+    let second_used = last_used_at(&fixture.pool, unused.key_id)
+        .await
+        .expect("second auth");
+    assert!(second_used >= first_used);
+
+    let failing = create_named_key(
+        &app,
+        &fixture.a_management.credential,
+        "failing-inference",
+        "inference",
+    )
+    .await;
+    assert!(last_used_at(&fixture.pool, failing.key_id).await.is_none());
+    for _ in 0..2 {
+        simulator.enqueue_chat(ScriptedResponse::json_status(
+            500,
+            serde_json::json!({"error":{"message":"simulated downstream fault"}}),
+        ));
+    }
+    let before_failure_calls = simulator.generation_count();
+    let failed = app
+        .clone()
+        .oneshot(route_request(Some(&failing.credential)))
+        .await
+        .unwrap();
+    assert_ne!(failed.status(), StatusCode::UNAUTHORIZED);
+    assert_ne!(failed.status(), StatusCode::OK);
+    assert!(last_used_at(&fixture.pool, failing.key_id).await.is_some());
+    assert!(simulator.generation_count() > before_failure_calls);
+
+    let observed = create_named_key(
+        &app,
+        &fixture.a_management.credential,
+        "observed-inference",
+        "inference",
+    )
+    .await;
+    let observed_ok = app
+        .clone()
+        .oneshot(route_request(Some(&observed.credential)))
+        .await
+        .unwrap();
+    assert_eq!(observed_ok.status(), StatusCode::OK);
+    let observed_used = last_used_at(&fixture.pool, observed.key_id)
+        .await
+        .expect("observed used");
+    let unused_used = last_used_at(&fixture.pool, unused.key_id).await;
+    let failing_used = last_used_at(&fixture.pool, failing.key_id).await;
+    let target_used_before_revoke =
+        last_used_at(&fixture.pool, fixture.a_inference.key_id).await;
+
+    let before_denied = simulator.generation_count();
+    let missing = app.clone().oneshot(route_request(None)).await.unwrap();
+    let unknown = app
+        .clone()
+        .oneshot(route_request(Some("opmx_v1_unknown-usage-key")))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(unknown.status(), StatusCode::UNAUTHORIZED);
+
+    let revoke_target = app
+        .clone()
+        .oneshot(delete_key(
+            Some(&fixture.a_management.credential),
+            fixture.a_inference.key_id,
+        ))
+        .await
+        .unwrap();
+    assert_eq!(revoke_target.status(), StatusCode::NO_CONTENT);
+    let revoked = app
+        .clone()
+        .oneshot(route_request(Some(&fixture.a_inference.credential)))
+        .await
+        .unwrap();
+    assert_eq!(revoked.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(simulator.generation_count(), before_denied);
+
+    assert_eq!(
+        last_used_at(&fixture.pool, observed.key_id).await,
+        Some(observed_used)
+    );
+    assert_eq!(
+        last_used_at(&fixture.pool, unused.key_id).await,
+        unused_used
+    );
+    assert_eq!(
+        last_used_at(&fixture.pool, failing.key_id).await,
+        failing_used
+    );
+    assert_eq!(
+        last_used_at(&fixture.pool, fixture.a_inference.key_id).await,
+        target_used_before_revoke
+    );
+
+    let agree = app
+        .clone()
+        .oneshot(list_keys(&fixture.a_management.credential))
+        .await
+        .unwrap();
+    let agree_body = body_string(agree).await;
+    let listed_observed =
+        inventory_item(&agree_body, observed.key_id).expect("listed observed");
+    assert_eq!(
+        inventory_timestamp(&listed_observed, "last_used_at"),
+        last_used_at(&fixture.pool, observed.key_id).await
+    );
+    assert_eq!(
+        last_used_at(&fixture.pool, observed.key_id).await,
+        Some(observed_used)
+    );
+
+    fixture.drop_rows().await;
+}
+
+struct OwnedGateway {
+    child: Child,
+    port: u16,
+}
+
+impl Drop for OwnedGateway {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+fn example_catalog_path() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../config/opmux.example.json")
+}
+
+fn unused_loopback_port() -> u16 {
+    TcpListener::bind("127.0.0.1:0")
+        .expect("bind probe")
+        .local_addr()
+        .expect("probe addr")
+        .port()
+}
+
+fn gateway_command() -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_gateway"));
+    for name in [
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "OPENAI_BASE_URL",
+        "OPMUX_CONFIG_FILE",
+        "HTTP_PROXY",
+        "HTTPS_PROXY",
+        "ALL_PROXY",
+        "http_proxy",
+        "https_proxy",
+        "all_proxy",
+        "RUST_LOG",
+        "LOG_LEVEL",
+        "LOG_FORMAT",
+        "LOG_JSON",
+    ] {
+        command.env_remove(name);
+    }
+    command
+        .env("AUTH_DEVELOPMENT_MODE", "false")
+        .env("SERVER_HOST", "127.0.0.1")
+        .env("METRICS_ENABLED", "false")
+        .env("TOKIO_WORKER_THREADS", "2")
+        .env("NO_PROXY", "*");
+    command
+}
+
+async fn wait_health(client: &reqwest::Client, port: u16, child: &mut Child) -> bool {
+    let started = Instant::now();
+    while started.elapsed() < Duration::from_secs(8) {
+        if let Ok(Some(_)) = child.try_wait() {
+            return false;
+        }
+        let url = format!("http://127.0.0.1:{port}/health");
+        if let Ok(response) = client.get(&url).send().await {
+            if response.status().is_success() {
+                return true;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    false
+}
+
+fn spawn_gateway(port: u16, database_url: &str, simulator_base: &str) -> OwnedGateway {
+    let mut command = gateway_command();
+    command
+        .env("DATABASE_URL", database_url)
+        .env("SERVER_PORT", port.to_string())
+        .env("OPMUX_CONFIG_FILE", example_catalog_path())
+        .env("OPENAI_API_KEY", "test-dummy-openai-key")
+        .env("OPENAI_BASE_URL", simulator_base)
+        .env("OPENAI_TIMEOUT_MS", "2000")
+        .env("EXECUTOR_MAX_RETRIES", "0")
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped());
+    let child = command.spawn().expect("spawn gateway");
+    OwnedGateway { child, port }
+}
+
+async fn start_gateway(
+    client: &reqwest::Client,
+    database_url: &str,
+    simulator_base: &str,
+) -> OwnedGateway {
+    let port = unused_loopback_port();
+    let mut gateway = spawn_gateway(port, database_url, simulator_base);
+    if !wait_health(client, port, &mut gateway.child).await {
+        let mut stderr = String::new();
+        if let Some(mut pipe) = gateway.child.stderr.take() {
+            let _ = pipe.read_to_string(&mut stderr);
+        }
+        let _ = gateway.child.kill();
+        let _ = gateway.child.wait();
+        assert!(
+            !stderr.contains(CREDENTIAL_PREFIX),
+            "gateway diagnostics must omit credentials"
+        );
+        panic!("gateway failed to become healthy");
+    }
+    gateway
+}
+
+async fn process_json(
+    client: &reqwest::Client,
+    method: reqwest::Method,
+    url: &str,
+    api_key: Option<&str>,
+    body: Option<&str>,
+) -> (u16, String) {
+    let mut request = client.request(method, url);
+    if let Some(key) = api_key {
+        request = request.header("x-api-key", key);
+    }
+    if let Some(body) = body {
+        request = request
+            .header("content-type", "application/json")
+            .body(body.to_string());
+    }
+    let response = request.send().await.expect("process http");
+    let status = response.status().as_u16();
+    let text = response.text().await.unwrap_or_default();
+    (status, text)
+}
+
+#[tokio::test]
+#[serial]
+async fn shared_persistence_survives_restart_without_revocation_cache() {
+    isolate_provider_environment();
+    let fixture = TwoTenantFixture::provision().await;
+    let simulator = OpenAiSimulator::start().await;
+    let database_url = required_database_url();
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(8))
+        .build()
+        .expect("http client");
+
+    let gateway_a = start_gateway(&client, &database_url, simulator.base_url()).await;
+    let gateway_b = start_gateway(&client, &database_url, simulator.base_url()).await;
+    let url_a = format!("http://127.0.0.1:{}", gateway_a.port);
+    let url_b = format!("http://127.0.0.1:{}", gateway_b.port);
+
+    let (created_status, created_body) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_a}/api/v1/auth/keys"),
+        Some(&fixture.a_management.credential),
+        Some(r#"{"name":"cross-process-inference","kind":"inference"}"#),
+    )
+    .await;
+    assert_eq!(created_status, 201);
+    let issued = parse_issued_http(created_body);
+    assert_eq!(issued.client_id, fixture.a_management.client_id);
+
+    let (cross_status, _) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_b}/api/v1/route"),
+        Some(&issued.credential),
+        Some(ROUTE_BODY),
+    )
+    .await;
+    assert_eq!(cross_status, 200);
+
+    let control = issued;
+    let target = &fixture.a_inference;
+    for base in [&url_a, &url_b] {
+        let (status, _) = process_json(
+            &client,
+            reqwest::Method::POST,
+            &format!("{base}/api/v1/route"),
+            Some(&target.credential),
+            Some(ROUTE_BODY),
+        )
+        .await;
+        assert_eq!(status, 200);
+    }
+    let warmed_used = last_used_at(&fixture.pool, target.key_id)
+        .await
+        .expect("warmed last-used");
+    let control_used = last_used_at(&fixture.pool, control.key_id)
+        .await
+        .expect("control last-used");
+    let before_revoke_calls = simulator.generation_count();
+
+    let (revoke_status, _) = process_json(
+        &client,
+        reqwest::Method::DELETE,
+        &format!("{url_a}/api/v1/auth/keys/{}", target.key_id),
+        Some(&fixture.a_management.credential),
+        None,
+    )
+    .await;
+    assert_eq!(revoke_status, 204);
+    let revoked_at = key_row(&fixture.pool, target.key_id)
+        .await
+        .expect("revoked row")
+        .3
+        .expect("revoked_at");
+
+    for base in [&url_a, &url_b] {
+        let (status, _) = process_json(
+            &client,
+            reqwest::Method::POST,
+            &format!("{base}/api/v1/route"),
+            Some(&target.credential),
+            Some(ROUTE_BODY),
+        )
+        .await;
+        assert_eq!(status, 401);
+    }
+    assert_eq!(simulator.generation_count(), before_revoke_calls);
+
+    let (control_status, _) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_b}/api/v1/route"),
+        Some(&control.credential),
+        Some(ROUTE_BODY),
+    )
+    .await;
+    assert_eq!(control_status, 200);
+
+    drop(gateway_a);
+    drop(gateway_b);
+
+    let gateway_a = start_gateway(&client, &database_url, simulator.base_url()).await;
+    let gateway_b = start_gateway(&client, &database_url, simulator.base_url()).await;
+    let url_a = format!("http://127.0.0.1:{}", gateway_a.port);
+    let url_b = format!("http://127.0.0.1:{}", gateway_b.port);
+    let after_restart_calls = simulator.generation_count();
+
+    let (revoked_a, _) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_a}/api/v1/route"),
+        Some(&target.credential),
+        Some(ROUTE_BODY),
+    )
+    .await;
+    let (revoked_b, _) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_b}/api/v1/route"),
+        Some(&target.credential),
+        Some(ROUTE_BODY),
+    )
+    .await;
+    assert_eq!(revoked_a, 401);
+    assert_eq!(revoked_b, 401);
+    assert_eq!(simulator.generation_count(), after_restart_calls);
+
+    let (control_after, _) = process_json(
+        &client,
+        reqwest::Method::POST,
+        &format!("{url_a}/api/v1/route"),
+        Some(&control.credential),
+        Some(ROUTE_BODY),
+    )
+    .await;
+    assert_eq!(control_after, 200);
+
+    let retained = key_row(&fixture.pool, target.key_id)
+        .await
+        .expect("retained revoked key");
+    assert_eq!(retained.0, fixture.a_management.client_id);
+    assert_eq!(retained.2, "inference");
+    assert_eq!(retained.3, Some(revoked_at));
+    let retained_used = last_used_at(&fixture.pool, target.key_id)
+        .await
+        .expect("retained usage");
+    assert!(retained_used >= warmed_used);
+    let control_after_used = last_used_at(&fixture.pool, control.key_id)
+        .await
+        .expect("control usage");
+    assert!(control_after_used >= control_used);
+    assert!(client_exists(&fixture.pool, fixture.a_management.client_id).await);
+    assert_eq!(
+        key_row(&fixture.pool, control.key_id)
+            .await
+            .expect("control row")
+            .2,
+        "inference"
+    );
+
+    drop(gateway_a);
+    drop(gateway_b);
+    fixture.drop_rows().await;
+}
+
 #[test]
 fn delete_route_and_revoke_sql_are_tenant_scoped() {
     let app = include_str!("../src/app.rs");
     let handler = include_str!("../src/features/auth/handler.rs");
     let service = include_str!("../src/features/auth/service.rs");
     let postgres = include_str!("../src/features/auth/persist/postgres.rs");
+    let implementation = service.split("mod tests").next().expect("impl");
     assert!(app.contains("/api/v1/auth/keys/{id}"));
     assert!(app.contains("revoke_api_key") || handler.contains("revoke_api_key"));
     assert!(handler.contains("DELETE") || handler.contains("revoke"));
     assert!(service.contains("revoke_key"));
     assert!(service.contains("actor.client_id"));
+    assert!(implementation.contains("authenticate_digest"));
+    assert!(!implementation.contains("tokio::spawn"));
+    assert!(!implementation.to_lowercase().contains("cache"));
+    assert!(postgres.contains("FOR UPDATE"));
     assert!(postgres.contains("WHERE id = $1 AND client_id = $2 AND revoked_at IS NULL"));
 }

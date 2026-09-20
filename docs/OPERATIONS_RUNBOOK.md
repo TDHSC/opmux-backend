@@ -59,9 +59,12 @@ bash scripts/with-owned-database.sh cargo run -p gateway --bin opmux-admin -- \
 Do not seed public mock keys (`test-api-key-123`, `dev-api-key-456`) into the database. HTTP request
 authentication hashes the presented credential and looks up the digest in `opmux_private`. Last
 successful authentication updates `last_used_at` before the request is admitted, including when
-later inference fails. There is no authentication cache. Revocation is visible to subsequent
-authentication as soon as DELETE commits. Already admitted work may finish; revocation does not
-promise cancellation of an in-flight provider call.
+later inference fails. The timestamp is monotonic: concurrent authentications cannot move it
+backward. Missing, unknown, and revoked credentials do not update it. Lookup and last-used share a
+bounded database transaction with revocation so a commit cannot admit a key whose row is already
+revoked. There is no authentication cache. Revocation is visible to subsequent authentication as
+soon as DELETE commits, including other gateway processes that share the same database. Already
+admitted work may finish; revocation does not promise cancellation of an in-flight provider call.
 
 ### Rotate a management key
 
