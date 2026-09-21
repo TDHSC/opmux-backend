@@ -52,7 +52,8 @@ if [ "$SKIP_IMAGE" = "1" ] || [ "$SKIP_CONTAINER_CHECK" = "1" ]; then
 else
   echo "running owned-container acceptance"
   # Reuse the image built above in this same run; this is not a development skip.
-  SKIP_IMAGE_BUILD=1 bash scripts/check-container.sh
+  # Pin the tag so an inherited CONTAINER_IMAGE cannot runtime-test a different image.
+  SKIP_IMAGE_BUILD=1 CONTAINER_IMAGE=opmux-gateway:mvp bash scripts/check-container.sh
 fi
 
 if [ "${#skipped_gates[@]}" -ne 0 ]; then

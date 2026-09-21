@@ -105,7 +105,8 @@ printf 'check-startup\n' >> "$OPMUX_FAKE_LOG"
         &scripts.join("check-container.sh"),
         r#"#!/bin/sh
 set -eu
-printf 'check-container SKIP_IMAGE_BUILD=%s\n' "${SKIP_IMAGE_BUILD-}" >> "$OPMUX_FAKE_LOG"
+printf 'check-container SKIP_IMAGE_BUILD=%s CONTAINER_IMAGE=%s\n' \
+  "${SKIP_IMAGE_BUILD-}" "${CONTAINER_IMAGE-}" >> "$OPMUX_FAKE_LOG"
 exit "${OPMUX_FAKE_CONTAINER_STATUS:-0}"
 "#,
     );
@@ -166,7 +167,8 @@ fn run_ci_local(
         .env("OPENAI_API_KEY", INHERITED_PROVIDER_KEY)
         .env_remove("SKIP_IMAGE")
         .env_remove("SKIP_CONTAINER_CHECK")
-        .env_remove("SKIP_IMAGE_BUILD");
+        .env_remove("SKIP_IMAGE_BUILD")
+        .env_remove("CONTAINER_IMAGE");
     for key in unset {
         command.env_remove(*key);
     }
@@ -280,8 +282,54 @@ fn default_full_run_requires_build_and_runtime_and_reports_pass() {
             CORE_GATES[6],
             CORE_GATES[7],
             "docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .",
-            "check-container SKIP_IMAGE_BUILD=1",
+            "check-container SKIP_IMAGE_BUILD=1 CONTAINER_IMAGE=opmux-gateway:mvp",
         ]
+    );
+    assert_no_secrets(&text);
+}
+
+#[test]
+fn inherited_container_image_does_not_divert_runtime_acceptance_from_built_mvp() {
+    let root = TempRoot::new("opmux-ci-local-inherited-image");
+    let (bin, log) = install_sandbox(root.path());
+    let run = run_ci_local(
+        root.path(),
+        &bin,
+        &log,
+        &[("CONTAINER_IMAGE", "opmux-gateway:old")],
+        &[],
+    );
+    let text = combined(&run);
+    assert_eq!(run.status, 0, "full run should exit 0: {text}");
+    assert!(
+        text.contains("local CI equivalent passed"),
+        "complete success requires the built mvp image and runtime acceptance of that same tag: {text}"
+    );
+    assert!(
+        !text.contains("PARTIAL"),
+        "full pass must not be labeled partial: {text}"
+    );
+    let gates = invoked_gates(&run.log);
+    assert_core_gates(&gates);
+    assert_eq!(
+        gates.as_slice(),
+        [
+            CORE_GATES[0],
+            CORE_GATES[1],
+            CORE_GATES[2],
+            CORE_GATES[3],
+            CORE_GATES[4],
+            CORE_GATES[5],
+            CORE_GATES[6],
+            CORE_GATES[7],
+            "docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .",
+            "check-container SKIP_IMAGE_BUILD=1 CONTAINER_IMAGE=opmux-gateway:mvp",
+        ]
+    );
+    assert!(
+        !run.log.contains("opmux-gateway:old"),
+        "inherited CONTAINER_IMAGE must not reach docker build or the checker: {}",
+        run.log
     );
     assert_no_secrets(&text);
 }
@@ -434,7 +482,9 @@ fn runtime_acceptance_failure_is_not_complete_or_partial_success() {
     assert_ne!(run.status, 0, "runtime acceptance failure must be nonzero");
     assert_not_full_or_partial_success(&run);
     assert!(
-        run.log.contains("check-container SKIP_IMAGE_BUILD=1"),
+        run.log.contains(
+            "check-container SKIP_IMAGE_BUILD=1 CONTAINER_IMAGE=opmux-gateway:mvp"
+        ),
         "runtime gate must have been invoked after this script's build: {}",
         run.log
     );
