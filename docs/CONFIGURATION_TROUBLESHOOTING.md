@@ -215,10 +215,18 @@ validate upstream credentials or connectivity; `/ready` checks those after the p
 Action:
 
 ```bash
-export OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json"
-export OPENAI_API_KEY=dummy-key
-export OPENAI_BASE_URL=http://127.0.0.1:38081/v1
-cargo run -p gateway
+bash scripts/with-owned-database.sh env \
+  SERVER_HOST=127.0.0.1 SERVER_PORT=38080 AUTH_DEVELOPMENT_MODE=false \
+  OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
+  OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:38081/v1 \
+  cargo run -p gateway --bin gateway
+```
+
+In another terminal (copying `.env` is not process configuration):
+
+```bash
+curl --noproxy '*' -i http://127.0.0.1:38080/health
+curl --noproxy '*' -i http://127.0.0.1:38080/ready
 ```
 
 Documented local checks use a dummy key and an owned loopback simulator or an intentionally

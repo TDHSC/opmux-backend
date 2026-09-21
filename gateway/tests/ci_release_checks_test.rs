@@ -70,6 +70,81 @@ fn collapsed(text: &str) -> String {
     text.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Collect published Postgres service ports from uncommented YAML list entries.
+/// Comments and substring matches such as `55432:5432` are not sufficient.
+fn postgres_published_ports(yaml: &str) -> Vec<String> {
+    let mut in_postgres = false;
+    let mut in_ports = false;
+    let mut postgres_indent = 0usize;
+    let mut ports_indent = 0usize;
+    let mut ports = Vec::new();
+    for line in yaml.lines() {
+        let raw = line.trim_end();
+        let trimmed = raw.trim_start();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let indent = raw.len() - raw.trim_start().len();
+        if trimmed == "postgres:" {
+            in_postgres = true;
+            postgres_indent = indent;
+            in_ports = false;
+            continue;
+        }
+        if in_postgres && indent <= postgres_indent {
+            in_postgres = false;
+            in_ports = false;
+        }
+        if !in_postgres {
+            continue;
+        }
+        if trimmed == "ports:" {
+            in_ports = true;
+            ports_indent = indent;
+            continue;
+        }
+        if in_ports {
+            if indent <= ports_indent {
+                in_ports = false;
+            } else if let Some(value) = trimmed.strip_prefix("- ") {
+                let value = value
+                    .trim()
+                    .trim_matches('"')
+                    .trim_matches('\'')
+                    .to_string();
+                ports.push(value);
+                continue;
+            } else {
+                in_ports = false;
+            }
+        }
+    }
+    ports
+}
+
+fn fenced_bash_blocks(markdown: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut in_bash = false;
+    let mut current = String::new();
+    for line in markdown.lines() {
+        if line.starts_with("```bash") {
+            in_bash = true;
+            current.clear();
+            continue;
+        }
+        if in_bash && line.starts_with("```") {
+            blocks.push(std::mem::take(&mut current));
+            in_bash = false;
+            continue;
+        }
+        if in_bash {
+            current.push_str(line);
+            current.push('\n');
+        }
+    }
+    blocks
+}
+
 fn assert_no_secrets(output: &str) {
     assert!(
         !output.contains(INHERITED_PROVIDER_KEY),
@@ -172,15 +247,44 @@ fn ci_workflow_pins_rust_and_locked_workspace_gates() {
 }
 
 #[test]
+fn ci_postgres_port_parser_ignores_comments_and_requires_complete_mapping() {
+    let commented = r#"
+    services:
+      postgres:
+        # ports:
+        #   - 127.0.0.1:55432:5432
+        ports:
+          - 55432:5432
+"#;
+    assert_eq!(
+        postgres_published_ports(commented),
+        vec!["55432:5432".to_string()],
+        "commented loopback mappings must not count as the published port"
+    );
+    let loopback = r#"
+    services:
+      postgres:
+        ports:
+          - 127.0.0.1:55432:5432
+"#;
+    assert_eq!(
+        postgres_published_ports(loopback),
+        vec!["127.0.0.1:55432:5432".to_string()]
+    );
+}
+
+#[test]
 fn ci_workflow_provisions_postgres_and_canonical_migrations() {
-    let yaml = collapsed(&read_repo(".github/workflows/ci.yml"));
+    let yaml_raw = read_repo(".github/workflows/ci.yml");
+    let yaml = collapsed(&yaml_raw);
     assert!(
         yaml.contains("postgres:17.6"),
         "CI must provision disposable Postgres 17"
     );
-    assert!(
-        yaml.contains("55432:5432"),
-        "CI Postgres must publish 127.0.0.1:55432"
+    assert_eq!(
+        postgres_published_ports(&yaml_raw),
+        vec!["127.0.0.1:55432:5432".to_string()],
+        "CI Postgres must publish the complete loopback mapping, not a substring or comment"
     );
     assert!(
         yaml.contains("scripts/ci-setup-db.sh"),
@@ -256,7 +360,92 @@ fn local_ci_script_requires_owned_database_and_does_not_skip() {
         !combined.contains("local CI equivalent passed"),
         "ci-local must not report success when setup is unavailable"
     );
+    assert!(
+        !combined.contains("PARTIAL"),
+        "missing database is a failure, not a partial skip result"
+    );
     assert_no_secrets(&combined);
+}
+
+#[test]
+fn native_startup_docs_use_loopback_owned_db_and_matching_curls() {
+    let observability = read_repo("gateway/tests/OBSERVABILITY_TESTING.md");
+    let troubleshooting = read_repo("docs/CONFIGURATION_TROUBLESHOOTING.md");
+    for (path, source) in [
+        (
+            "gateway/tests/OBSERVABILITY_TESTING.md",
+            observability.as_str(),
+        ),
+        (
+            "docs/CONFIGURATION_TROUBLESHOOTING.md",
+            troubleshooting.as_str(),
+        ),
+    ] {
+        let blocks = fenced_bash_blocks(source);
+        let startup: Vec<&String> = blocks
+            .iter()
+            .filter(|block| {
+                block.contains("cargo run -p gateway --bin gateway")
+                    && !block.contains("opmux-admin")
+            })
+            .collect();
+        assert!(
+            !startup.is_empty(),
+            "{path} must document a native `cargo run -p gateway --bin gateway` recipe"
+        );
+        for block in startup {
+            assert!(
+                block.contains("SERVER_HOST=127.0.0.1"),
+                "{path} native startup must bind loopback"
+            );
+            assert!(
+                block.contains("SERVER_PORT=38080"),
+                "{path} native startup must use approved port 38080"
+            );
+            assert!(
+                block.contains("scripts/with-owned-database.sh"),
+                "{path} native startup must use the owned database wrapper"
+            );
+            assert!(
+                block.contains("OPENAI_API_KEY=dummy-key"),
+                "{path} native startup must use a dummy provider key"
+            );
+            assert!(
+                block.contains("OPENAI_BASE_URL=http://127.0.0.1:"),
+                "{path} native startup must use a loopback upstream"
+            );
+            assert!(
+                !block.contains("SERVER_PORT=3000"),
+                "{path} native startup must not run port 3000"
+            );
+            assert!(
+                !block.contains("source .env") && !block.contains("source ./.env"),
+                "{path} must not imply automatic .env loading"
+            );
+        }
+        let curls: Vec<&String> = blocks
+            .iter()
+            .filter(|block| block.contains("curl") && block.contains("/health"))
+            .collect();
+        assert!(
+            !curls.is_empty(),
+            "{path} must include adjacent health curls"
+        );
+        for block in curls {
+            assert!(
+                block.contains("127.0.0.1:38080"),
+                "{path} curls must target the documented loopback port"
+            );
+            assert!(
+                !block.contains("127.0.0.1:3000"),
+                "{path} curls must not target port 3000"
+            );
+        }
+    }
+    assert!(
+        !observability.contains("127.0.0.1:3000"),
+        "observability guide must not exercise port 3000"
+    );
 }
 
 #[test]

@@ -20,21 +20,21 @@ Two local setups:
 Copying `.env` is not process configuration. `AUTH_DEVELOPMENT_MODE` does not bypass authentication.
 
 ```bash
-export OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json"
-export OPENAI_API_KEY=dummy-key
-export OPENAI_BASE_URL=http://127.0.0.1:9/v1
-export AUTH_DEVELOPMENT_MODE=false
-bash scripts/with-owned-database.sh cargo run -p gateway
+bash scripts/with-owned-database.sh env \
+  SERVER_HOST=127.0.0.1 SERVER_PORT=38080 AUTH_DEVELOPMENT_MODE=false \
+  OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
+  OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:9/v1 \
+  cargo run -p gateway --bin gateway
 ```
 
-Native default listen address is `127.0.0.1:3000` only if you also export
-`SERVER_HOST`/`SERVER_PORT` as in [README.md](../../README.md). Unset, the binary defaults to
-`0.0.0.0:3000`. Documented local commands set `SERVER_HOST=127.0.0.1`.
+Documented native commands set `SERVER_HOST=127.0.0.1` and `SERVER_PORT=38080`. Copying `.env` is
+not process configuration. The binary default without those variables is `0.0.0.0:3000`; do not run
+that default locally.
 
 ## 1) Correlation ID propagation
 
 ```bash
-curl --noproxy '*' -i "http://127.0.0.1:3000/health" \
+curl --noproxy '*' -i "http://127.0.0.1:38080/health" \
   -H "X-Correlation-ID: manual-corr-001"
 ```
 
@@ -50,7 +50,7 @@ Expected:
 ## 2) Health endpoint response
 
 ```bash
-curl --noproxy '*' -i "http://127.0.0.1:3000/health"
+curl --noproxy '*' -i "http://127.0.0.1:38080/health"
 ```
 
 Expected:
@@ -63,7 +63,7 @@ There is no `HEALTH_CHECK_MODE`. `/health` is liveness only.
 ## 3) Readiness endpoint response
 
 ```bash
-curl --noproxy '*' -i "http://127.0.0.1:3000/ready"
+curl --noproxy '*' -i "http://127.0.0.1:38080/ready"
 ```
 
 Expected with dummy unreachable upstream (`127.0.0.1:9`):
@@ -77,7 +77,7 @@ cache for `HEALTH_CHECK_CACHE_TTL_SECS` (default **5** seconds). Failures are ne
 ## 4) Metrics endpoint accessibility
 
 ```bash
-curl --noproxy '*' -i "http://127.0.0.1:3000/metrics"
+curl --noproxy '*' -i "http://127.0.0.1:38080/metrics"
 ```
 
 Expected:
@@ -97,7 +97,7 @@ Provision an inference key with `opmux-admin` first. Former public mock keys suc
 `test-api-key-123` return `401` and do not reach the executor.
 
 ```bash
-curl --noproxy '*' -i -X POST "http://127.0.0.1:3000/api/v1/route" \
+curl --noproxy '*' -i -X POST "http://127.0.0.1:38080/api/v1/route" \
   -H "Content-Type: application/json" \
   -H "X-API-Key: $INFERENCE_KEY" \
   -H "X-Correlation-ID: manual-corr-002" \
@@ -123,8 +123,9 @@ For the automated local-only smoke check, build the binary and run:
 
 ```bash
 cargo build -p gateway
-bash scripts/with-owned-database.sh bash scripts/check-startup.sh "$PWD/target/debug/gateway"
+bash scripts/with-owned-database.sh env STARTUP_CHECK_PORT=38082 \
+  bash scripts/check-startup.sh "$PWD/target/debug/gateway"
 ```
 
-This starts and stops its own gateway; stop any instance already using port 3000 or set
-`STARTUP_CHECK_PORT` to an unused port.
+This starts and stops its own gateway on `127.0.0.1:38082`. Stop any instance already using that
+port or set `STARTUP_CHECK_PORT` to another unused loopback port in `38080-38089`.

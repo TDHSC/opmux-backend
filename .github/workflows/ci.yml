@@ -105,7 +105,7 @@ jobs:
           POSTGRES_PASSWORD: postgres
           POSTGRES_DB: postgres
         ports:
-          - 55432:5432
+          - "127.0.0.1:55432:5432"
         options: >-
           --health-cmd "pg_isready -U postgres -d postgres" --health-interval 10s
           --health-timeout 5s --health-retries 10

@@ -37,13 +37,28 @@ cargo build -p gateway --locked -j 2
 bash scripts/with-owned-database.sh env STARTUP_CHECK_PORT="$STARTUP_CHECK_PORT" \
   bash scripts/check-startup.sh "$ROOT_DIR/target/debug/gateway"
 
-if [ "$SKIP_IMAGE" != "1" ]; then
+skipped_gates=()
+if [ "$SKIP_IMAGE" = "1" ]; then
+  echo "skipping image build (development skip)"
+  skipped_gates+=("image build")
+else
   echo "building locked gateway image"
   docker build --file gateway/Dockerfile --tag opmux-gateway:mvp .
-  if [ "$SKIP_CONTAINER_CHECK" != "1" ]; then
-    echo "running owned-container acceptance"
-    SKIP_IMAGE_BUILD=1 bash scripts/check-container.sh
-  fi
+fi
+
+if [ "$SKIP_IMAGE" = "1" ] || [ "$SKIP_CONTAINER_CHECK" = "1" ]; then
+  echo "skipping container runtime acceptance (development skip)"
+  skipped_gates+=("container runtime acceptance")
+else
+  echo "running owned-container acceptance"
+  # Reuse the image built above in this same run; this is not a development skip.
+  SKIP_IMAGE_BUILD=1 bash scripts/check-container.sh
+fi
+
+if [ "${#skipped_gates[@]}" -ne 0 ]; then
+  joined=$(IFS=', '; echo "${skipped_gates[*]}")
+  echo "local CI equivalent PARTIAL (not full acceptance): skipped ${joined}"
+  exit 0
 fi
 
 echo "local CI equivalent passed"

@@ -23,7 +23,9 @@ resetting retained rows. For operator/production Postgres, run `scripts/db-migra
 `DATABASE_URL`; that path is not restricted to localhost. CI provisions its own disposable Postgres
 17 and uses `scripts/ci-setup-db.sh` rather than this host. Do not enable SQLx migrators, hosted
 project linking, or automatic migrate-on-boot for each replica. The local CI equivalent is
-`bash scripts/ci-local.sh`.
+`bash scripts/ci-local.sh`. A complete pass requires the image build and container runtime
+acceptance. Development `SKIP_IMAGE` / `SKIP_CONTAINER_CHECK` may exit 0 only as PARTIAL
+non-acceptance that names skipped gates.
 
 Local privileges are separate:
 

@@ -48,7 +48,7 @@ bash scripts/with-owned-database.sh env \
   SERVER_HOST=127.0.0.1 SERVER_PORT=3000 AUTH_DEVELOPMENT_MODE=false \
   OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
   OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:9/v1 OPENAI_TIMEOUT_MS=200 \
-  cargo run -p gateway
+  cargo run -p gateway --bin gateway
 
 # Provision / recover (one-time secret on stdout; write to a fresh mktemp file)
 # Tenant JSON includes display_name, client_id, and credential once. The first
@@ -218,7 +218,7 @@ SERVER_HOST=127.0.0.1 SERVER_PORT=3000 \
 OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 AUTH_DEVELOPMENT_MODE=false METRICS_ENABLED=true METRICS_PATH=/metrics \
 OPENAI_API_KEY=dummy-key OPENAI_BASE_URL=http://127.0.0.1:9/v1 OPENAI_TIMEOUT_MS=200 \
-cargo run -p gateway
+cargo run -p gateway --bin gateway
 ```
 
 These environment overrides apply only to this command. In another terminal:
@@ -245,7 +245,7 @@ bash scripts/with-owned-database.sh env \
 SERVER_HOST=127.0.0.1 SERVER_PORT=3000 AUTH_DEVELOPMENT_MODE=false \
 OPMUX_CONFIG_FILE="$PWD/config/opmux.example.json" \
 OPENAI_API_KEY='<your-provider-key>' OPENAI_BASE_URL=https://api.openai.com/v1 \
-cargo run -p gateway
+cargo run -p gateway --bin gateway
 ```
 
 `OPENAI_BASE_URL` defaults to `https://api.openai.com/v1` when unset; documented local commands
@@ -540,14 +540,19 @@ bash scripts/ci-local.sh
 
 That script applies canonical migrations to the **owned** loopback database, then runs the locked
 workspace test/check/Clippy/fmt/Prettier gates, the startup smoke check, and the locked image
-build/runtime acceptance. It fails clearly if the owned database is unavailable; it does not skip
-persistence checks, push, or start a remote job.
+build/runtime acceptance. A complete `local CI equivalent passed` result requires that actual image
+build **and** container runtime acceptance. Development `SKIP_IMAGE=1` or `SKIP_CONTAINER_CHECK=1`
+may exit 0 only as `PARTIAL (not full acceptance)` output that names the skipped gates; it is not a
+full pass. After this same script's successful image build, `SKIP_IMAGE_BUILD=1` for
+`scripts/check-container.sh` reuses that image and is not a development skip. The script fails
+clearly if the owned database is unavailable; it does not skip persistence checks, push, or start a
+remote job.
 
 CI pins **Rust 1.89.0** (`rust-toolchain.toml`) and runs the same gates with `-j 2` /
-`--test-threads=2`. The test job provisions disposable Postgres 17.6 on `127.0.0.1:55432`, installs
-the pinned Supabase CLI 2.117.x, and applies `supabase/migrations` through `scripts/ci-setup-db.sh`.
-It does not depend on this workstation's container. Routine tests use
-`scripts/with-safe-test-env.sh` so inherited provider keys, proxy variables, and
+`--test-threads=2`. The test job provisions disposable Postgres 17.6 published only as
+`127.0.0.1:55432:5432`, installs the pinned Supabase CLI 2.117.x, and applies `supabase/migrations`
+through `scripts/ci-setup-db.sh`. It does not depend on this workstation's container. Routine tests
+use `scripts/with-safe-test-env.sh` so inherited provider keys, proxy variables, and
 `OPMUX_LIVE_PROVIDER_TESTS` cannot contact a real provider. Ignored live-provider tests are not
 invoked. The image job builds `gateway/Dockerfile` without baked credentials. `sslmode=disable` in
 CI is local-only, not hosted TLS proof. Remote CI execution is not required for local acceptance.
