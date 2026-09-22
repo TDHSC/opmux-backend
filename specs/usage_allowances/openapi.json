@@ -1,0 +1,3317 @@
+{
+  "openapi": "3.1.1",
+  "info": {
+    "title": "Opmux Usage and Allowance API \u2014 Proposed Contract",
+    "version": "0.1.0",
+    "description": "DESIGN ONLY, not shipped endpoints. Tenant-scoped management API plus additive inference attribution. See api-contract.md and admin-ui-contract.md. Monetary values are configured-tariff estimates, not invoices."
+  },
+  "servers": [
+    {
+      "url": "https://gateway.example.invalid",
+      "description": "Placeholder, not a deployed service"
+    }
+  ],
+  "security": [
+    {
+      "ApiKeyAuth": []
+    }
+  ],
+  "tags": [
+    {
+      "name": "Management",
+      "description": "Existing tenant management key capability is required."
+    },
+    {
+      "name": "Inference",
+      "description": "Existing tenant inference key capability is required."
+    }
+  ],
+  "paths": {
+    "/api/v1/usage/settings": {
+      "get": {
+        "operationId": "getUsageSettings",
+        "summary": "Get tenant usage mode",
+        "tags": ["Management"],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "put": {
+        "operationId": "setUsageSettings",
+        "summary": "Change usage enforcement mode",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSettings"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SettingsWrite"
+              }
+            }
+          }
+        },
+        "description": "Enforce activation checks policies, bound profiles, existing consumption, and unresolved unbounded exposure. No reset occurs."
+      }
+    },
+    "/api/v1/usage/customers": {
+      "get": {
+        "operationId": "listCustomers",
+        "summary": "List tenant customers",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "external_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueLabel"
+            },
+            "required": false
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["active", "suspended"]
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CustomerPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "post": {
+        "operationId": "createCustomer",
+        "summary": "Register a customer",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerCreate"
+              }
+            }
+          }
+        },
+        "description": "Duplicate external_id with a different idempotency key is 409 CUSTOMER_EXISTS. Creates an account without a configured allowance."
+      }
+    },
+    "/api/v1/usage/customers/{customer_id}": {
+      "get": {
+        "operationId": "getCustomer",
+        "summary": "Get one customer",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      },
+      "patch": {
+        "operationId": "updateCustomer",
+        "summary": "Rename or suspend a customer",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Customer"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CustomerWrite"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/usage/allowance": {
+      "get": {
+        "operationId": "getTenantAllowance",
+        "summary": "Get tenant allowance policy",
+        "tags": ["Management"],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowancePolicy"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Unconfigured policy returns configured=false, null limits, revision=0, and an ETag suitable for initial PUT. Account provisioning is internal; GET does not mutate state."
+      },
+      "put": {
+        "operationId": "setTenantAllowance",
+        "summary": "Set tenant recurring allowance",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowancePolicy"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowanceWrite"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/usage/allowance/adjustments": {
+      "post": {
+        "operationId": "adjustTenantAllowance",
+        "summary": "Adjust current-period capacity",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Adjustment"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustmentWrite"
+              }
+            }
+          }
+        },
+        "description": "Signed nonzero amount. Uses allowance policy ETag; increments its management revision. Never edits usage. Effective capacity may not become negative; exposure may exceed reduced capacity."
+      }
+    },
+    "/api/v1/usage/balance": {
+      "get": {
+        "operationId": "getTenantBalance",
+        "summary": "Get tenant current balance",
+        "tags": ["Management"],
+        "parameters": [],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Balance"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Authoritative snapshot, not an admission guarantee. No policy or unbounded unknown exposure makes available_usd null."
+      }
+    },
+    "/api/v1/usage/customers/{customer_id}/allowance": {
+      "get": {
+        "operationId": "getCustomerAllowance",
+        "summary": "Get customer allowance policy",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowancePolicy"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Unconfigured policy returns configured=false, null limits, revision=0, and an ETag suitable for initial PUT. Account provisioning is internal; GET does not mutate state."
+      },
+      "put": {
+        "operationId": "setCustomerAllowance",
+        "summary": "Set customer recurring allowance",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AllowancePolicy"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AllowanceWrite"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/usage/customers/{customer_id}/allowance/adjustments": {
+      "post": {
+        "operationId": "adjustCustomerAllowance",
+        "summary": "Adjust current-period capacity",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Adjustment"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AdjustmentWrite"
+              }
+            }
+          }
+        },
+        "description": "Signed nonzero amount. Uses allowance policy ETag; increments its management revision. Never edits usage. Effective capacity may not become negative; exposure may exceed reduced capacity."
+      }
+    },
+    "/api/v1/usage/customers/{customer_id}/balance": {
+      "get": {
+        "operationId": "getCustomerBalance",
+        "summary": "Get customer current balance",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "customer_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Balance"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Authoritative snapshot, not an admission guarantee. No policy or unbounded unknown exposure makes available_usd null."
+      }
+    },
+    "/api/v1/usage/summary": {
+      "get": {
+        "operationId": "getUsageSummary",
+        "summary": "Get bounded usage summary",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "name": "group_by",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["day", "customer", "workflow", "target", "task"]
+            },
+            "required": true
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "required": false
+          },
+          {
+            "name": "workflow_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueLabel"
+            },
+            "required": false
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueLabel"
+            },
+            "required": false
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageSummary"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Exact attempt-admission range [from,to), max 31 days. totals covers the entire filtered range; groups is paginated. Late evidence can revise historical totals. Unknown usage is explicit."
+      }
+    },
+    "/api/v1/usage/requests": {
+      "get": {
+        "operationId": "listUsageRequests",
+        "summary": "List attributed generation requests",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "required": false
+          },
+          {
+            "name": "workflow_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueLabel"
+            },
+            "required": false
+          },
+          {
+            "name": "task_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/OpaqueLabel"
+            },
+            "required": false
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "required": false
+          },
+          {
+            "name": "execution_state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["running", "succeeded", "failed", "cancelled", "unknown"]
+            },
+            "required": false
+          },
+          {
+            "name": "accounting_state",
+            "in": "query",
+            "schema": {
+              "type": "string",
+              "enum": ["pending", "complete", "released_unknown"]
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RequestPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Range matches request admission time. target filter selects requests with at least one matching attempt; returned totals include all attempts of each request. Summary target filtering is attempt-scoped."
+      }
+    },
+    "/api/v1/usage/requests/{usage_request_id}": {
+      "get": {
+        "operationId": "getUsageRequest",
+        "summary": "Inspect one generation operation",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "usage_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UsageRequest"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/requests/{usage_request_id}/attempts": {
+      "get": {
+        "operationId": "listUsageAttempts",
+        "summary": "Inspect every provider attempt",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "usage_request_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AttemptPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Ascending ordinal; page latest evidence, without prompts or output text."
+      }
+    },
+    "/api/v1/usage/attempts/{attempt_id}": {
+      "get": {
+        "operationId": "getUsageAttempt",
+        "summary": "Get attempt and resolution precondition",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "ETag": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "description": "Strong configuration/lifecycle ETag for If-Match."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Attempt"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/attempts/{attempt_id}/resolutions": {
+      "post": {
+        "operationId": "resolveUsageAttempt",
+        "summary": "Resolve an uncertain provider attempt",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "attempt_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          },
+          {
+            "$ref": "#/components/parameters/IfMatch"
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Resolution"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolutionWrite"
+              }
+            }
+          }
+        },
+        "description": "Pending reconciliation only. Attestation uses the original price snapshot; unverified release preserves unknown cost. Evidence refs are opaque and never fetched. Conflicting terminal evidence is an operator investigation."
+      }
+    },
+    "/api/v1/usage/events": {
+      "get": {
+        "operationId": "listUsageEvents",
+        "summary": "Read persistent warnings",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "customer_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "required": false
+          },
+          {
+            "name": "acknowledged",
+            "in": "query",
+            "schema": {
+              "type": "boolean"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EventPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/usage/events/{event_id}/acknowledgement": {
+      "post": {
+        "operationId": "acknowledgeUsageEvent",
+        "summary": "Acknowledge a warning",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "name": "event_id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Operation-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable management operation identity."
+              },
+              "Idempotency-Replayed": {
+                "schema": {
+                  "type": "boolean"
+                },
+                "description": "true only when this response replays a committed operation."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Event"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        },
+        "description": "Tenant-wide acknowledgement; repeated acknowledgement preserves the original actor/time. Does not resolve usage, release holds, or delete an event."
+      }
+    },
+    "/api/v1/usage/audit": {
+      "get": {
+        "operationId": "listUsageAudit",
+        "summary": "Read management audit operations",
+        "tags": ["Management"],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/From"
+          },
+          {
+            "$ref": "#/components/parameters/To"
+          },
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "target_id",
+            "in": "query",
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "required": false
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AuditPage"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          }
+        }
+      }
+    },
+    "/api/v1/route": {
+      "post": {
+        "operationId": "routeWithUsage",
+        "summary": "Generate with optional explicit attribution",
+        "tags": ["Inference"],
+        "parameters": [
+          {
+            "name": "Idempotency-Key",
+            "in": "header",
+            "required": false,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128,
+              "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+            },
+            "description": "Required in enforce mode; optional in observe mode. Duplicate suppression, not generated-content replay. Reuse of a committed key returns 409 and the original usage ID."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Success",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Usage-Request-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable usage identity when an operation was admitted, including duplicate suppression responses."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GenerationResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "$ref": "#/components/responses/Error"
+          },
+          "409": {
+            "description": "Duplicate generation or conflicting idempotency key. No generated answer is cached.",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Usage-Request-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable usage identity when an operation was admitted, including duplicate suppression responses."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "ALLOWANCE_EXCEEDED or existing overload/provider-throttling code; dispatch did not begin for a denied attempt.",
+            "headers": {
+              "X-Request-ID": {
+                "schema": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 128
+                },
+                "description": "HTTP correlation ID."
+              },
+              "Cache-Control": {
+                "schema": {
+                  "const": "no-store"
+                },
+                "description": "Sensitive management/accounting response."
+              },
+              "X-Opmux-Usage-Request-ID": {
+                "schema": {
+                  "$ref": "#/components/schemas/Id"
+                },
+                "description": "Durable usage identity when an operation was admitted, including duplicate suppression responses."
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GenerationRequest"
+              }
+            }
+          }
+        },
+        "description": "PROPOSED extension of the shipped ingress contract. Inference key only; management keys are forbidden. Enforce requires registered customer attribution and Idempotency-Key. Stream/rewrite remain rejected. No policy/client_id/price fields are accepted."
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "ApiKeyAuth": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-API-Key",
+        "description": "Management for /api/v1/usage/*; inference for /api/v1/route. Never a browser-stored credential."
+      }
+    },
+    "parameters": {
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$"
+        },
+        "description": "Unique logical mutation key. Replay window: management 7 days; inference suppression 90 days. Preserve key and original preconditions on ambiguous transport retries."
+      },
+      "IfMatch": {
+        "name": "If-Match",
+        "in": "header",
+        "required": true,
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "description": "Exact strong ETag from the corresponding resource GET. Wildcards and multiple tags are not accepted."
+      },
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 25
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "schema": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "description": "Opaque, signed, tenant/filter-bound cursor. Expires after 15 minutes."
+      },
+      "From": {
+        "name": "from",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Timestamp"
+        }
+      },
+      "To": {
+        "name": "to",
+        "in": "query",
+        "required": true,
+        "schema": {
+          "$ref": "#/components/schemas/Timestamp"
+        },
+        "description": "Exclusive end; later than from and at most 31 days after it."
+      }
+    },
+    "responses": {
+      "Error": {
+        "description": "Sanitized existing envelope. See api-contract.md for status/code semantics.",
+        "headers": {
+          "X-Request-ID": {
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 128
+            },
+            "description": "HTTP correlation ID."
+          },
+          "Cache-Control": {
+            "schema": {
+              "const": "no-store"
+            },
+            "description": "Sensitive management/accounting response."
+          },
+          "Retry-After": {
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            },
+            "description": "Optional bounded advice for transient busy/pending states; never an automatic retry instruction for exhausted allowance."
+          },
+          "X-Opmux-Usage-Request-ID": {
+            "schema": {
+              "$ref": "#/components/schemas/Id"
+            },
+            "description": "Present if a durable usage operation exists."
+          }
+        },
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/Error"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Id": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "Timestamp": {
+        "type": "string",
+        "format": "date-time",
+        "pattern": "Z$",
+        "description": "RFC 3339 UTC timestamp; boundaries use [from,to)."
+      },
+      "OpaqueLabel": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 128,
+        "pattern": "^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$",
+        "description": "Tenant-local opaque identifier. Do not send email addresses, secrets, or personal data."
+      },
+      "Usd": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,20})\\.[0-9]{9}$",
+        "description": "Nonnegative configured-tariff USD estimate or allowance, exactly nine decimal places. Never a provider invoice."
+      },
+      "SignedUsd": {
+        "type": "string",
+        "pattern": "^(?!-0\\.000000000$)-?(0|[1-9][0-9]{0,20})\\.[0-9]{9}$",
+        "description": "Exact signed USD capacity adjustment; not a change to usage cost."
+      },
+      "Count": {
+        "type": "string",
+        "pattern": "^(0|[1-9][0-9]{0,29})$",
+        "description": "Exact nonnegative integer encoded as a string."
+      },
+      "Revision": {
+        "type": "integer",
+        "minimum": 0,
+        "maximum": 2147483647
+      },
+      "Reason": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 500,
+        "description": "Human-readable audit reason; no secrets or prompt text. Whitespace-only values are rejected."
+      },
+      "Period": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "start": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "end": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["start", "end"]
+      },
+      "Error": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "code": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              "message": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              "request_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              }
+            },
+            "required": ["code", "message", "request_id"]
+          }
+        },
+        "required": ["error"]
+      },
+      "UsageSettings": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["observe", "enforce"]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["mode", "revision", "updated_at"]
+      },
+      "SettingsWrite": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "mode": {
+            "type": "string",
+            "enum": ["observe", "enforce"]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "required": ["mode", "reason"]
+      },
+      "Customer": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "external_id": {
+            "$ref": "#/components/schemas/OpaqueLabel"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "suspended"]
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "external_id",
+          "display_name",
+          "status",
+          "revision",
+          "created_at",
+          "updated_at"
+        ]
+      },
+      "CustomerCreate": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "external_id": {
+            "$ref": "#/components/schemas/OpaqueLabel"
+          },
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "required": ["external_id", "display_name", "reason"]
+      },
+      "CustomerWrite": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "display_name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "status": {
+            "type": "string",
+            "enum": ["active", "suspended"]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "required": ["reason"],
+        "anyOf": [
+          {
+            "required": ["display_name"]
+          },
+          {
+            "required": ["status"]
+          }
+        ]
+      },
+      "AllowancePolicy": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "scope": {
+            "type": "string",
+            "enum": ["tenant", "customer"]
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "configured": {
+            "type": "boolean"
+          },
+          "base_limit_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scheduled_base_limit_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "scheduled_effective_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "period_kind": {
+            "const": "calendar_month_utc"
+          },
+          "revision": {
+            "$ref": "#/components/schemas/Revision"
+          },
+          "updated_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "account_id",
+          "scope",
+          "customer_id",
+          "configured",
+          "base_limit_usd",
+          "scheduled_base_limit_usd",
+          "scheduled_effective_at",
+          "period_kind",
+          "revision",
+          "updated_at"
+        ]
+      },
+      "AllowanceWrite": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "base_limit_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "effective": {
+            "type": "string",
+            "enum": ["current_and_future", "next_period"]
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "required": ["base_limit_usd", "effective", "reason"]
+      },
+      "AdjustmentWrite": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "amount_usd": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/SignedUsd"
+              }
+            ],
+            "not": {
+              "const": "0.000000000"
+            }
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          }
+        },
+        "required": ["amount_usd", "reason"]
+      },
+      "Adjustment": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "account_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "amount_usd": {
+            "$ref": "#/components/schemas/SignedUsd"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "operation_id",
+          "account_id",
+          "period",
+          "amount_usd",
+          "reason",
+          "created_at"
+        ]
+      },
+      "Balance": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "account_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "scope": {
+            "type": "string",
+            "enum": ["tenant", "customer"]
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "mode": {
+            "type": "string",
+            "enum": ["observe", "enforce"]
+          },
+          "policy_configured": {
+            "type": "boolean"
+          },
+          "customer_suspended": {
+            "type": "boolean"
+          },
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "base_limit_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "adjustment_usd": {
+            "$ref": "#/components/schemas/SignedUsd"
+          },
+          "effective_limit_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settled_estimate_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "active_hold_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "pending_exposure_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "carryover_hold_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "total_held_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "available_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "overcommitted_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "unbounded_unknown_attempt_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "complete": {
+            "type": "boolean"
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "account_id",
+          "scope",
+          "customer_id",
+          "currency",
+          "mode",
+          "policy_configured",
+          "customer_suspended",
+          "period",
+          "base_limit_usd",
+          "adjustment_usd",
+          "effective_limit_usd",
+          "settled_estimate_usd",
+          "active_hold_usd",
+          "pending_exposure_usd",
+          "carryover_hold_usd",
+          "total_held_usd",
+          "available_usd",
+          "overcommitted_usd",
+          "unbounded_unknown_attempt_count",
+          "complete",
+          "as_of"
+        ],
+        "description": "Current period balance, not dispatch authorization. active_hold and pending_exposure cover current-period bounded holds; carryover includes all older bounded holds. total_held is their sum. available/overcommitted are null without a policy or with unbounded unknowns. complete is false if usage is still uncertain."
+      },
+      "CostTotals": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "currency": {
+            "const": "USD"
+          },
+          "request_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "successful_request_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "attempt_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "known_input_tokens": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "known_output_tokens": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "settled_estimate_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "active_reservation_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "pending_exposure_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "released_unknown_exposure_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "unknown_attempt_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "unbounded_unknown_attempt_count": {
+            "$ref": "#/components/schemas/Count"
+          },
+          "complete": {
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "currency",
+          "request_count",
+          "successful_request_count",
+          "attempt_count",
+          "known_input_tokens",
+          "known_output_tokens",
+          "settled_estimate_usd",
+          "active_reservation_usd",
+          "pending_exposure_usd",
+          "released_unknown_exposure_usd",
+          "unknown_attempt_count",
+          "unbounded_unknown_attempt_count",
+          "complete"
+        ],
+        "description": "Known/bounded components only; unknown costs are not zero. Period queries use attempt admission time. Counts across groups are not necessarily additive for requests spanning targets."
+      },
+      "Attribution": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "customer_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "workflow_id": {
+            "$ref": "#/components/schemas/OpaqueLabel"
+          },
+          "task_id": {
+            "$ref": "#/components/schemas/OpaqueLabel"
+          }
+        },
+        "required": [],
+        "minProperties": 1
+      },
+      "GenerationRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "prompt": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 1000000
+          },
+          "metadata": {},
+          "route": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "allow_fallback": {
+            "type": "boolean"
+          },
+          "parameters": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "temperature": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 2
+              },
+              "top_p": {
+                "type": "number",
+                "minimum": 0,
+                "maximum": 1
+              },
+              "max_tokens": {
+                "type": "integer",
+                "minimum": 1
+              }
+            },
+            "required": []
+          },
+          "attribution": {
+            "$ref": "#/components/schemas/Attribution"
+          }
+        },
+        "required": ["prompt", "metadata"],
+        "description": "Proposed additive ingress extension. Existing configured prompt/body/token limits also apply. Metadata is opaque and is never persisted. stream/rewrite remain unsupported."
+      },
+      "GenerationResponse": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "response": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "content": {
+                "type": "string"
+              },
+              "role": {
+                "const": "assistant"
+              },
+              "finish_reason": {
+                "anyOf": [
+                  {
+                    "type": "string"
+                  },
+                  {
+                    "type": "null"
+                  }
+                ]
+              }
+            },
+            "required": ["content", "role", "finish_reason"]
+          },
+          "model_used": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "cost": {
+            "type": "number",
+            "minimum": 0,
+            "description": "Existing eight-decimal successful-response estimate; not total request ledger cost."
+          },
+          "processing_time_ms": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "usage": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "prompt_tokens": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "completion_tokens": {
+                "type": "integer",
+                "minimum": 0
+              }
+            },
+            "required": ["prompt_tokens", "completion_tokens"]
+          }
+        },
+        "required": ["response", "model_used", "cost", "processing_time_ms", "usage"]
+      },
+      "UsageRequest": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "request_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "workflow_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueLabel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "task_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/OpaqueLabel"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "key_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "route_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "execution_state": {
+            "type": "string",
+            "enum": ["running", "succeeded", "failed", "cancelled", "unknown"]
+          },
+          "accounting_state": {
+            "type": "string",
+            "enum": ["pending", "complete", "released_unknown"]
+          },
+          "terminal_error_code": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 64
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "admitted_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/CostTotals"
+          }
+        },
+        "required": [
+          "id",
+          "request_id",
+          "customer_id",
+          "workflow_id",
+          "task_id",
+          "key_id",
+          "route_id",
+          "execution_state",
+          "accounting_state",
+          "terminal_error_code",
+          "admitted_at",
+          "completed_at",
+          "totals"
+        ],
+        "description": "One generation operation. No prompt or generated content. Execution can succeed while accounting remains pending."
+      },
+      "PriceSnapshot": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "target_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 128
+          },
+          "provider_id": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "requested_model": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "currency": {
+            "const": "USD"
+          },
+          "input_per_million_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "output_per_million_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "formula_version": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "bound_profile_version": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "target_id",
+          "provider_id",
+          "requested_model",
+          "currency",
+          "input_per_million_usd",
+          "output_per_million_usd",
+          "formula_version",
+          "bound_profile_version",
+          "created_at"
+        ]
+      },
+      "Attempt": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "usage_request_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "ordinal": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "price_snapshot": {
+            "$ref": "#/components/schemas/PriceSnapshot"
+          },
+          "reported_model": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "dispatch_state": {
+            "type": "string",
+            "enum": ["prepared", "dispatch_intent", "terminal"]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "success",
+              "provider_error",
+              "transport_error",
+              "protocol_error",
+              "deadline",
+              "cancelled",
+              "not_sent",
+              "unknown"
+            ]
+          },
+          "usage_evidence": {
+            "type": "string",
+            "enum": ["provider_reported", "operator_attested", "not_sent", "unknown"]
+          },
+          "cost_basis": {
+            "type": "string",
+            "enum": ["configured_tariff", "unknown"]
+          },
+          "settlement_state": {
+            "type": "string",
+            "enum": ["reserved", "pending_reconciliation", "settled", "released_unverified"]
+          },
+          "input_tokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "output_tokens": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Count"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "settled_estimate_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "reservation_bound_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "held_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "released_unknown_exposure_usd": {
+            "$ref": "#/components/schemas/Usd"
+          },
+          "provider_request_id": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "admitted_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "settled_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "lifecycle_revision": {
+            "$ref": "#/components/schemas/Revision"
+          }
+        },
+        "required": [
+          "id",
+          "usage_request_id",
+          "ordinal",
+          "price_snapshot",
+          "reported_model",
+          "dispatch_state",
+          "outcome",
+          "usage_evidence",
+          "cost_basis",
+          "settlement_state",
+          "input_tokens",
+          "output_tokens",
+          "settled_estimate_usd",
+          "reservation_bound_usd",
+          "held_usd",
+          "released_unknown_exposure_usd",
+          "provider_request_id",
+          "admitted_at",
+          "settled_at",
+          "lifecycle_revision"
+        ]
+      },
+      "ResolutionWrite": {
+        "oneOf": [
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "const": "attest_usage"
+              },
+              "input_tokens": {
+                "$ref": "#/components/schemas/Count"
+              },
+              "output_tokens": {
+                "$ref": "#/components/schemas/Count"
+              },
+              "evidence_ref": {
+                "$ref": "#/components/schemas/OpaqueLabel"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/Reason"
+              }
+            },
+            "required": ["action", "input_tokens", "output_tokens", "evidence_ref", "reason"]
+          },
+          {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "action": {
+                "const": "release_unverified"
+              },
+              "evidence_ref": {
+                "$ref": "#/components/schemas/OpaqueLabel"
+              },
+              "reason": {
+                "$ref": "#/components/schemas/Reason"
+              }
+            },
+            "required": ["action", "evidence_ref", "reason"]
+          }
+        ]
+      },
+      "Resolution": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "operation_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "attempt_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "action": {
+            "type": "string",
+            "enum": ["attest_usage", "release_unverified"]
+          },
+          "evidence_ref": {
+            "$ref": "#/components/schemas/OpaqueLabel"
+          },
+          "reason": {
+            "$ref": "#/components/schemas/Reason"
+          },
+          "created_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "attempt": {
+            "$ref": "#/components/schemas/Attempt"
+          }
+        },
+        "required": [
+          "id",
+          "operation_id",
+          "attempt_id",
+          "action",
+          "evidence_ref",
+          "reason",
+          "created_at",
+          "attempt"
+        ]
+      },
+      "Event": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "kind": {
+            "type": "string",
+            "enum": [
+              "allowance.threshold",
+              "allowance.denied",
+              "usage.unknown",
+              "metering.bound_violation",
+              "accounting.unavailable",
+              "accounting.mismatch",
+              "evidence.conflict"
+            ]
+          },
+          "account_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "usage_request_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "attempt_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "period": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Period"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "threshold_percent": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "enum": [80, 100]
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "exposure_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "effective_limit_usd": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Usd"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 512
+          },
+          "occurred_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          },
+          "acknowledged_at": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Timestamp"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "acknowledged_by_key_id": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Id"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "id",
+          "kind",
+          "account_id",
+          "customer_id",
+          "usage_request_id",
+          "attempt_id",
+          "period",
+          "threshold_percent",
+          "exposure_usd",
+          "effective_limit_usd",
+          "message",
+          "occurred_at",
+          "acknowledged_at",
+          "acknowledged_by_key_id"
+        ]
+      },
+      "AuditChange": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "field": {
+            "type": "string",
+            "enum": [
+              "mode",
+              "display_name",
+              "status",
+              "base_limit_usd",
+              "scheduled_base_limit_usd",
+              "current_period_adjustment_usd",
+              "settlement_state",
+              "usage_evidence",
+              "acknowledged_at"
+            ]
+          },
+          "before": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "after": {
+            "anyOf": [
+              {
+                "type": "string",
+                "maxLength": 512
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": ["field", "before", "after"]
+      },
+      "AuditOperation": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "actor_key_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "action": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 64
+          },
+          "target_id": {
+            "$ref": "#/components/schemas/Id"
+          },
+          "reason": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 500
+          },
+          "changes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditChange"
+            },
+            "maxItems": 20
+          },
+          "committed_at": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": [
+          "id",
+          "actor_key_id",
+          "action",
+          "target_id",
+          "reason",
+          "changes",
+          "committed_at"
+        ]
+      },
+      "SummaryGroup": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "key": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 128
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/CostTotals"
+          }
+        },
+        "required": ["key", "totals"]
+      },
+      "UsageSummary": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "period": {
+            "$ref": "#/components/schemas/Period"
+          },
+          "group_by": {
+            "type": "string",
+            "enum": ["day", "customer", "workflow", "target", "task"]
+          },
+          "totals": {
+            "$ref": "#/components/schemas/CostTotals"
+          },
+          "groups": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SummaryGroup"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["period", "group_by", "totals", "groups", "next_cursor", "as_of"]
+      },
+      "CustomerPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Customer"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["items", "next_cursor", "as_of"]
+      },
+      "RequestPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UsageRequest"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["items", "next_cursor", "as_of"]
+      },
+      "AttemptPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Attempt"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["items", "next_cursor", "as_of"]
+      },
+      "EventPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Event"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["items", "next_cursor", "as_of"]
+      },
+      "AuditPage": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AuditOperation"
+            },
+            "maxItems": 100
+          },
+          "next_cursor": {
+            "anyOf": [
+              {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 2048
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "as_of": {
+            "$ref": "#/components/schemas/Timestamp"
+          }
+        },
+        "required": ["items", "next_cursor", "as_of"]
+      }
+    }
+  }
+}

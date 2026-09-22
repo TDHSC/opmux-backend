@@ -98,10 +98,12 @@ supplied customer must still exist, be active, and belong to the tenant. In enfo
 inference request. Unknown/cross-tenant customers receive indistinguishable `404 NOT_FOUND`.
 
 Customer status is `active` or `suspended`; suspension blocks new attempts, including later attempts
-of an already admitted request, but does not cancel a dispatched attempt. Customer IDs and external
-IDs cannot be reassigned or deleted while history exists. Workflow/task IDs are tenant-local labels,
-not objects that grant access. Tenant inference keys must be held by the SaaS backend, which derives
-customer identity from its own authenticated user rather than forwarding untrusted browser input.
+of an already admitted request, but does not revoke a reservation already committed before the
+suspension. Attempt admission linearizes at reservation commit; an already reserved attempt may
+still dispatch and settle. Customer IDs and external IDs cannot be reassigned or deleted while
+history exists. Workflow/task IDs are tenant-local labels, not objects that grant access. Tenant
+inference keys must be held by the SaaS backend, which derives customer identity from its own
+authenticated user rather than forwarding untrusted browser input.
 
 ## 4. Money, usage evidence, and pricing
 
@@ -209,6 +211,34 @@ Ledger rows for the tenant and customer are parallel constraint projections of o
 reporting aggregates attempts/evidence once; it must never sum both account projections as two
 charges. Every allocation carries the tenant ID and references the same tenant's account/period.
 
+An account/period base is nullable until a policy is configured. Account records also retain the
+pending next-period base/effective date and an `unbounded_hold_count` projection. A reservation
+bound is nullable only in observation mode. Such reservations append an explicit unbounded-count
+delta alongside monetary ledger deltas; their numerical held subtotal may be zero but their exposure
+is unknown. Reconciliation checks the count projection as well as monetary projections. Scheduled
+policy activation changes the effective-month component of its ETag, not the management revision.
+
+Ledger entries have the following exact projection effects (`B` is a reservation bound, `C` an
+estimated cost, `D` a signed capacity/cost correction). The table applies independently to each
+constraint account; it is not a second usage charge:
+
+| Entry                                                             | Held delta | Settled delta | Capacity delta |
+| ----------------------------------------------------------------- | ---------- | ------------- | -------------- |
+| `reserved`                                                        | +B         | 0             | 0              |
+| `settled`                                                         | -B         | +C            | 0              |
+| `released_not_sent`                                               | -B         | 0             | 0              |
+| `marked_unknown`                                                  | 0          | 0             | 0              |
+| `released_unverified`                                             | -B         | 0             | 0              |
+| `capacity_initialized` / `capacity_rebased` / `capacity_adjusted` | 0          | 0             | +D             |
+| `cost_corrected`                                                  | 0          | +D            | 0              |
+
+For unbounded observation reservations, hold changes instead increment/decrement the separate
+unbounded-count projection; cost stays null until supported evidence exists. Ledger operation IDs
+are stable across transaction retries. A correction must reference superseded evidence, and the
+resulting per-attempt valuation cannot be negative. Rebuilding compares account holds across all
+periods, settled sums per period, capacity initialization/changes, and unresolved-count totals; it
+never adds the tenant and customer projections together as provider consumption.
+
 Application repositories require a typed tenant argument. Every object read/update includes its
 tenant predicate; bulk queries and cursors follow the same rule. Composite foreign keys prevent
 cross-tenant relationships. New tables receive no grants to Supabase `anon`, `authenticated`,
@@ -236,10 +266,11 @@ components. Current-month settled estimates exclude previous-month settled costs
 hold updates its original period and removes its carry-over exposure; it does not charge the new
 month again.
 
-Each attempt chooses its period at reservation time using the PostgreSQL clock. A request spanning
-midnight may have attempts in different periods. A late result always settles its reservation's
-original period. Lazy period creation under the account lock removes any dependence on a cron reset.
-An old period can still receive evidence; period end is not accounting finality.
+Each attempt chooses its period after acquiring account locks using PostgreSQL `clock_timestamp()`,
+not the earlier transaction-start timestamp. A request spanning midnight may have attempts in
+different periods. A late result always settles its reservation's original period. Lazy period
+creation under the account lock removes any dependence on a cron reset. An old period can still
+receive evidence; period end is not accounting finality.
 
 In `enforce`, an active customer, a tenant policy, and that customer's policy are all required. The
 same attempt bound must fit both accounts. A zero limit rejects positive exposure. Policy absence is
@@ -254,6 +285,10 @@ Changing `observe` to `enforce` requires finite policies, usable bound profiles,
 unknowns. Existing current-period consumption counts; activation does not start from zero. Both mode
 transitions affect future attempt admissions, including retries, never cancel a sent call, and are
 audited. Settlements preserve the identity and period fixed when each reservation was made.
+
+An explicitly audited unverified release ends a hold, including an unbounded hold, but does not make
+historic consumption known. Activation after such a release excludes that accepted historic risk
+from its cap and keeps the released-uncertainty warning visible.
 
 ## 7. Transactions and concurrency
 
@@ -291,6 +326,12 @@ unique worker token and lifecycle revision. It rejects an expired/recovered prep
 winner may send. The worker does not resume/re-send a committed intent after restart. This
 deliberately leaves a possible false-positive hold if it crashes before the actual send.
 
+Enforcement activation takes the exclusive tenant-settings lock, blocking concurrent admissions and
+customer creation while it validates the tenant and all active customer policies. Customer creation
+uses the same settings/account lock order. A customer created while enforcement is on may initially
+have an unconfigured account, but every request for it is rejected until its policy is explicitly
+set. This prevents a configuration race from creating an unlimited-customer path.
+
 ### 7.2 Finalization
 
 Parse provider evidence independently from whether generated content is a valid successful response.
@@ -313,13 +354,23 @@ execution. Without supported usage/no-charge evidence it remains unknown. Valid 
 is insufficient for a complete cost and must not fabricate missing dimensions.
 
 The result may be successful while a previous attempt remains uncertain; request accounting is then
-`pending_reconciliation`. Execution status and accounting status are separate API fields.
+`pending` at request level; the individual attempt is `pending_reconciliation`. Execution status and
+accounting status are separate API fields.
+
+Request `execution_state` is `running` after first admission, then `succeeded`, `failed`, or
+`cancelled` when the executor records its local outcome. Recovery uses `unknown` if that outcome was
+lost; provider evidence alone does not prove that the caller received an answer. `accounting_state`
+is `pending` while any reservation is active/uncertain, otherwise `released_unknown` if any attempt
+ended in an unverified release, otherwise `complete`. Known errors/not-sent attempts can therefore
+be accounting-complete. Completing a request never releases an uncertain attempt implicitly.
 
 If finalization cannot commit before the request deadline, do not send an ordinary success claiming
 settled accounting. Return `503 ACCOUNTING_UNAVAILABLE` if time remains, otherwise the existing
 deadline error. The durable intent/hold remains for recovery. Recovery cannot reconstruct lost token
 evidence from memory, and may require operator attestation. An application error can therefore
-coexist with provider consumption; the request detail makes that visible.
+coexist with provider consumption; the request detail makes that visible. The gateway can return
+success with a durable pending record for an earlier failed attempt; it may not return success while
+persistence of the current attempt's evidence/settlement is unacknowledged.
 
 ### 7.3 Retries, fallback, cancellation, and expiry
 
@@ -401,8 +452,10 @@ may have failed, completed, or become uncertain; a manager can query its status.
 Customer/policy/settings mutations require a strong ETag from the corresponding configuration GET
 and `If-Match`. Missing preconditions return `428 PRECONDITION_REQUIRED`; stale versions return
 `412 PRECONDITION_FAILED`. Accounting counters do not bump policy ETags, so normal traffic does not
-cause endless edit conflicts. A successful idempotent replay is checked before re-evaluating its old
-If-Match precondition. A new edit always gets a new idempotency key.
+cause endless edit conflicts. Policy ETags also include the effective UTC month, so a scheduled
+activation or month boundary can invalidate a previously fetched ETag. A successful idempotent
+replay is checked before re-evaluating its old If-Match precondition. A new edit always gets a new
+idempotency key.
 
 ## 10. Queries, warnings, and management behavior
 
@@ -470,9 +523,19 @@ needed for v1; a future external channel can consume an outbox without entering 
 - Database admission/settlement timeouts are bounded; no unbounded queueing behind tenant locks.
   Lock timeouts return `503 ACCOUNTING_BUSY`, not a fabricated allowance denial. Retry database
   transactions only before dispatch or with a stable settlement identity.
-- `/ready` includes required usage schema/privilege/price-profile checks when the feature is
-  enabled. An exhausted individual customer allowance does not make the entire gateway unready.
-  Successful dependency checks may cache; failed checks remain uncached.
+- A bound violation quarantines the target/bound-profile digest in durable metering state shared by
+  replicas; a process-local circuit flag is insufficient. Only an operator-reviewed replacement
+  profile clears it. A ledger/projection mismatch similarly persists an account admission block
+  until audited repair. Neither state is cleared by restarting a gateway or changing UI filters.
+- Usage reads have a configurable two-second database budget and per-process bounded management
+  query concurrency (default eight); saturation returns `503 ACCOUNTING_BUSY`. Queries do not retain
+  cursors as live database transactions. Accounting work retains a separate bounded pool share so
+  report scans cannot consume all admission/settlement connections. These are resource control
+  defaults, not measured SLOs or a distributed customer request-rate quota.
+- `/ready` includes required usage schema/privilege checks when the feature is enabled. Enforcing
+  routes additionally require usable bound profiles; observation alone does not require them. An
+  exhausted individual customer allowance does not make the entire gateway unready. Successful
+  dependency checks may cache; failed checks remain uncached.
 - Shutdown stops new dispatch, allows bounded finalization, and leaves unresolved durable intents
   for recovery. Recovery health and oldest-unknown age are operational signals.
 - Default ledger/evidence/audit retention is 13 months; feed and generation deduplication retention

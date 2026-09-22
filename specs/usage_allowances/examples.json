@@ -1,0 +1,625 @@
+{
+  "customer": {
+    "schema": "Customer",
+    "value": {
+      "id": "00000000-0000-4000-8000-000000000001",
+      "external_id": "customer_acme",
+      "display_name": "Acme",
+      "status": "active",
+      "revision": 1,
+      "created_at": "2026-09-22T12:00:00Z",
+      "updated_at": "2026-09-22T12:00:00Z"
+    },
+    "response_headers": {
+      "ETag": "\"customer:00000000-0000-4000-8000-000000000001:1\"",
+      "Cache-Control": "no-store",
+      "X-Request-ID": "example-http-1"
+    }
+  },
+  "customer_create": {
+    "schema": "CustomerCreate",
+    "value": {
+      "external_id": "customer_acme",
+      "display_name": "Acme",
+      "reason": "Register the existing SaaS customer."
+    }
+  },
+  "customer_list": {
+    "schema": "CustomerPage",
+    "value": {
+      "items": [
+        {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "external_id": "customer_acme",
+          "display_name": "Acme",
+          "status": "active",
+          "revision": 1,
+          "created_at": "2026-09-22T12:00:00Z",
+          "updated_at": "2026-09-22T12:00:00Z"
+        }
+      ],
+      "next_cursor": null,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "settings": {
+    "schema": "UsageSettings",
+    "value": {
+      "mode": "observe",
+      "revision": 0,
+      "updated_at": "2026-09-22T12:00:00Z"
+    },
+    "response_headers": {
+      "ETag": "\"settings:0\"",
+      "Cache-Control": "no-store",
+      "X-Request-ID": "example-http-1"
+    }
+  },
+  "allowance_policy": {
+    "schema": "AllowancePolicy",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "configured": true,
+      "base_limit_usd": "100.000000000",
+      "scheduled_base_limit_usd": null,
+      "scheduled_effective_at": null,
+      "period_kind": "calendar_month_utc",
+      "revision": 2,
+      "updated_at": "2026-09-22T12:00:00Z"
+    },
+    "response_headers": {
+      "ETag": "\"allowance:00000000-0000-4000-8000-000000000002:2:2026-09\"",
+      "Cache-Control": "no-store",
+      "X-Request-ID": "example-http-1"
+    }
+  },
+  "allowance_write": {
+    "schema": "AllowanceWrite",
+    "value": {
+      "base_limit_usd": "100.000000000",
+      "effective": "current_and_future",
+      "reason": "Set the agreed monthly cost allowance."
+    }
+  },
+  "balance_with_unknown_and_carryover": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "enforce",
+      "policy_configured": true,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": "100.000000000",
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": "100.000000000",
+      "settled_estimate_usd": "62.250000000",
+      "active_hold_usd": "1.000000000",
+      "pending_exposure_usd": "2.500000000",
+      "carryover_hold_usd": "0.750000000",
+      "total_held_usd": "4.250000000",
+      "available_usd": "33.500000000",
+      "overcommitted_usd": "0.000000000",
+      "unbounded_unknown_attempt_count": "0",
+      "complete": false,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "positive_adjustment": {
+    "schema": "AdjustmentWrite",
+    "value": {
+      "amount_usd": "20.000000000",
+      "reason": "Approve additional capacity for the current month."
+    }
+  },
+  "generation_with_attribution": {
+    "schema": "GenerationRequest",
+    "value": {
+      "prompt": "Extract the invoice fields.",
+      "metadata": {},
+      "parameters": {
+        "max_tokens": 128
+      },
+      "attribution": {
+        "customer_id": "00000000-0000-4000-8000-000000000001",
+        "workflow_id": "extract_invoice",
+        "task_id": "run_42"
+      }
+    }
+  },
+  "request_success_with_unknown_primary": {
+    "schema": "UsageRequest",
+    "value": {
+      "id": "00000000-0000-4000-8000-000000000003",
+      "request_id": "example-request-1",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "workflow_id": "extract_invoice",
+      "task_id": "run_42",
+      "key_id": "00000000-0000-4000-8000-000000000004",
+      "route_id": "default",
+      "execution_state": "succeeded",
+      "accounting_state": "pending",
+      "terminal_error_code": null,
+      "admitted_at": "2026-09-22T12:00:00Z",
+      "completed_at": "2026-09-22T12:00:03Z",
+      "totals": {
+        "currency": "USD",
+        "request_count": "1",
+        "successful_request_count": "1",
+        "attempt_count": "2",
+        "known_input_tokens": "120",
+        "known_output_tokens": "30",
+        "settled_estimate_usd": "0.000180000",
+        "active_reservation_usd": "0.000000000",
+        "pending_exposure_usd": "0.010000000",
+        "released_unknown_exposure_usd": "0.000000000",
+        "unknown_attempt_count": "1",
+        "unbounded_unknown_attempt_count": "0",
+        "complete": false
+      }
+    }
+  },
+  "unknown_attempt": {
+    "schema": "Attempt",
+    "value": {
+      "id": "00000000-0000-4000-8000-000000000006",
+      "usage_request_id": "00000000-0000-4000-8000-000000000003",
+      "ordinal": 1,
+      "price_snapshot": {
+        "id": "00000000-0000-4000-8000-000000000005",
+        "target_id": "primary",
+        "provider_id": "openai",
+        "requested_model": "configured-model",
+        "currency": "USD",
+        "input_per_million_usd": "1.000000000",
+        "output_per_million_usd": "2.000000000",
+        "formula_version": "flat-text-v1",
+        "bound_profile_version": "example-bound-v1",
+        "created_at": "2026-09-22T12:00:00Z"
+      },
+      "reported_model": null,
+      "dispatch_state": "terminal",
+      "outcome": "transport_error",
+      "usage_evidence": "unknown",
+      "cost_basis": "unknown",
+      "settlement_state": "pending_reconciliation",
+      "input_tokens": null,
+      "output_tokens": null,
+      "settled_estimate_usd": null,
+      "reservation_bound_usd": "0.010000000",
+      "held_usd": "0.010000000",
+      "released_unknown_exposure_usd": "0.000000000",
+      "provider_request_id": null,
+      "admitted_at": "2026-09-22T12:00:00Z",
+      "settled_at": null,
+      "lifecycle_revision": 2
+    },
+    "response_headers": {
+      "ETag": "\"attempt:00000000-0000-4000-8000-000000000006:2\"",
+      "Cache-Control": "no-store",
+      "X-Request-ID": "example-http-1"
+    }
+  },
+  "fallback_attempt": {
+    "schema": "Attempt",
+    "value": {
+      "id": "00000000-0000-4000-8000-000000000007",
+      "usage_request_id": "00000000-0000-4000-8000-000000000003",
+      "ordinal": 2,
+      "price_snapshot": {
+        "id": "00000000-0000-4000-8000-000000000008",
+        "target_id": "fallback",
+        "provider_id": "openai",
+        "requested_model": "configured-model",
+        "currency": "USD",
+        "input_per_million_usd": "1.000000000",
+        "output_per_million_usd": "2.000000000",
+        "formula_version": "flat-text-v1",
+        "bound_profile_version": "example-bound-v1",
+        "created_at": "2026-09-22T12:00:00Z"
+      },
+      "reported_model": "configured-model",
+      "dispatch_state": "terminal",
+      "outcome": "success",
+      "usage_evidence": "provider_reported",
+      "cost_basis": "configured_tariff",
+      "settlement_state": "settled",
+      "input_tokens": "120",
+      "output_tokens": "30",
+      "settled_estimate_usd": "0.000180000",
+      "reservation_bound_usd": "0.010000000",
+      "held_usd": "0.000000000",
+      "released_unknown_exposure_usd": "0.000000000",
+      "provider_request_id": "example-upstream-id",
+      "admitted_at": "2026-09-22T12:00:02Z",
+      "settled_at": "2026-09-22T12:00:03Z",
+      "lifecycle_revision": 2
+    }
+  },
+  "attempt_list": {
+    "schema": "AttemptPage",
+    "value": {
+      "items": [
+        {
+          "id": "00000000-0000-4000-8000-000000000006",
+          "usage_request_id": "00000000-0000-4000-8000-000000000003",
+          "ordinal": 1,
+          "price_snapshot": {
+            "id": "00000000-0000-4000-8000-000000000005",
+            "target_id": "primary",
+            "provider_id": "openai",
+            "requested_model": "configured-model",
+            "currency": "USD",
+            "input_per_million_usd": "1.000000000",
+            "output_per_million_usd": "2.000000000",
+            "formula_version": "flat-text-v1",
+            "bound_profile_version": "example-bound-v1",
+            "created_at": "2026-09-22T12:00:00Z"
+          },
+          "reported_model": null,
+          "dispatch_state": "terminal",
+          "outcome": "transport_error",
+          "usage_evidence": "unknown",
+          "cost_basis": "unknown",
+          "settlement_state": "pending_reconciliation",
+          "input_tokens": null,
+          "output_tokens": null,
+          "settled_estimate_usd": null,
+          "reservation_bound_usd": "0.010000000",
+          "held_usd": "0.010000000",
+          "released_unknown_exposure_usd": "0.000000000",
+          "provider_request_id": null,
+          "admitted_at": "2026-09-22T12:00:00Z",
+          "settled_at": null,
+          "lifecycle_revision": 2
+        },
+        {
+          "id": "00000000-0000-4000-8000-000000000007",
+          "usage_request_id": "00000000-0000-4000-8000-000000000003",
+          "ordinal": 2,
+          "price_snapshot": {
+            "id": "00000000-0000-4000-8000-000000000008",
+            "target_id": "fallback",
+            "provider_id": "openai",
+            "requested_model": "configured-model",
+            "currency": "USD",
+            "input_per_million_usd": "1.000000000",
+            "output_per_million_usd": "2.000000000",
+            "formula_version": "flat-text-v1",
+            "bound_profile_version": "example-bound-v1",
+            "created_at": "2026-09-22T12:00:00Z"
+          },
+          "reported_model": "configured-model",
+          "dispatch_state": "terminal",
+          "outcome": "success",
+          "usage_evidence": "provider_reported",
+          "cost_basis": "configured_tariff",
+          "settlement_state": "settled",
+          "input_tokens": "120",
+          "output_tokens": "30",
+          "settled_estimate_usd": "0.000180000",
+          "reservation_bound_usd": "0.010000000",
+          "held_usd": "0.000000000",
+          "released_unknown_exposure_usd": "0.000000000",
+          "provider_request_id": "example-upstream-id",
+          "admitted_at": "2026-09-22T12:00:02Z",
+          "settled_at": "2026-09-22T12:00:03Z",
+          "lifecycle_revision": 2
+        }
+      ],
+      "next_cursor": null,
+      "as_of": "2026-09-22T12:00:04Z"
+    }
+  },
+  "usage_summary": {
+    "schema": "UsageSummary",
+    "value": {
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "group_by": "customer",
+      "totals": {
+        "currency": "USD",
+        "request_count": "1",
+        "successful_request_count": "1",
+        "attempt_count": "2",
+        "known_input_tokens": "120",
+        "known_output_tokens": "30",
+        "settled_estimate_usd": "0.000180000",
+        "active_reservation_usd": "0.000000000",
+        "pending_exposure_usd": "0.010000000",
+        "released_unknown_exposure_usd": "0.000000000",
+        "unknown_attempt_count": "1",
+        "unbounded_unknown_attempt_count": "0",
+        "complete": false
+      },
+      "groups": [
+        {
+          "key": "00000000-0000-4000-8000-000000000001",
+          "totals": {
+            "currency": "USD",
+            "request_count": "1",
+            "successful_request_count": "1",
+            "attempt_count": "2",
+            "known_input_tokens": "120",
+            "known_output_tokens": "30",
+            "settled_estimate_usd": "0.000180000",
+            "active_reservation_usd": "0.000000000",
+            "pending_exposure_usd": "0.010000000",
+            "released_unknown_exposure_usd": "0.000000000",
+            "unknown_attempt_count": "1",
+            "unbounded_unknown_attempt_count": "0",
+            "complete": false
+          }
+        }
+      ],
+      "next_cursor": null,
+      "as_of": "2026-09-22T12:00:04Z"
+    }
+  },
+  "warning": {
+    "schema": "Event",
+    "value": {
+      "id": "00000000-0000-4000-8000-000000000009",
+      "kind": "usage.unknown",
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "usage_request_id": "00000000-0000-4000-8000-000000000003",
+      "attempt_id": "00000000-0000-4000-8000-000000000006",
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "threshold_percent": null,
+      "exposure_usd": "0.010000000",
+      "effective_limit_usd": null,
+      "message": "Provider usage is unknown; capacity remains reserved.",
+      "occurred_at": "2026-09-22T12:00:00Z",
+      "acknowledged_at": null,
+      "acknowledged_by_key_id": null
+    }
+  },
+  "unverified_release": {
+    "schema": "ResolutionWrite",
+    "value": {
+      "action": "release_unverified",
+      "evidence_ref": "support_case_42",
+      "reason": "Operator accepts uncertain provider exposure after investigation."
+    }
+  },
+  "usage_attestation": {
+    "schema": "ResolutionWrite",
+    "value": {
+      "action": "attest_usage",
+      "input_tokens": "120",
+      "output_tokens": "30",
+      "evidence_ref": "provider_record_42",
+      "reason": "Usage reviewed against the retained external provider record."
+    }
+  },
+  "allowance_denied": {
+    "schema": "Error",
+    "value": {
+      "error": {
+        "code": "ALLOWANCE_EXCEEDED",
+        "message": "Insufficient allowance for the next provider attempt.",
+        "request_id": "example-request-2"
+      }
+    }
+  },
+  "empty_usage_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "enforce",
+      "policy_configured": true,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": "100.000000000",
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": "100.000000000",
+      "settled_estimate_usd": "0.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": "100.000000000",
+      "overcommitted_usd": "0.000000000",
+      "unbounded_unknown_attempt_count": "0",
+      "complete": true,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "exhausted_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "enforce",
+      "policy_configured": true,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": "100.000000000",
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": "100.000000000",
+      "settled_estimate_usd": "100.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": "0.000000000",
+      "overcommitted_usd": "0.000000000",
+      "unbounded_unknown_attempt_count": "0",
+      "complete": true,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "overcommitted_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "enforce",
+      "policy_configured": true,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": "80.000000000",
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": "80.000000000",
+      "settled_estimate_usd": "100.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": "0.000000000",
+      "overcommitted_usd": "20.000000000",
+      "unbounded_unknown_attempt_count": "0",
+      "complete": true,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "suspended_customer_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "enforce",
+      "policy_configured": true,
+      "customer_suspended": true,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": "80.000000000",
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": "80.000000000",
+      "settled_estimate_usd": "100.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": "0.000000000",
+      "overcommitted_usd": "20.000000000",
+      "unbounded_unknown_attempt_count": "0",
+      "complete": true,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "unconfigured_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "observe",
+      "policy_configured": false,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": null,
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": null,
+      "settled_estimate_usd": "100.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": null,
+      "overcommitted_usd": null,
+      "unbounded_unknown_attempt_count": "0",
+      "complete": true,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "unbounded_unknown_balance": {
+    "schema": "Balance",
+    "value": {
+      "account_id": "00000000-0000-4000-8000-000000000002",
+      "scope": "customer",
+      "customer_id": "00000000-0000-4000-8000-000000000001",
+      "currency": "USD",
+      "mode": "observe",
+      "policy_configured": false,
+      "customer_suspended": false,
+      "period": {
+        "start": "2026-09-01T00:00:00Z",
+        "end": "2026-10-01T00:00:00Z"
+      },
+      "base_limit_usd": null,
+      "adjustment_usd": "0.000000000",
+      "effective_limit_usd": null,
+      "settled_estimate_usd": "100.000000000",
+      "active_hold_usd": "0.000000000",
+      "pending_exposure_usd": "0.000000000",
+      "carryover_hold_usd": "0.000000000",
+      "total_held_usd": "0.000000000",
+      "available_usd": null,
+      "overcommitted_usd": null,
+      "unbounded_unknown_attempt_count": "1",
+      "complete": false,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "empty_customer_page": {
+    "schema": "CustomerPage",
+    "value": {
+      "items": [],
+      "next_cursor": null,
+      "as_of": "2026-09-22T12:00:00Z"
+    }
+  },
+  "stale_edit": {
+    "schema": "Error",
+    "value": {
+      "error": {
+        "code": "PRECONDITION_FAILED",
+        "message": "The configuration changed. Refresh before editing.",
+        "request_id": "example-edit-1"
+      }
+    }
+  },
+  "duplicate_generation": {
+    "schema": "Error",
+    "value": {
+      "error": {
+        "code": "INFERENCE_ALREADY_SUBMITTED",
+        "message": "This generation was already submitted. Inspect its usage record.",
+        "request_id": "example-duplicate-1"
+      }
+    },
+    "response_headers": {
+      "X-Opmux-Usage-Request-ID": "00000000-0000-4000-8000-000000000003",
+      "X-Request-ID": "example-duplicate-1",
+      "Cache-Control": "no-store"
+    }
+  }
+}
